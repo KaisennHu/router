@@ -250,12 +250,18 @@ vllm-router --policy kv_aware \
   --kv-penalty-host 0.8 \
   --kv-penalty-external 0.6 \
   --kv-penalty-disk 0.3 \
+  --kv-affinity-ratio 4.0 \
+  --kv-occupancy-weight 0.0 \
   --worker-urls grpc://worker1:8000 grpc://worker2:8000
 ```
 
 For each candidate, the scorer computes `ptoken = new_prefill_tokens + active_prefill_tokens` and projects the request count as `max(slot_manager.active_requests, Worker::load) + 1`. It multiplies `ptoken` by that projected count, so the score estimates the load after admitting this request and includes its remaining prefill work even when the worker is currently idle. Zero-cost cases, such as a request with no prefill work, are resolved by the KV-work and current-load tie-breaks.
 
 `--router-temperature 0` selects a minimum-cost worker. A positive temperature samples among candidates by their relative costs. Device reuse has full credit; the host, external, and disk `--kv-penalty-*` flags configure transfer-credit ratios for those tiers. A higher credit means more reuse value and lower transfer cost.
+
+The affinity prior keeps a request on the worker holding its deepest credited prefix instead of chasing the momentary minimum cost: the worker whose cached blocks would become dead weight on a migration. A cheaper candidate wins only when its cost beats the home worker's by more than `--kv-affinity-ratio` (default 4.0). Values <= 1.0 disable the prior. The prior only engages for a home credit of at least one block and at least 5% of the request's input tokens — a smaller residue is shared-prefix noise and must not anchor the session.
+
+`--kv-occupancy-weight` (default 0.0, disabled) adds a memory-pressure term to each candidate's cost: `weight * ptoken * resident_tokens`, where `resident_tokens` is the KV content the worker already holds (device blocks plus host blocks at the host-pinned credit). Because the term scales with the incoming prefill, a giant prefill is deterred from a worker whose KV memory is full — where it would evict other sessions' blocks — while a small continuation is unaffected and keeps its affinity. A weight near `1 / effective_kv_capacity` makes the term comparable to the load term at saturation; aliasing in the residency index inflates `resident_tokens` by roughly the shared-prefix factor, so treat the value as a sweep knob rather than a physical constant.
 
 ---
 

@@ -394,11 +394,27 @@ impl ConfigValidator {
                 kv_penalty_host,
                 kv_penalty_external,
                 kv_penalty_disk,
+                kv_affinity_ratio,
+                kv_occupancy_weight,
             } => {
                 if !router_temperature.is_finite() || *router_temperature < 0.0 {
                     return Err(ConfigError::InvalidValue {
                         field: "router_temperature".to_string(),
                         value: router_temperature.to_string(),
+                        reason: "Must be finite and >= 0.0".to_string(),
+                    });
+                }
+                if !kv_affinity_ratio.is_finite() || *kv_affinity_ratio < 0.0 {
+                    return Err(ConfigError::InvalidValue {
+                        field: "kv_affinity_ratio".to_string(),
+                        value: kv_affinity_ratio.to_string(),
+                        reason: "Must be finite and >= 0.0".to_string(),
+                    });
+                }
+                if !kv_occupancy_weight.is_finite() || *kv_occupancy_weight < 0.0 {
+                    return Err(ConfigError::InvalidValue {
+                        field: "kv_occupancy_weight".to_string(),
+                        value: kv_occupancy_weight.to_string(),
                         reason: "Must be finite and >= 0.0".to_string(),
                     });
                 }
@@ -1192,6 +1208,8 @@ mod tests {
                 kv_penalty_host: 0.8,
                 kv_penalty_external: 0.6,
                 kv_penalty_disk: 0.3,
+                kv_affinity_ratio: 4.0,
+                kv_occupancy_weight: 0.0,
             },
         );
 

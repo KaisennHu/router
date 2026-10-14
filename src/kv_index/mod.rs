@@ -31,6 +31,13 @@ pub use wire::{AllBlocksCleared, BlockRemoved, BlockStored, KVEvent, KVEventBatc
 /// `KvBlockIndexer` implements this.
 pub trait TieredMatchProvider: Send + Sync {
     fn find_tiered_matches(&self, query: &MatchQuery) -> Vec<TierMatch>;
+
+    /// Distinct block observations `target` currently holds in `tier`, summed
+    /// across shards. A relative memory-pressure signal for placement; zero
+    /// for providers that do not track residency counts.
+    fn resident_blocks(&self, _target: &RoutableTarget, _tier: StorageTier) -> u64 {
+        0
+    }
 }
 
 /// SHA256 of each token block, seeded independently with the LoRA identity.

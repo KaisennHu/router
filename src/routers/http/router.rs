@@ -1299,7 +1299,7 @@ impl Router {
             policy.as_any().downcast_ref::<KvAwarePolicy>()
         {
             let receipt = kv_aware
-                .select_worker_with_receipt(&available, token_ids, lora_name, cache_salt)?;
+                .select_worker_with_receipt(&available, token_ids, lora_name, cache_salt, text)?;
             (receipt.worker_index, Some(receipt))
         } else {
             (
@@ -1417,6 +1417,7 @@ impl Router {
                             Some(prepared.tokenized.token_ids.as_ref()),
                             lora_name,
                             cache_salt,
+                            Some(text.as_str()),
                         )
                     });
                     Some(SelectedWorker { worker, kv_receipt })
@@ -3753,6 +3754,8 @@ mod tests {
                     kv_penalty_host: 0.8,
                     kv_penalty_external: 0.6,
                     kv_penalty_disk: 0.3,
+                    kv_affinity_ratio: 4.0,
+                    kv_occupancy_weight: 0.0,
                 }));
             let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
                 "messages": [{"role": "user", "content": "hello"}], "stream": streaming,
@@ -3817,6 +3820,8 @@ mod tests {
                 kv_penalty_host: 0.8,
                 kv_penalty_external: 0.6,
                 kv_penalty_disk: 0.3,
+                kv_affinity_ratio: 4.0,
+                kv_occupancy_weight: 0.0,
             }));
         router.retry_config.max_retries = 0;
         let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({

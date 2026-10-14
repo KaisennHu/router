@@ -208,6 +208,8 @@ impl PolicyRegistry {
                 kv_penalty_host,
                 kv_penalty_external,
                 kv_penalty_disk,
+                kv_affinity_ratio,
+                kv_occupancy_weight,
             } => Arc::new(KvAwarePolicy::new(CostParams {
                 router_temperature: *router_temperature,
                 transfer_credits: TransferCredits {
@@ -216,6 +218,8 @@ impl PolicyRegistry {
                     external: *kv_penalty_external,
                     disk: *kv_penalty_disk,
                 },
+                affinity_ratio: *kv_affinity_ratio,
+                occupancy_weight: *kv_occupancy_weight,
                 ..CostParams::default()
             })),
             PolicyConfig::PowerOfTwo { .. } => Arc::new(PowerOfTwoPolicy::new()),

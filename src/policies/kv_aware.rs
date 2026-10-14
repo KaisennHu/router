@@ -188,6 +188,16 @@ pub struct CostParams {
     pub router_temperature: f64,
     pub transfer_credits: TransferCredits,
     pub block_size: u32,
+    /// Affinity prior: stay on the candidate holding the deepest credited
+    /// prefix unless the cheapest alternative beats it by more than this
+    /// ratio. Values <= 1.0 disable the prior (pure cost choice).
+    pub affinity_ratio: f64,
+    /// Memory-pressure prior: add `occupancy_weight * ptoken * resident_tokens`
+    /// to each candidate's cost. Placing a large prefill on a worker already
+    /// holding many resident blocks risks evicting other sessions' prefixes —
+    /// the term prices that risk in the same units as prefill work. Zero
+    /// disables the term.
+    pub occupancy_weight: f64,
 }
 
 impl Default for CostParams {
@@ -196,6 +206,8 @@ impl Default for CostParams {
             router_temperature: 0.0,
             transfer_credits: TransferCredits::default(),
             block_size: 16,
+            affinity_ratio: 4.0,
+            occupancy_weight: 0.0,
         }
     }
 }
@@ -206,6 +218,9 @@ pub struct CandidateView<'a> {
     pub matches: &'a [TierMatch],
     pub load: LoadSample,
     pub input_tokens: usize,
+    /// Tier-penalty-weighted resident tokens the target already holds — a
+    /// relative memory-pressure signal for the occupancy term.
+    pub resident_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -336,13 +351,18 @@ impl Scorer for MultiplicativeScorer {
             || !params.router_temperature.is_finite()
             || params.router_temperature < 0.0
             || !params.transfer_credits.valid()
+            || !params.occupancy_weight.is_finite()
+            || params.occupancy_weight < 0.0
         {
             return Err(SelectionError::InvalidParams);
         }
         for (candidate, cost) in candidates.iter().zip(costs.iter_mut()) {
             let components = cost_components(candidate, params);
             let projected_batchsize = components.batchsize.saturating_add(1);
-            let contribution = components.ptoken as f64 * projected_batchsize as f64;
+            let contribution = components.ptoken as f64 * projected_batchsize as f64
+                + params.occupancy_weight
+                    * components.ptoken as f64
+                    * candidate.resident_tokens as f64;
             if !contribution.is_finite() {
                 return Err(SelectionError::NonFiniteCost);
             }
@@ -569,8 +589,97 @@ impl KvAwarePolicy {
         workers: &[Arc<dyn Worker>],
         token_ids: Option<&[u32]>,
     ) -> Option<usize> {
-        self.select_worker_with_receipt(workers, token_ids, None, None)
+        self.select_worker_with_receipt(workers, token_ids, None, None, None)
             .map(|receipt| receipt.worker_index)
+    }
+
+    /// Home candidate for the affinity prior: the one holding the deepest
+    /// credited prefix, i.e. the placement whose abandonment would force the
+    /// largest re-prefill. `None` when the prior is disabled or the deepest
+    /// credit is trivial — below one block, or below 5% of the request: a
+    /// residue that small is shared-prefix noise, not a session anchor, and
+    /// must not override a decisively cheaper candidate.
+    fn affinity_home(
+        credited: &[f64],
+        input_tokens: usize,
+        params: &CostParams,
+    ) -> Option<(usize, f64)> {
+        if params.affinity_ratio <= 1.0 || credited.is_empty() {
+            return None;
+        }
+        let (home, home_credit) = credited
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.total_cmp(right.1))?;
+        let floor = f64::from(params.block_size).max(input_tokens as f64 * 0.05);
+        if *home_credit < floor {
+            return None;
+        }
+        Some((home, *home_credit))
+    }
+
+    /// Picker result with the affinity prior applied, plus whether the prior
+    /// overrode the pure cost choice. The home prefix is kept unless the
+    /// cheapest candidate beats it by more than `affinity_ratio`: a transient
+    /// load spike must not trade a grown prefix for one request's queue
+    /// position, because the abandoned blocks are dead weight and the whole
+    /// prefix is recomputed elsewhere.
+    fn pick_with_affinity(
+        &self,
+        costs: &[f64],
+        credited: &[f64],
+        input_tokens: usize,
+    ) -> Option<(usize, bool)> {
+        let picked = self.picker.pick(costs)?;
+        let Some((home, home_credit)) = Self::affinity_home(credited, input_tokens, &self.params)
+        else {
+            return Some((picked, false));
+        };
+        let (best, best_cost) = costs
+            .iter()
+            .enumerate()
+            .min_by(|left, right| left.1.total_cmp(right.1))?;
+        if credited[best] >= home_credit {
+            // The cost favourite already holds at least the home's reuse
+            // value; nothing to protect.
+            return Some((picked, false));
+        }
+        if costs[home] > self.params.affinity_ratio * best_cost {
+            // Migration guard: the alternative is decisively cheaper.
+            return Some((picked, false));
+        }
+        Some((home, true))
+    }
+
+    fn log_decision(
+        session: Option<&str>,
+        picked: usize,
+        mode: &str,
+        costs: &[f64],
+        credited: &[f64],
+        resident: &[f64],
+        decision: &CostDecision,
+    ) {
+        let candidates = costs
+            .iter()
+            .zip(credited.iter())
+            .zip(resident.iter())
+            .enumerate()
+            .map(|(index, ((cost, credit), resident))| {
+                format!("{index}:cost={cost:.0}/credit={credit:.0}/occ={resident:.0}")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::info!(
+            session = %session.unwrap_or(""),
+            picked,
+            mode = %mode,
+            target = %decision.target.instance_id,
+            cost = decision.cost,
+            ptoken = decision.components.ptoken,
+            batchsize = decision.components.batchsize,
+            "KVSEL {candidates}"
+        );
     }
 
     pub fn select_worker_with_receipt(
@@ -579,6 +688,7 @@ impl KvAwarePolicy {
         token_ids: Option<&[u32]>,
         lora_name: Option<&str>,
         cache_salt: Option<&str>,
+        session: Option<&str>,
     ) -> Option<KvSelectionReceipt> {
         let healthy = get_healthy_worker_indices(workers);
         if healthy.is_empty() {
@@ -642,16 +752,31 @@ impl KvAwarePolicy {
                 // as the live batch-size floor while the richer slot manager
                 // additionally carries KV-credited prefill tokens.
                 load.active_requests = load.active_requests.max(workers[worker_index].load());
+                // Tier-penalty-weighted resident tokens: host residency also
+                // consumes the worker's offload budget, so it counts at its
+                // transfer credit.
+                let device_blocks = binding
+                    .matches
+                    .resident_blocks(&binding.target, StorageTier::Device);
+                let host_blocks = binding
+                    .matches
+                    .resident_blocks(&binding.target, StorageTier::HostPinned);
+                let resident_tokens = ((device_blocks as f64
+                    + host_blocks as f64 * base_params.transfer_credits.host_pinned)
+                    * f64::from(binding.block_size)) as u64;
                 CandidateView {
                     target: &binding.target,
                     matches,
                     load,
                     input_tokens,
+                    resident_tokens,
                 }
             })
             .collect();
 
         let mut costs = vec![0.0; candidates.len()];
+        let mut credited = vec![0.0; candidates.len()];
+        let mut resident = vec![0.0; candidates.len()];
         let mut components = vec![CostComponents::default(); candidates.len()];
         let mut indices_by_identity: HashMap<Option<CacheKey>, Vec<usize>> = HashMap::new();
         for (index, binding) in bindings.iter().enumerate() {
@@ -677,15 +802,19 @@ impl KvAwarePolicy {
                 .zip(identity_candidates.iter())
             {
                 costs[candidate_index] = cost;
+                credited[candidate_index] = credited_tokens(candidate, &params);
+                resident[candidate_index] = candidate.resident_tokens as f64;
                 components[candidate_index] = cost_components(candidate, &params);
             }
         }
 
         // Zero work remains possible for token-less requests.
         // Preserve KV preference, breaking equal-work ties by projected load.
-        let picked = if costs.iter().all(|cost| *cost == 0.0)
-            || (base_params.router_temperature <= 0.0 && costs.contains(&0.0))
-        {
+        let zero_cost = costs.iter().all(|cost| *cost == 0.0)
+            || (base_params.router_temperature <= 0.0 && costs.contains(&0.0));
+        let mut mode = "cost";
+        let picked = if zero_cost {
+            mode = "zero_tiebreak";
             if token_ids.is_none() {
                 // HTTP pools do not expose token IDs. Degrade to live load
                 // instead of deterministically concentrating on worker zero.
@@ -704,20 +833,29 @@ impl KvAwarePolicy {
                     .map(|(index, _)| index)
             }
         } else {
-            self.picker.pick(&costs)
+            let (picked, affinity_stay) =
+                self.pick_with_affinity(&costs, &credited, input_tokens)?;
+            if affinity_stay {
+                mode = "affinity_stay";
+            }
+            Some(picked)
         }?;
         let worker_index = *healthy.get(picked)?;
         let target = bindings.get(picked)?.target.clone();
         let mut selected_params = base_params;
         selected_params.block_size = bindings[picked].block_size;
+        let decision = CostDecision {
+            target: target.clone(),
+            cost: costs[picked],
+            components: components[picked],
+        };
+        Self::log_decision(
+            session, picked, mode, &costs, &credited, &resident, &decision,
+        );
         Some(KvSelectionReceipt {
             worker_index,
             new_prefill_tokens: request_prefill_tokens(&candidates[picked], &selected_params),
-            decision: CostDecision {
-                target,
-                cost: costs[picked],
-                components: components[picked],
-            },
+            decision,
         })
     }
 
@@ -726,7 +864,7 @@ impl KvAwarePolicy {
         workers: &[Arc<dyn Worker>],
         token_ids: Option<&[u32]>,
     ) -> Option<CostDecision> {
-        self.select_worker_with_receipt(workers, token_ids, None, None)
+        self.select_worker_with_receipt(workers, token_ids, None, None, None)
             .map(|receipt| receipt.decision)
     }
 }
@@ -860,6 +998,7 @@ mod tests {
                 active_requests: 3,
             },
             input_tokens: 160,
+            resident_tokens: 0,
         };
         let params = CostParams {
             block_size: 16,
@@ -891,6 +1030,7 @@ mod tests {
             matches: &matches,
             load: LoadSample::default(),
             input_tokens: 160,
+            resident_tokens: 0,
         };
         assert_eq!(
             cost_components(&candidate, &CostParams::default()).ptoken,
@@ -909,6 +1049,7 @@ mod tests {
                 active_requests: 2,
             },
             input_tokens: 0,
+            resident_tokens: 0,
         };
         assert_eq!(
             cost_components(&candidate, &CostParams::default()).ptoken,
@@ -934,6 +1075,7 @@ mod tests {
                 matches: &hits,
                 load: LoadSample::default(),
                 input_tokens: tokens,
+                resident_tokens: 0,
             };
             assert_eq!(
                 credited_tokens(&candidate, &params),
@@ -964,6 +1106,7 @@ mod tests {
             matches: &hits,
             load: LoadSample::default(),
             input_tokens: 48,
+            resident_tokens: 0,
         };
         assert_eq!(request_prefill_tokens(&candidate, &params), 1);
     }
@@ -988,7 +1131,7 @@ mod tests {
         let prefill = policy.target_for_worker(workers[2].as_ref());
         slots.begin_prefill(&prefill, 8);
         let receipt = policy
-            .select_worker_with_receipt(&workers, None, None, None)
+            .select_worker_with_receipt(&workers, None, None, None, None)
             .unwrap();
         assert_eq!(receipt.worker_index, 1);
         assert_eq!(receipt.decision.cost, 0.0);
@@ -1030,7 +1173,7 @@ mod tests {
         }
         for (tokens, expected_prefill) in [(&ids[..0], 0), (&ids[..], 16)] {
             let receipt = policy
-                .select_worker_with_receipt(&workers, Some(tokens), None, None)
+                .select_worker_with_receipt(&workers, Some(tokens), None, None, None)
                 .unwrap();
             assert_eq!(receipt.worker_index, 1);
             assert_eq!(receipt.new_prefill_tokens, expected_prefill);
@@ -1049,6 +1192,7 @@ mod tests {
                 active_requests: 2,
             },
             input_tokens: 10,
+            resident_tokens: 0,
         };
         let mut costs = [3.0];
         MultiplicativeScorer
@@ -1071,12 +1215,14 @@ mod tests {
                     ..LoadSample::default()
                 },
                 input_tokens: 40_000,
+                resident_tokens: 0,
             },
             CandidateView {
                 target: &cold,
                 matches: &[],
                 load: LoadSample::default(),
                 input_tokens: 40_000,
+                resident_tokens: 0,
             },
         ];
         let mut costs = [0.0; 2];
@@ -1085,6 +1231,47 @@ mod tests {
             .unwrap();
         assert_eq!(costs, [1024.0, 40_000.0]);
         assert_eq!(TemperaturePicker::new(0.0).pick(&costs), Some(0));
+    }
+
+    #[test]
+    fn occupancy_weight_prices_memory_pressure_into_cost() {
+        let busy = target("busy", 0);
+        let fresh = target("fresh", 0);
+        let candidates = [
+            CandidateView {
+                target: &busy,
+                matches: &[],
+                load: LoadSample::default(),
+                input_tokens: 40_000,
+                resident_tokens: 120_000,
+            },
+            CandidateView {
+                target: &fresh,
+                matches: &[],
+                load: LoadSample::default(),
+                input_tokens: 40_000,
+                resident_tokens: 10_000,
+            },
+        ];
+        let mut costs = [0.0; 2];
+        MultiplicativeScorer
+            .score(
+                &candidates,
+                &CostParams {
+                    occupancy_weight: 1e-5,
+                    ..CostParams::default()
+                },
+                &mut costs,
+            )
+            .unwrap();
+        // 40k * 1 + 1e-5 * 40k * 120k = 40k + 48k, versus 40k + 4k.
+        assert_eq!(costs, [88_000.0, 44_000.0]);
+        // Zero weight leaves the pure cost model untouched.
+        let mut costs = [0.0; 2];
+        MultiplicativeScorer
+            .score(&candidates, &CostParams::default(), &mut costs)
+            .unwrap();
+        assert_eq!(costs, [40_000.0, 40_000.0]);
     }
 
     #[test]
@@ -1098,6 +1285,7 @@ mod tests {
                 ..LoadSample::default()
             },
             input_tokens: 1,
+            resident_tokens: 0,
         };
         assert_eq!(
             cost_components(&candidate, &CostParams::default()).batchsize,
@@ -1112,6 +1300,71 @@ mod tests {
 
     #[test]
     fn cache_hit_offsets_load_until_cold_prefill_becomes_cheaper() {
+        let index = Arc::new(crate::kv_index::KvBlockIndexer::new());
+        let policy = policy_with_index(
+            index.clone(),
+            CostParams {
+                block_size: 2,
+                // Pure-cost property of the scorer; the affinity prior has
+                // its own tests below.
+                affinity_ratio: 0.0,
+                ..CostParams::default()
+            },
+        );
+        let warm = target("http://warm", 0);
+        policy.register_target("http://warm", warm.clone());
+        policy.register_target("http://cold", target("http://cold", 0));
+        let ids = [1_u32, 2, 3, 4, 5, 6];
+        let hashes = KvAwarePolicy::local_hashes(&ids, 2);
+        index.store(
+            0,
+            crate::kv_index::ResidencyOwner::Worker {
+                source: warm.instance_id.clone(),
+                dp_rank: 0,
+                incarnation: 0,
+            },
+            StorageTier::Device,
+            None,
+            &[
+                (Arc::from("seq-1"), hashes[0].clone()),
+                (Arc::from("seq-2"), hashes[1].clone()),
+            ],
+        );
+        let workers: Vec<Arc<dyn Worker>> = vec![
+            Arc::new(BasicWorker::new("http://warm".into(), WorkerType::Regular)),
+            Arc::new(BasicWorker::new("http://cold".into(), WorkerType::Regular)),
+        ];
+        let receipt = policy
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
+            .unwrap();
+        assert_eq!(receipt.worker_index, 0);
+        assert_eq!(receipt.new_prefill_tokens, 2);
+        assert_eq!(receipt.decision.cost, 2.0);
+        assert_eq!(receipt.decision.components.batchsize, 0);
+
+        workers[0].increment_load();
+        let receipt = policy
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
+            .unwrap();
+        assert_eq!(receipt.worker_index, 0);
+        assert_eq!(receipt.decision.cost, 4.0);
+        assert_eq!(receipt.decision.components.batchsize, 1);
+
+        workers[0].increment_load();
+        workers[0].increment_load();
+        let receipt = policy
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
+            .unwrap();
+        assert_eq!(receipt.worker_index, 1);
+        assert_eq!(receipt.decision.cost, 6.0);
+        assert_eq!(receipt.decision.components.batchsize, 0);
+    }
+
+    /// Two workers, warm holds the first 4 of 6 tokens (block_size 2). The
+    /// scorer alone would move to cold once warm's projected batchsize makes
+    /// it costlier (2*(bs+1) > 6); the affinity prior must keep warm until
+    /// the cheapest alternative is decisively better (ratio 4).
+    fn affinity_fixture() -> (KvAwarePolicy, Vec<Arc<dyn Worker>>, [u32; 6]) {
         let index = Arc::new(crate::kv_index::KvBlockIndexer::new());
         let policy = policy_with_index(
             index.clone(),
@@ -1143,30 +1396,102 @@ mod tests {
             Arc::new(BasicWorker::new("http://warm".into(), WorkerType::Regular)),
             Arc::new(BasicWorker::new("http://cold".into(), WorkerType::Regular)),
         ];
+        (policy, workers, ids)
+    }
+
+    #[test]
+    fn affinity_prior_keeps_home_under_load_spike() {
+        let (policy, workers, ids) = affinity_fixture();
+        for _ in 0..3 {
+            workers[0].increment_load();
+        }
+        // Pure cost prefers cold (6 < 8); the prior keeps warm because
+        // abandoning its 4-token prefix for one queue slot is a worse trade.
         let receipt = policy
-            .select_worker_with_receipt(&workers, Some(&ids), None, None)
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
             .unwrap();
         assert_eq!(receipt.worker_index, 0);
+        assert_eq!(receipt.decision.cost, 8.0);
         assert_eq!(receipt.new_prefill_tokens, 2);
-        assert_eq!(receipt.decision.cost, 2.0);
-        assert_eq!(receipt.decision.components.batchsize, 0);
+    }
 
-        workers[0].increment_load();
+    #[test]
+    fn affinity_prior_migrates_when_guard_is_exceeded() {
+        let (policy, workers, ids) = affinity_fixture();
+        for _ in 0..12 {
+            workers[0].increment_load();
+        }
+        // 2 * 13 = 26 > 4 * 6 = 24: cold is decisively cheaper, migrate.
         let receipt = policy
-            .select_worker_with_receipt(&workers, Some(&ids), None, None)
-            .unwrap();
-        assert_eq!(receipt.worker_index, 0);
-        assert_eq!(receipt.decision.cost, 4.0);
-        assert_eq!(receipt.decision.components.batchsize, 1);
-
-        workers[0].increment_load();
-        workers[0].increment_load();
-        let receipt = policy
-            .select_worker_with_receipt(&workers, Some(&ids), None, None)
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
             .unwrap();
         assert_eq!(receipt.worker_index, 1);
         assert_eq!(receipt.decision.cost, 6.0);
-        assert_eq!(receipt.decision.components.batchsize, 0);
+        assert_eq!(receipt.new_prefill_tokens, 6);
+    }
+
+    #[test]
+    fn affinity_prior_disabled_at_ratio_one() {
+        let (mut policy, workers, ids) = affinity_fixture();
+        policy.params.affinity_ratio = 1.0;
+        for _ in 0..3 {
+            workers[0].increment_load();
+        }
+        let receipt = policy
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
+            .unwrap();
+        assert_eq!(receipt.worker_index, 1);
+        assert_eq!(receipt.decision.cost, 6.0);
+    }
+
+    #[test]
+    fn affinity_prior_ignores_trivial_credit_residue() {
+        // Same shape as affinity_fixture but the request is 200 tokens and
+        // warm still holds only the first 4: that residue is shared-prefix
+        // noise, under the 5%-of-request floor, so the prior must stand
+        // aside and let pure cost pick the cheaper cold worker.
+        let index = Arc::new(crate::kv_index::KvBlockIndexer::new());
+        let policy = policy_with_index(
+            index.clone(),
+            CostParams {
+                block_size: 2,
+                ..CostParams::default()
+            },
+        );
+        let warm = target("http://warm", 0);
+        policy.register_target("http://warm", warm.clone());
+        policy.register_target("http://cold", target("http://cold", 0));
+        let ids: Vec<u32> = (1..=200).collect();
+        let hashes = KvAwarePolicy::local_hashes(&ids, 2);
+        index.store(
+            0,
+            crate::kv_index::ResidencyOwner::Worker {
+                source: warm.instance_id.clone(),
+                dp_rank: 0,
+                incarnation: 0,
+            },
+            StorageTier::Device,
+            None,
+            &[
+                (Arc::from("seq-1"), hashes[0].clone()),
+                (Arc::from("seq-2"), hashes[1].clone()),
+            ],
+        );
+        let workers: Vec<Arc<dyn Worker>> = vec![
+            Arc::new(BasicWorker::new("http://warm".into(), WorkerType::Regular)),
+            Arc::new(BasicWorker::new("http://cold".into(), WorkerType::Regular)),
+        ];
+        for _ in 0..3 {
+            workers[0].increment_load();
+        }
+        // Warm's 196*4 = 784 is still under the 4x guard (800), so without
+        // the floor the prior would keep warm; with it cold wins on cost.
+        let receipt = policy
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
+            .unwrap();
+        assert_eq!(receipt.worker_index, 1);
+        assert_eq!(receipt.decision.cost, 200.0);
+        assert_eq!(receipt.new_prefill_tokens, 200);
     }
 
     #[test]
@@ -1231,7 +1556,7 @@ mod tests {
 
         assert_eq!(
             policy
-                .select_worker_with_receipt(&workers, Some(&ids), Some("adapter"), None)
+                .select_worker_with_receipt(&workers, Some(&ids), Some("adapter"), None, None)
                 .map(|receipt| receipt.worker_index),
             Some(1)
         );
@@ -1283,7 +1608,7 @@ mod tests {
 
         assert_eq!(
             policy
-                .select_worker_with_receipt(&workers, Some(&ids), None, Some("tenant-salt"),)
+                .select_worker_with_receipt(&workers, Some(&ids), None, Some("tenant-salt"), None,)
                 .map(|receipt| receipt.worker_index),
             Some(1)
         );
@@ -1294,6 +1619,7 @@ mod tests {
                     Some(&ids),
                     None,
                     Some("tenant-salt"),
+                    None,
                 )
                 .unwrap()
                 .new_prefill_tokens,
@@ -1359,7 +1685,7 @@ mod tests {
         }
 
         let receipt = policy
-            .select_worker_with_receipt(&workers, Some(&ids), None, None)
+            .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
             .unwrap();
         assert_eq!(receipt.worker_index, 0);
         assert_eq!(receipt.decision.target, first);

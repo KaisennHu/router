@@ -687,6 +687,17 @@ pub enum PolicyConfig {
         kv_penalty_external: f64,
         #[serde(default = "default_kv_penalty_disk")]
         kv_penalty_disk: f64,
+        /// Affinity prior: keep the worker holding the deepest credited
+        /// prefix unless the cheapest alternative beats its cost by more
+        /// than this ratio. Values <= 1.0 disable the prior.
+        #[serde(default = "default_kv_affinity_ratio")]
+        kv_affinity_ratio: f64,
+        /// Occupancy pressure: adds `weight * prefill_tokens *
+        /// resident_tokens` to each candidate's cost, deterring large
+        /// prefills from workers whose KV memory is already full. Zero
+        /// disables the term.
+        #[serde(default = "default_kv_occupancy_weight")]
+        kv_occupancy_weight: f64,
     },
 
     #[serde(rename = "power_of_two")]
@@ -729,6 +740,14 @@ fn default_kv_penalty_external() -> f64 {
 
 fn default_kv_penalty_disk() -> f64 {
     0.3
+}
+
+fn default_kv_affinity_ratio() -> f64 {
+    4.0
+}
+
+fn default_kv_occupancy_weight() -> f64 {
+    0.0
 }
 
 /// Service discovery configuration

@@ -39,6 +39,8 @@ impl PolicyFactory {
                 kv_penalty_host,
                 kv_penalty_external,
                 kv_penalty_disk,
+                kv_affinity_ratio,
+                kv_occupancy_weight,
             } => Arc::new(KvAwarePolicy::new(CostParams {
                 router_temperature: *router_temperature,
                 transfer_credits: TransferCredits {
@@ -47,6 +49,8 @@ impl PolicyFactory {
                     external: *kv_penalty_external,
                     disk: *kv_penalty_disk,
                 },
+                affinity_ratio: *kv_affinity_ratio,
+                occupancy_weight: *kv_occupancy_weight,
                 ..CostParams::default()
             })),
             PolicyConfig::ConsistentHash { virtual_nodes: _ } => {
@@ -108,6 +112,8 @@ mod tests {
             kv_penalty_host: 0.8,
             kv_penalty_external: 0.6,
             kv_penalty_disk: 0.3,
+            kv_affinity_ratio: 4.0,
+            kv_occupancy_weight: 0.0,
         });
         assert_eq!(policy.name(), "kv_aware");
 

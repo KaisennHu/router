@@ -590,6 +590,35 @@ impl KvBlockIndexer {
         }
         matches
     }
+
+    /// Distinct block observations `target` holds in `tier` across all shards.
+    /// Matches the target by source identity and rank, ignoring incarnation:
+    /// a restart clears the old incarnation's counts, so at most one
+    /// incarnation's observations are live. Pool copies (`CacheOwner`) live in
+    /// the shared pool, not on the worker, and are excluded. Aliases of one
+    /// logical block each count once, so this is an upper bound on physical
+    /// blocks — acceptable for a relative pressure signal.
+    pub fn resident_blocks(&self, target: &RoutableTarget, tier: StorageTier) -> u64 {
+        self.shards
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .counts
+                    .iter()
+                    .filter(|counts| {
+                        counts.key().1 == tier
+                            && matches!(
+                                &counts.key().0,
+                                ResidencyOwner::Worker { source, dp_rank, .. }
+                                    if *source == target.instance_id && *dp_rank == target.dp_rank
+                            )
+                    })
+                    .map(|counts| u64::try_from(*counts.value()).unwrap_or(u64::MAX))
+                    .sum::<u64>()
+            })
+            .sum()
+    }
 }
 
 impl Default for KvBlockIndexer {
@@ -601,6 +630,10 @@ impl Default for KvBlockIndexer {
 impl crate::kv_index::TieredMatchProvider for KvBlockIndexer {
     fn find_tiered_matches(&self, query: &MatchQuery) -> Vec<TierMatch> {
         self.find_matches(query)
+    }
+
+    fn resident_blocks(&self, target: &RoutableTarget, tier: StorageTier) -> u64 {
+        KvBlockIndexer::resident_blocks(self, target, tier)
     }
 }
 
@@ -708,6 +741,50 @@ mod tests {
         );
         assert_eq!(idx.find_matches(&query(&["y"], &tiers)).len(), 1);
         assert_eq!(idx.find_matches(&query(&["x"], &tiers)).len(), 2);
+    }
+
+    #[test]
+    fn resident_blocks_counts_per_target_and_tier() {
+        let idx = KvBlockIndexer::new();
+        let a = worker("a");
+        let b = worker("b");
+        let dev = StorageTier::Device;
+        let host = StorageTier::HostPinned;
+        // Two aliases of one logical block plus a second block for `a`.
+        idx.store(
+            0,
+            a.clone(),
+            dev,
+            None,
+            &[(h("a1"), h("x")), (h("a2"), h("x"))],
+        );
+        idx.store(0, a.clone(), dev, None, &[(h("a3"), h("y"))]);
+        idx.store(0, a.clone(), host, None, &[(h("a4"), h("z"))]);
+        // `b` device observations in a different shard group.
+        idx.store(1, b.clone(), dev, None, &[(h("b1"), h("x"))]);
+        // Pool copies attributed to `a` live in the pool, not on the worker.
+        idx.store(
+            0,
+            pool("shared", "a"),
+            StorageTier::External,
+            None,
+            &[(h("p1"), h("x"))],
+        );
+
+        let a_target = a.target();
+        let b_target = b.target();
+        assert_eq!(idx.resident_blocks(&a_target, dev), 3);
+        assert_eq!(idx.resident_blocks(&a_target, host), 1);
+        assert_eq!(idx.resident_blocks(&b_target, dev), 1);
+        assert_eq!(idx.resident_blocks(&b_target, host), 0);
+
+        // Removal decrements one observation; a worker clear drops the owner.
+        idx.remove(0, &a, dev, &[h("a1")]);
+        assert_eq!(idx.resident_blocks(&a_target, dev), 2);
+        idx.clear(&a, ClearScope::Worker);
+        assert_eq!(idx.resident_blocks(&a_target, dev), 0);
+        assert_eq!(idx.resident_blocks(&a_target, host), 0);
+        assert_eq!(idx.resident_blocks(&b_target, dev), 1);
     }
 
     #[test]

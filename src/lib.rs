@@ -46,6 +46,8 @@ struct Router {
     kv_penalty_host: f64,
     kv_penalty_external: f64,
     kv_penalty_disk: f64,
+    kv_affinity_ratio: f64,
+    kv_occupancy_weight: f64,
     worker_startup_timeout_secs: u64,
     worker_startup_check_interval: u64,
     cache_threshold: f32,
@@ -140,6 +142,8 @@ impl Router {
                     kv_penalty_host: self.kv_penalty_host,
                     kv_penalty_external: self.kv_penalty_external,
                     kv_penalty_disk: self.kv_penalty_disk,
+                    kv_affinity_ratio: self.kv_affinity_ratio,
+                    kv_occupancy_weight: self.kv_occupancy_weight,
                 },
                 PolicyType::PowerOfTwo => ConfigPolicyConfig::PowerOfTwo {
                     load_check_interval_secs: 5, // Default value
@@ -347,6 +351,8 @@ impl Router {
         kv_penalty_host = 0.8,
         kv_penalty_external = 0.6,
         kv_penalty_disk = 0.3,
+        kv_affinity_ratio = 4.0,
+        kv_occupancy_weight = 0.0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -418,6 +424,8 @@ impl Router {
         kv_penalty_host: f64,
         kv_penalty_external: f64,
         kv_penalty_disk: f64,
+        kv_affinity_ratio: f64,
+        kv_occupancy_weight: f64,
     ) -> PyResult<Self> {
         if wasm_middleware_sha256
             .as_deref()
@@ -443,6 +451,8 @@ impl Router {
             kv_penalty_host,
             kv_penalty_external,
             kv_penalty_disk,
+            kv_affinity_ratio,
+            kv_occupancy_weight,
             worker_startup_timeout_secs,
             worker_startup_check_interval,
             cache_threshold,

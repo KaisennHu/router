@@ -567,9 +567,11 @@ fn evicted_worker_does_not_beat_busy_worker_with_reusable_gpu_prefix() {
     workers[0].increment_load();
     workers[1].increment_load();
     let selected = policy
-        .select_worker_with_receipt(&workers, Some(&ids), None, None)
+        .select_worker_with_receipt(&workers, Some(&ids), None, None, None)
         .unwrap();
     assert_eq!(selected.worker_index, 1);
     assert_eq!(selected.new_prefill_tokens, 1);
-    assert_eq!(selected.decision.cost, 1.0);
+    // 1 uncached token x (1 in-flight request + 1) = 2: the projected
+    // batchsize floors at the live Worker::load.
+    assert_eq!(selected.decision.cost, 2.0);
 }

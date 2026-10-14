@@ -194,6 +194,18 @@ struct CliArgs {
     #[arg(long, default_value_t = 0.3)]
     kv_penalty_disk: f64,
 
+    /// kv_aware affinity prior: keep the worker with the deepest credited
+    /// prefix unless the cheapest alternative beats its cost by more than
+    /// this ratio. Values <= 1.0 disable the prior.
+    #[arg(long, default_value_t = 4.0)]
+    kv_affinity_ratio: f64,
+
+    /// kv_aware occupancy pressure: adds `weight * prefill_tokens *
+    /// resident_tokens` to each candidate's cost, deterring large prefills
+    /// from workers whose KV memory is already full. Zero disables it.
+    #[arg(long, default_value_t = 0.0)]
+    kv_occupancy_weight: f64,
+
     /// Maximum payload size in bytes
     #[arg(long, default_value_t = 536870912)] // 512MB
     max_payload_size: usize,
@@ -425,6 +437,8 @@ impl CliArgs {
                 kv_penalty_host: self.kv_penalty_host,
                 kv_penalty_external: self.kv_penalty_external,
                 kv_penalty_disk: self.kv_penalty_disk,
+                kv_affinity_ratio: self.kv_affinity_ratio,
+                kv_occupancy_weight: self.kv_occupancy_weight,
             },
             "power_of_two" => PolicyConfig::PowerOfTwo {
                 load_check_interval_secs: 5, // Default value
