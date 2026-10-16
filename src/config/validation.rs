@@ -647,24 +647,6 @@ impl ConfigValidator {
             return Ok(());
         }
 
-        if let RoutingMode::VllmPrefillDecode {
-            prefill_policy,
-            decode_policy,
-            ..
-        } = &config.mode
-        {
-            let effective_prefill = prefill_policy.as_ref().unwrap_or(&config.policy);
-            let effective_decode = decode_policy.as_ref().unwrap_or(&config.policy);
-            if matches!(effective_prefill, PolicyConfig::KvAware { .. })
-                || matches!(effective_decode, PolicyConfig::KvAware { .. })
-            {
-                return Err(ConfigError::IncompatibleConfig {
-                    reason: "kv_aware is supported only in regular mode, not PD disaggregation"
-                        .to_string(),
-                });
-            }
-        }
-
         // Check if service discovery is enabled for worker count validation.
         // This covers both K8s service discovery (config.discovery) and vLLM ZMQ
         // service discovery (VllmPrefillDecode { discovery_address: Some(_) }).
@@ -1178,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_kv_aware_for_disaggregated_pd_mode() {
+    fn test_accepts_kv_aware_for_disaggregated_pd_mode() {
         let config = RouterConfig::new(
             RoutingMode::VllmPrefillDecode {
                 prefill_urls: vec![("http://prefill:8000".to_string(), None)],
@@ -1195,8 +1177,7 @@ mod tests {
             },
         );
 
-        let error = ConfigValidator::validate(&config).unwrap_err();
-        assert!(error.to_string().contains("not PD disaggregation"));
+        ConfigValidator::validate(&config).unwrap();
     }
 
     #[test]

@@ -119,7 +119,7 @@ struct CliArgs {
     #[arg(long, num_args = 0..)]
     worker_urls: Vec<String>,
 
-    /// Load balancing policy to use. kv_aware is supported only in regular mode, not PD disaggregation.
+    /// Load balancing policy to use. kv_aware uses stage-specific load profiles in PD mode.
     #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "kv_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
     policy: String,
 
@@ -146,12 +146,12 @@ struct CliArgs {
     #[arg(long, action = ArgAction::Append)]
     decode: Vec<String>,
 
-    /// Specific policy for prefill nodes in PD mode. kv_aware is not supported in PD mode.
-    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+    /// Specific policy for prefill nodes in PD mode. kv_aware uses the prefill load profile.
+    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "kv_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
     prefill_policy: Option<String>,
 
-    /// Specific policy for decode nodes in PD mode. kv_aware is not supported in PD mode.
-    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+    /// Specific policy for decode nodes in PD mode. kv_aware uses active and pending decode occupancy.
+    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "kv_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
     decode_policy: Option<String>,
 
     /// Timeout in seconds for worker startup

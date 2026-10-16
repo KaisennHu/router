@@ -16,8 +16,24 @@ pub trait TieredMatchProvider: Send + Sync {
     fn find_tiered_matches(&self, query: &MatchQuery) -> Vec<TierMatch>;
 }
 
+/// Immutable P work estimate from one placement snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefillWorkEstimate {
+    pub new_prefill_tokens: u64,
+    pub placement_verified: bool,
+}
+
 /// Optional operations used by adapters with tokenized requests and KV discovery.
 pub trait KvAwareOps: Send + Sync {
+    /// P/D uses the same placement/credit contract as colocated routing,
+    /// but accounts token backlog in the shared P/D admission manager.
+    fn estimate_prefill_work(
+        &self,
+        worker: &dyn Worker,
+        tokens: &[u32],
+        credit: bool,
+    ) -> PrefillWorkEstimate;
+    fn pick_prefill(&self, costs: &[f64], occupancy: &[usize]) -> Option<usize>;
     fn register_worker(
         &self,
         worker: &dyn Worker,
@@ -643,6 +659,30 @@ impl KvAwarePolicy {
         crate::kv_index::local_block_hash_strings(token_ids, block_size, lora_name)
     }
 
+    fn placement_matches(
+        binding: &TargetBinding,
+        token_ids: Option<&[u32]>,
+        lora_name: Option<&str>,
+        enabled: bool,
+    ) -> Vec<TierMatch> {
+        let local_hashes = if enabled {
+            token_ids
+                .map(|ids| Self::local_hashes_with_lora(ids, binding.block_size, lora_name))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if local_hashes.is_empty() {
+            Vec::new()
+        } else {
+            binding.matches.find_tiered_matches(&MatchQuery {
+                group_idx: 0,
+                local_hashes,
+                tiers_of_interest: Self::tiers_of_interest(),
+            })
+        }
+    }
+
     pub fn select_worker_with_token_ids(
         &self,
         workers: &[Arc<dyn Worker>],
@@ -679,22 +719,7 @@ impl KvAwarePolicy {
             if matches_by_identity.contains_key(&identity) {
                 continue;
             }
-            let local_hashes = if placement_enabled {
-                token_ids
-                    .map(|ids| Self::local_hashes_with_lora(ids, binding.block_size, lora_name))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let matches = if local_hashes.is_empty() {
-                Vec::new()
-            } else {
-                binding.matches.find_tiered_matches(&MatchQuery {
-                    group_idx: 0,
-                    local_hashes,
-                    tiers_of_interest: Self::tiers_of_interest(),
-                })
-            };
+            let matches = Self::placement_matches(binding, token_ids, lora_name, placement_enabled);
             matches_by_identity.insert(identity, matches);
         }
 
@@ -836,6 +861,50 @@ impl LoadBalancingPolicy for KvAwarePolicy {
 }
 
 impl KvAwareOps for KvAwarePolicy {
+    fn estimate_prefill_work(
+        &self,
+        worker: &dyn Worker,
+        tokens: &[u32],
+        credit: bool,
+    ) -> PrefillWorkEstimate {
+        let binding = self.binding_for_worker(worker);
+        let verified = credit && binding.cache_key.is_some();
+        let mut params = self.params;
+        params.block_size = binding.block_size;
+        let matches: Vec<_> = Self::placement_matches(&binding, Some(tokens), None, verified)
+            .into_iter()
+            .filter(|hit| hit.target == binding.target)
+            .collect();
+        let candidate = CandidateView {
+            target: &binding.target,
+            matches: &matches,
+            load: LoadSample::default(),
+            input_tokens: tokens.len(),
+        };
+        PrefillWorkEstimate {
+            new_prefill_tokens: request_prefill_tokens(&candidate, &params),
+            placement_verified: verified,
+        }
+    }
+
+    fn pick_prefill(&self, costs: &[f64], occupancy: &[usize]) -> Option<usize> {
+        if costs.len() != occupancy.len() || costs.iter().any(|cost| !cost.is_finite()) {
+            return None;
+        }
+        if self.params.router_temperature <= 0.0 {
+            costs
+                .iter()
+                .enumerate()
+                .min_by(|(li, left), (ri, right)| {
+                    left.total_cmp(right)
+                        .then_with(|| occupancy[*li].cmp(&occupancy[*ri]))
+                })
+                .map(|(index, _)| index)
+        } else {
+            self.picker.pick(costs)
+        }
+    }
+
     fn register_worker(
         &self,
         worker: &dyn Worker,
