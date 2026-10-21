@@ -1772,8 +1772,8 @@ impl VllmPDRouter {
 
     /// P/D chat on `grpc://` pools. The connector JSON is the same as on the
     /// HTTP path; it travels in `GenerateRequest.kv.kv_transfer_params` and
-    /// comes back in `FinishInfo.kv_transfer_params`. Dispatch is always
-    /// sequential: P finishes before D starts.
+    /// comes back in `FinishInfo.kv_transfer_params`. P finishes before D
+    /// starts, except in NIXL push mode once P's push identity is cached.
     async fn process_grpc_two_stage_chat(
         &self,
         request: crate::protocols::spec::ChatCompletionRequest,
@@ -1811,6 +1811,24 @@ impl VllmPDRouter {
             Ok(params) => params,
             Err(reason) => return (StatusCode::INTERNAL_SERVER_ERROR, reason).into_response(),
         };
+
+        if matches!(self.kv_connector, KvConnector::Nixl) {
+            if let Some(identity) = self.get_nixl_push_identity(&prefill_base_url, prefill_dp_rank)
+            {
+                let decode_params = Self::build_nixl_push_decode_params(&identity, &request_id);
+                return self
+                    .process_grpc_concurrent_chat(
+                        prepared,
+                        prefill_worker,
+                        decode_worker,
+                        request_id,
+                        prefill_params,
+                        decode_params,
+                        start_time,
+                    )
+                    .await;
+            }
+        }
 
         prefill_worker.increment_load();
         let prefill_result = self
@@ -1861,6 +1879,106 @@ impl VllmPDRouter {
             .await;
         decode_worker.decrement_load();
 
+        RouterMetrics::record_pd_request(path);
+        RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
+        RouterMetrics::record_pd_prefill_request(&prefill_base_url);
+        RouterMetrics::record_pd_decode_request(&decode_base_url);
+        if !response.status().is_success() {
+            RouterMetrics::record_pd_decode_error(&decode_base_url);
+        }
+        response
+    }
+
+    /// NIXL push over gRPC: P and D start together, and P writes KV into the
+    /// blocks D allocates for `request_id`. A failed leg cancels the other,
+    /// so neither worker waits for a transfer that never comes.
+    #[allow(clippy::too_many_arguments)]
+    async fn process_grpc_concurrent_chat(
+        &self,
+        prepared: crate::backend::PreparedChat,
+        prefill_worker: Arc<dyn Worker>,
+        decode_worker: Arc<dyn Worker>,
+        request_id: String,
+        prefill_params: Value,
+        decode_params: Value,
+        start_time: Instant,
+    ) -> Response {
+        let path = "/v1/chat/completions";
+        let prefill_base_url = prefill_worker.base_url().to_string();
+        let decode_base_url = decode_worker.base_url().to_string();
+        let fail = |response: Response, prefill_failed: bool| {
+            if prefill_failed {
+                RouterMetrics::record_pd_prefill_error(&prefill_base_url);
+            } else {
+                RouterMetrics::record_pd_decode_error(&decode_base_url);
+            }
+            RouterMetrics::record_pd_request(path);
+            RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
+            response
+        };
+
+        prefill_worker.increment_load();
+        decode_worker.increment_load();
+        let prefill = self.grpc_frontend.prefill(
+            prefill_worker.url(),
+            &prepared,
+            request_id.clone(),
+            &prefill_params,
+        );
+        let decode = self.grpc_frontend.dispatch_decode(
+            decode_worker.url(),
+            prepared.clone(),
+            request_id,
+            Some(decode_params),
+        );
+        tokio::pin!(prefill, decode);
+
+        let (prefill_kv, response) = tokio::select! {
+            prefill_result = &mut prefill => {
+                prefill_worker.decrement_load();
+                match prefill_result {
+                    Ok(kv) => {
+                        let response = decode.await;
+                        decode_worker.decrement_load();
+                        (kv, response)
+                    }
+                    Err(response) => {
+                        decode_worker.decrement_load();
+                        return fail(response, true);
+                    }
+                }
+            }
+            response = &mut decode => {
+                decode_worker.decrement_load();
+                if !response.status().is_success() {
+                    prefill_worker.decrement_load();
+                    return fail(response, false);
+                }
+                let prefill_result = prefill.await;
+                prefill_worker.decrement_load();
+                match prefill_result {
+                    Ok(kv) => (kv, response),
+                    Err(prefill_response) => {
+                        if let Some(task) = response
+                            .extensions()
+                            .get::<crate::backend::grpc::GrpcStreamTask>()
+                            .and_then(|task| task.take())
+                        {
+                            task.abort();
+                        }
+                        return fail(prefill_response, true);
+                    }
+                }
+            }
+        };
+
+        if let Some(kv) = prefill_kv {
+            self.maybe_cache_nixl_push_identity(
+                &prefill_base_url,
+                prefill_worker.dp_rank(),
+                &json!({ "kv_transfer_params": kv }),
+            );
+        }
         RouterMetrics::record_pd_request(path);
         RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
         RouterMetrics::record_pd_prefill_request(&prefill_base_url);

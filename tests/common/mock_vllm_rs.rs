@@ -9,6 +9,7 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -35,6 +36,7 @@ pub struct CapturedGrpcGenerate {
     pub unary: bool,
     /// `x-data-parallel-rank` request metadata.
     pub dp_rank: Option<String>,
+    pub received_at: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -45,6 +47,8 @@ pub struct MockVllmRs {
     pub failures_remaining: Arc<AtomicUsize>,
     /// Returned in `FinishInfo.kv_transfer_params`, as a P/D prefill engine does.
     pub finish_kv_transfer_params: Option<serde_json::Value>,
+    /// Wait before sending any output, as a long prefill would.
+    pub reply_delay: Duration,
 }
 
 impl Default for MockVllmRs {
@@ -55,6 +59,7 @@ impl Default for MockVllmRs {
             capture_limit: usize::MAX,
             failures_remaining: Arc::new(AtomicUsize::new(0)),
             finish_kv_transfer_params: None,
+            reply_delay: Duration::ZERO,
         }
     }
 }
@@ -183,6 +188,7 @@ impl Inference for MockVllmRs {
                         .map(|params| proto_struct_to_json(&params)),
                     unary: false,
                     dp_rank,
+                    received_at: Some(Instant::now()),
                 });
             }
         }
@@ -202,7 +208,9 @@ impl Inference for MockVllmRs {
             .finish_kv_transfer_params
             .as_ref()
             .map(|params| json_to_proto_struct(params).expect("JSON object"));
+        let reply_delay = self.reply_delay;
         tokio::spawn(async move {
+            tokio::time::sleep(reply_delay).await;
             let _ = tx
                 .send(Ok(GenerateResponse {
                     prompt_info: Some(PromptInfo {

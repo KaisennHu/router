@@ -224,6 +224,100 @@ async fn grpc_pd_sends_each_leg_its_dp_rank() {
     }
 }
 
+/// P's `FinishInfo` under `NixlPushConnector`: its push identity.
+fn push_kv() -> Value {
+    json!({
+        "do_remote_prefill": true,
+        "do_remote_decode": false,
+        "remote_engine_id": "P",
+        "remote_block_ids": [[7, 8]],
+        "remote_host": "prefill",
+        "remote_port": 5600,
+        "tp_size": 1,
+        "transfer_mode": "push",
+    })
+}
+
+fn push_decode_kv(request_id: &str) -> Value {
+    json!({
+        "do_remote_prefill": true,
+        "do_remote_decode": false,
+        "remote_engine_id": "P",
+        "remote_host": "prefill",
+        "remote_port": 5600,
+        "tp_size": 1,
+        "remote_request_id": request_id,
+    })
+}
+
+const PREFILL_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
+async fn push_pair() -> (MockVllmRsServer, MockVllmRsServer, VllmPDRouter) {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(push_kv()),
+        reply_delay: PREFILL_DELAY,
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    (prefill, decode, router)
+}
+
+#[tokio::test]
+async fn grpc_pd_nixl_push_dispatches_both_legs_once_identity_is_cached() {
+    let (prefill, decode, router) = push_pair().await;
+
+    for stream in [false, false, true] {
+        let response = router.route_chat(None, &chat(stream), None).await;
+        assert!(response.status().is_success(), "stream={stream}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("hello from worker"));
+    }
+
+    let (p, d) = (prefill.captured(), decode.captured());
+    assert_eq!((p.len(), d.len()), (3, 3));
+    for (i, (p, d)) in p.iter().zip(&d).enumerate() {
+        assert!(p.unary);
+        assert_eq!(p.request_id, d.request_id);
+        assert_eq!(
+            d.kv_transfer_params.as_ref(),
+            Some(&push_decode_kv(&d.request_id))
+        );
+        let gap = d.received_at.unwrap() - p.received_at.unwrap();
+        if i == 0 {
+            assert!(gap >= PREFILL_DELAY, "first request learns the identity");
+        } else {
+            assert!(gap < PREFILL_DELAY / 2, "request {i}: D waited {gap:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn grpc_pd_nixl_push_prefill_failure_fails_the_request() {
+    let (prefill, decode, router) = push_pair().await;
+    let warmup = router.route_chat(None, &chat(false), None).await;
+    assert!(warmup.status().is_success());
+    prefill.state.failures_remaining.store(1, Ordering::Relaxed);
+
+    let response = router.route_chat(None, &chat(true), None).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(decode.captured().len(), 2, "D was sent alongside P");
+    assert_eq!(
+        worker_counter("vllm_router_pd_prefill_errors_total", &prefill.grpc_url),
+        1.0
+    );
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        0.0
+    );
+}
+
 #[tokio::test]
 async fn grpc_pd_rejects_non_chat_routes_before_dispatch() {
     let prefill = MockVllmRsServer::spawn().await;
