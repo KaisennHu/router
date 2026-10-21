@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 use tonic::{transport::Server, Request, Response, Status};
+use vllm_router_rs::backend::convert::{json_to_proto_struct, proto_struct_to_json};
 use vllm_router_rs::backend::pb::{
     finish_info, generate_request,
     inference_server::{Inference, InferenceServer},
@@ -26,6 +27,14 @@ pub struct CapturedGrpcGenerate {
     pub had_text_prompt: bool,
     pub model: String,
     pub cache_salt: String,
+    pub request_id: String,
+    pub max_new_tokens: u32,
+    pub min_new_tokens: u32,
+    pub kv_transfer_params: Option<serde_json::Value>,
+    /// Unary `Generate` rather than `GenerateStream`.
+    pub unary: bool,
+    /// `x-data-parallel-rank` request metadata.
+    pub dp_rank: Option<String>,
 }
 
 #[derive(Clone)]
@@ -34,6 +43,8 @@ pub struct MockVllmRs {
     pub reply_text: String,
     pub capture_limit: usize,
     pub failures_remaining: Arc<AtomicUsize>,
+    /// Returned in `FinishInfo.kv_transfer_params`, as a P/D prefill engine does.
+    pub finish_kv_transfer_params: Option<serde_json::Value>,
 }
 
 impl Default for MockVllmRs {
@@ -43,6 +54,7 @@ impl Default for MockVllmRs {
             reply_text: "hello from worker".to_string(),
             capture_limit: usize::MAX,
             failures_remaining: Arc::new(AtomicUsize::new(0)),
+            finish_kv_transfer_params: None,
         }
     }
 }
@@ -103,6 +115,9 @@ impl Inference for MockVllmRs {
         request: Request<GenerateRequest>,
     ) -> Result<Response<GenerateResponse>, Status> {
         let mut stream = self.generate_stream(request).await?.into_inner();
+        if let Some(last) = self.captured.lock().unwrap().last_mut() {
+            last.unary = true;
+        }
         let mut text = String::new();
         let mut prompt_info = None;
         let mut finish = None;
@@ -135,6 +150,11 @@ impl Inference for MockVllmRs {
         &self,
         request: Request<GenerateRequest>,
     ) -> Result<Response<Self::GenerateStreamStream>, Status> {
+        let dp_rank = request
+            .metadata()
+            .get("x-data-parallel-rank")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let req = request.into_inner();
         let (token_ids, had_text_prompt) = match req.prompt {
             Some(generate_request::Prompt::TokenIds(TokenIds { ids })) => (ids, false),
@@ -144,11 +164,25 @@ impl Inference for MockVllmRs {
         {
             let mut captured = self.captured.lock().unwrap();
             if captured.len() < self.capture_limit {
+                let stopping = req.stopping.unwrap_or_default();
                 captured.push(CapturedGrpcGenerate {
                     token_ids: token_ids.clone(),
                     had_text_prompt,
                     model: req.model,
-                    cache_salt: req.kv.map(|kv| kv.cache_salt).unwrap_or_default(),
+                    cache_salt: req
+                        .kv
+                        .as_ref()
+                        .map(|kv| kv.cache_salt.clone())
+                        .unwrap_or_default(),
+                    request_id: req.request_id,
+                    max_new_tokens: stopping.max_new_tokens,
+                    min_new_tokens: stopping.min_new_tokens,
+                    kv_transfer_params: req
+                        .kv
+                        .and_then(|kv| kv.kv_transfer_params)
+                        .map(|params| proto_struct_to_json(&params)),
+                    unary: false,
+                    dp_rank,
                 });
             }
         }
@@ -164,6 +198,10 @@ impl Inference for MockVllmRs {
         let (tx, rx) = mpsc::channel(4);
         let reply = self.reply_text.clone();
         let n_prompt = token_ids.len() as u32;
+        let finish_kv = self
+            .finish_kv_transfer_params
+            .as_ref()
+            .map(|params| json_to_proto_struct(params).expect("JSON object"));
         tokio::spawn(async move {
             let _ = tx
                 .send(Ok(GenerateResponse {
@@ -185,6 +223,7 @@ impl Inference for MockVllmRs {
                         finish_info: Some(FinishInfo {
                             num_output_tokens: 3,
                             finish_reason: finish_info::FinishReason::Stop as i32,
+                            kv_transfer_params: finish_kv,
                             ..Default::default()
                         }),
                         ..Default::default()

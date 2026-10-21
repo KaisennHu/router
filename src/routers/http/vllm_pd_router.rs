@@ -64,6 +64,8 @@ pub struct VllmPDRouter {
     mooncake_prefill_info: Arc<Mutex<HashMap<String, MooncakePrefillInfo>>>,
     /// NIXL push identity per prefill base_url and dp_rank; never held across an await.
     nixl_prefill_info: RwLock<HashMap<String, HashMap<usize, Value>>>,
+    /// Tokenizer and tonic clients for `grpc://` prefill and decode pools.
+    grpc_frontend: crate::backend::EngineFrontend,
 }
 
 /// Transfer ID prefix used by MoRI-IO to correlate prefill and decode legs.
@@ -1276,6 +1278,13 @@ impl VllmPDRouter {
     ) -> Result<Response, PDRouterError> {
         debug!("ENTERED process_vllm_two_stage_request method");
         let start_time = Instant::now();
+        if crate::backend::is_grpc_url(prefill_worker.url()) {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                format!("gRPC P/D workers currently support /v1/chat/completions, not {path}"),
+            )
+                .into_response());
+        }
         if !original_request.is_object() {
             return Ok((
                 StatusCode::BAD_REQUEST,
@@ -1761,6 +1770,107 @@ impl VllmPDRouter {
         }
     }
 
+    /// P/D chat on `grpc://` pools. The connector JSON is the same as on the
+    /// HTTP path; it travels in `GenerateRequest.kv.kv_transfer_params` and
+    /// comes back in `FinishInfo.kv_transfer_params`. Dispatch is always
+    /// sequential: P finishes before D starts.
+    async fn process_grpc_two_stage_chat(
+        &self,
+        request: crate::protocols::spec::ChatCompletionRequest,
+        prefill_worker: Arc<dyn Worker>,
+        decode_worker: Arc<dyn Worker>,
+    ) -> Response {
+        let path = "/v1/chat/completions";
+        let start_time = Instant::now();
+        let prepared = match self.grpc_frontend.prepare(request).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let status =
+                    if error.starts_with("tokenizer:") || error.starts_with("sampling defaults:") {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    };
+                return (status, error).into_response();
+            }
+        };
+
+        let prefill_base_url = prefill_worker.base_url().to_string();
+        let prefill_dp_rank = prefill_worker.dp_rank();
+        let decode_base_url = decode_worker.base_url().to_string();
+        let request_id = Self::generate_vllm_request_id(
+            &self.get_zmq_address(&prefill_base_url, ServiceType::Prefill),
+            &self.get_zmq_address(&decode_base_url, ServiceType::Decode),
+        );
+        let transfer_id = self.generate_transfer_id();
+        let prefill_params = match self.build_prefill_kv_transfer_params(
+            transfer_id.as_deref(),
+            Some(&decode_base_url),
+            decode_worker.dp_rank(),
+        ) {
+            Ok(params) => params,
+            Err(reason) => return (StatusCode::INTERNAL_SERVER_ERROR, reason).into_response(),
+        };
+
+        prefill_worker.increment_load();
+        let prefill_result = self
+            .grpc_frontend
+            .prefill(
+                prefill_worker.url(),
+                &prepared,
+                request_id.clone(),
+                &prefill_params,
+            )
+            .await;
+        prefill_worker.decrement_load();
+        let prefill_kv = match prefill_result {
+            Ok(kv) => kv,
+            Err(response) => {
+                RouterMetrics::record_pd_prefill_error(&prefill_base_url);
+                RouterMetrics::record_pd_request(path);
+                RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
+                return response;
+            }
+        };
+        // Same shape as an HTTP prefill body, so the connector helpers apply.
+        let prefill_response_json = match prefill_kv {
+            Some(kv) => json!({ "kv_transfer_params": kv }),
+            None => json!({}),
+        };
+
+        let decode_params = self
+            .build_decode_kv_transfer_params(
+                &prefill_base_url,
+                Some(&prefill_response_json),
+                transfer_id.as_deref(),
+                prefill_dp_rank.map(|rank| rank as u32),
+                Some(&request_id),
+            )
+            .await;
+        if decode_params.is_none() {
+            warn!(
+                "No kv_transfer_params for prefill {}, decode will proceed without them",
+                prefill_base_url
+            );
+        }
+
+        decode_worker.increment_load();
+        let response = self
+            .grpc_frontend
+            .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
+            .await;
+        decode_worker.decrement_load();
+
+        RouterMetrics::record_pd_request(path);
+        RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
+        RouterMetrics::record_pd_prefill_request(&prefill_base_url);
+        RouterMetrics::record_pd_decode_request(&decode_base_url);
+        if !response.status().is_success() {
+            RouterMetrics::record_pd_decode_error(&decode_base_url);
+        }
+        response
+    }
+
     async fn try_build_concurrent_requests(
         &self,
         original_request: &Value,
@@ -2033,6 +2143,7 @@ impl VllmPDRouter {
                 kv_connector,
                 mooncake_prefill_info: Arc::new(Mutex::new(HashMap::new())),
                 nixl_prefill_info: RwLock::new(HashMap::new()),
+                grpc_frontend: crate::backend::EngineFrontend::new(),
             })
         } else {
             // Direct URL mode (same as PdRouterBase)
@@ -2041,6 +2152,18 @@ impl VllmPDRouter {
                 prefill_urls.len(),
                 decode_urls.len()
             );
+
+            let request_timeout =
+                std::time::Duration::from_secs(ctx.router_config.request_timeout_secs);
+            let grpc_frontend = if prefill_urls
+                .iter()
+                .any(|(url, _)| crate::backend::is_grpc_url(url))
+            {
+                crate::backend::EngineFrontend::from_env(request_timeout)
+                    .map_err(|error| format!("tokenizer cache: {error}"))?
+            } else {
+                crate::backend::EngineFrontend::with_request_timeout(request_timeout)
+            };
 
             // Create underlying PD router with provided worker lists
             let pd_router = PdRouterBase::new(prefill_urls.clone(), decode_urls, ctx).await?;
@@ -2128,6 +2251,7 @@ impl VllmPDRouter {
                 kv_connector,
                 mooncake_prefill_info,
                 nixl_prefill_info: RwLock::new(HashMap::new()),
+                grpc_frontend,
             })
         }
     }
@@ -2153,12 +2277,14 @@ impl VllmPDRouter {
     /// Delegates to the underlying PdRouterBase
     pub async fn remove_prefill_server(&self, url: &str) -> Result<String, PDRouterError> {
         self.evict_nixl_info(url);
+        self.grpc_frontend.remove_worker(url);
         self.pd_router.remove_prefill_server(url).await
     }
 
     /// Remove a decode server from the router
     /// Delegates to the underlying PdRouterBase
     pub async fn remove_decode_server(&self, url: &str) -> Result<String, PDRouterError> {
+        self.grpc_frontend.remove_worker(url);
         self.pd_router.remove_decode_server(url).await
     }
 
@@ -2166,6 +2292,11 @@ impl VllmPDRouter {
     /// This allows access to worker information for refresh operations
     pub fn worker_registry(&self) -> &crate::core::WorkerRegistry {
         &self.pd_router.worker_registry
+    }
+
+    /// Test hook: pin token ids so gRPC P/D tests do not load a model.
+    pub fn pin_test_token_ids(&self, token_ids: Vec<u32>) {
+        self.grpc_frontend.pin_test_token_ids(token_ids);
     }
 }
 
@@ -2400,6 +2531,16 @@ impl RouterTrait for VllmPDRouter {
                 decode_worker.url(),
                 decode_policy.name()
             );
+
+            if crate::backend::is_grpc_url(prefill_worker.url()) {
+                return self
+                    .process_grpc_two_stage_chat(
+                        body.clone(),
+                        prefill_worker.clone(),
+                        decode_worker.clone(),
+                    )
+                    .await;
+            }
 
             // Execute dual dispatch with vLLM two-stage processing
             let resp = match self
