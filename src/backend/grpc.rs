@@ -19,7 +19,10 @@ use tonic::transport::Channel;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::convert::{chat_to_generate_request, requires_worker_output_text};
+use super::convert::{
+    chat_to_generate_request, limit_to_prefill, proto_struct_to_json, requires_worker_output_text,
+    set_kv_transfer_params,
+};
 use super::detect::{grpc_connect_uri, parse_dp_rank};
 use super::frontend::PreparedChat;
 use super::openai::{
@@ -34,6 +37,14 @@ use crate::protocols::spec::Usage;
 const DP_RANK_METADATA: &str = "x-data-parallel-rank";
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// P/D fields layered on a prepared chat. Default is a colocated request.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KvHandoff {
+    /// Engine `GenerateRequest.request_id`; the OpenAI response id is separate.
+    pub engine_request_id: Option<String>,
+    pub kv_transfer_params: Option<serde_json::Value>,
+}
 
 #[derive(Clone)]
 pub struct GrpcStreamTask {
@@ -152,11 +163,69 @@ impl GrpcEngineBackend {
         }
     }
 
+    /// P/D prefill leg as unary `Generate`. Returns the engine's
+    /// `FinishInfo.kv_transfer_params`, which the decode leg consumes.
+    pub(crate) async fn prefill_prepared(
+        &self,
+        worker_url: &str,
+        prepared: &PreparedChat,
+        engine_request_id: String,
+        kv_transfer_params: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, Response> {
+        let mut proto = chat_to_generate_request(
+            prepared.request.as_ref(),
+            prepared.tokenized.token_ids.as_ref().to_vec(),
+            engine_request_id,
+        )
+        .map_err(|error| (StatusCode::BAD_REQUEST, error).into_response())?;
+        limit_to_prefill(&mut proto);
+        set_kv_transfer_params(&mut proto, kv_transfer_params)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())?;
+
+        let mut client = self.client_for(worker_url).await.map_err(|error| {
+            error!(error = %error, "grpc prefill connect failed");
+            (StatusCode::BAD_GATEWAY, error).into_response()
+        })?;
+        let mut tonic_req = tonic::Request::new(proto);
+        tonic_req.set_timeout(self.request_timeout);
+        if let Some(rank) = parse_dp_rank(worker_url) {
+            tonic_req
+                .metadata_mut()
+                .insert(DP_RANK_METADATA, rank.to_string().parse().unwrap());
+        }
+        let response = match tokio::time::timeout(self.request_timeout, client.generate(tonic_req))
+            .await
+        {
+            Ok(Ok(response)) => response.into_inner(),
+            Ok(Err(status)) => {
+                warn!(code = ?status.code(), msg = %status.message(), "prefill Generate failed");
+                return Err((
+                    grpc_status_code(&status),
+                    format!("grpc Generate: {}", status.message()),
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "grpc Generate exceeded request timeout",
+                )
+                    .into_response());
+            }
+        };
+        Ok(response
+            .outputs
+            .and_then(|outputs| outputs.finish_info)
+            .and_then(|finish| finish.kv_transfer_params)
+            .map(|params| proto_struct_to_json(&params)))
+    }
+
     pub(crate) async fn dispatch_prepared(
         &self,
         worker_url: &str,
         prepared: PreparedChat,
         on_first_output: Option<FirstOutputCallback>,
+        handoff: KvHandoff,
     ) -> Response {
         let PreparedChat {
             request,
@@ -179,14 +248,21 @@ impl GrpcEngineBackend {
         let skip_special = request.skip_special_tokens;
         let detok_tokenizer = handle.tokenizer();
         let detok_prompt_ids = tokenized.token_ids.clone();
-        let proto = match chat_to_generate_request(
+        let mut proto = match chat_to_generate_request(
             request,
             tokenized.token_ids.as_ref().to_vec(),
-            request_id.clone(),
+            handoff
+                .engine_request_id
+                .unwrap_or_else(|| request_id.clone()),
         ) {
             Ok(proto) => proto,
             Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
         };
+        if let Some(params) = &handoff.kv_transfer_params {
+            if let Err(error) = set_kv_transfer_params(&mut proto, params) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+            }
+        }
 
         let t_connect = Instant::now();
         let mut client = match self.client_for(worker_url).await {
