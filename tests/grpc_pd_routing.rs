@@ -59,10 +59,23 @@ async fn pd_router_with_dp(
     decode: &MockVllmRsServer,
     dp_size: usize,
 ) -> VllmPDRouter {
+    pd_router_with_pools(&[prefill], decode, dp_size, PolicyConfig::RoundRobin).await
+}
+
+async fn pd_router_with_pools(
+    prefills: &[&MockVllmRsServer],
+    decode: &MockVllmRsServer,
+    dp_size: usize,
+    prefill_policy: PolicyConfig,
+) -> VllmPDRouter {
     metrics();
+    let prefill_urls: Vec<(String, Option<u16>)> = prefills
+        .iter()
+        .map(|prefill| (prefill.grpc_url.clone(), None))
+        .collect();
     let config = RouterConfig {
         mode: RoutingMode::VllmPrefillDecode {
-            prefill_urls: vec![(prefill.grpc_url.clone(), None)],
+            prefill_urls: prefill_urls.clone(),
             decode_urls: vec![decode.grpc_url.clone()],
             prefill_policy: None,
             decode_policy: None,
@@ -78,16 +91,11 @@ async fn pd_router_with_dp(
     let ctx = create_test_context(config);
     // Separate P and D policy instances, as `RouterFactory` installs them.
     let policies = &ctx.policy_registry;
-    policies.set_prefill_policy(PolicyFactory::create_from_config(&PolicyConfig::RoundRobin));
+    policies.set_prefill_policy(PolicyFactory::create_from_config(&prefill_policy));
     policies.set_decode_policy(PolicyFactory::create_from_config(&PolicyConfig::RoundRobin));
-    let router = VllmPDRouter::new(
-        vec![(prefill.grpc_url.clone(), None)],
-        vec![decode.grpc_url.clone()],
-        None,
-        &ctx,
-    )
-    .await
-    .expect("grpc P/D workers should pass grpc.health.v1");
+    let router = VllmPDRouter::new(prefill_urls, vec![decode.grpc_url.clone()], None, &ctx)
+        .await
+        .expect("grpc P/D workers should pass grpc.health.v1");
     router.pin_test_token_ids(vec![1, 2, 3]);
     router
 }
@@ -262,6 +270,39 @@ async fn push_pair() -> (MockVllmRsServer, MockVllmRsServer, VllmPDRouter) {
     let decode = MockVllmRsServer::spawn().await;
     let router = pd_router(&prefill, &decode).await;
     (prefill, decode, router)
+}
+
+#[tokio::test]
+async fn grpc_pd_power_of_two_uses_local_prefill_load() {
+    let busy = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let idle = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let policy = PolicyConfig::PowerOfTwo {
+        load_check_interval_secs: 1,
+    };
+    let router = pd_router_with_pools(&[&busy, &idle], &decode, 1, policy).await;
+    // Let the load monitor run its first pass.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    router
+        .worker_registry()
+        .get_by_url(&busy.grpc_url)
+        .unwrap()
+        .increment_load();
+
+    for _ in 0..8 {
+        let response = router.route_chat(None, &chat(false), None).await;
+        assert!(response.status().is_success());
+    }
+    assert!(busy.captured().is_empty(), "the busy prefill was picked");
+    assert_eq!(idle.captured().len(), 8);
 }
 
 #[tokio::test]
