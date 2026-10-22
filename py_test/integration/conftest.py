@@ -162,7 +162,7 @@ def kv_st_runtime(tmp_path_factory):
     binary = os.environ.get("VLLM_ROUTER_TEST_BIN") or next(
         (
             target / mode / f"vllm-router{suffix}"
-            for mode in ("release", "debug")
+            for mode in ("debug", "release")
             if (target / mode / f"vllm-router{suffix}").is_file()
         ),
         None,
