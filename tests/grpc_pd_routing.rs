@@ -334,18 +334,43 @@ async fn disconnect_before_first_token(
     assert_eq!(d.load(), 1, "D stays loaded while its stream is open");
 
     drop(response);
+    wait_for_cancel(decode, cancelled_before).await;
+    assert_eq!(d.load(), 0);
+}
+
+async fn wait_for_cancel(server: &MockVllmRsServer, cancelled_before: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while decode.state.cancelled.load(Ordering::Relaxed) == cancelled_before
+    while server.state.cancelled.load(Ordering::Relaxed) == cancelled_before
         && std::time::Instant::now() < deadline
     {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(
-        decode.state.cancelled.load(Ordering::Relaxed),
+        server.state.cancelled.load(Ordering::Relaxed),
         cancelled_before + 1,
-        "D's stream must be cancelled, not left waiting for its next output"
+        "the RPC must be cancelled, not left waiting for its next output"
     );
-    assert_eq!(d.load(), 0);
+}
+
+/// Drops the request while P is still prefilling, as a disconnecting client
+/// does, and expects P's RPC to be cancelled and its load released.
+async fn disconnect_during_prefill(router: &VllmPDRouter, prefill: &MockVllmRsServer) {
+    let p = router
+        .worker_registry()
+        .get_by_url(&prefill.grpc_url)
+        .unwrap();
+    let cancelled_before = prefill.state.cancelled.load(Ordering::Relaxed);
+    let request = chat(true);
+    let mut pending = Box::pin(router.route_chat(None, &request, None));
+    tokio::select! {
+        _ = &mut pending => panic!("request finished before prefill did"),
+        _ = tokio::time::sleep(PREFILL_DELAY / 3) => {}
+    }
+    assert_eq!(p.load(), 1, "P stays loaded while prefilling");
+
+    drop(pending);
+    wait_for_cancel(prefill, cancelled_before).await;
+    assert_eq!(p.load(), 0);
 }
 
 fn slow_decode() -> MockVllmRs {
@@ -393,6 +418,39 @@ async fn grpc_pd_nixl_push_client_disconnect_cancels_decode_stream() {
         .get_by_url(&prefill.grpc_url)
         .unwrap();
     assert_eq!(p.load(), 0);
+}
+
+#[tokio::test]
+async fn grpc_pd_client_disconnect_during_prefill_cancels_prefill() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        reply_delay: PREFILL_DELAY,
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+
+    disconnect_during_prefill(&router, &prefill).await;
+    assert!(decode.captured().is_empty(), "D is never reached");
+}
+
+#[tokio::test]
+async fn grpc_pd_nixl_push_client_disconnect_during_prefill_releases_both_legs() {
+    let (prefill, decode, router) = push_pair().await;
+    let warmup = router.route_chat(None, &chat(false), None).await;
+    assert!(warmup.status().is_success());
+    axum::body::to_bytes(warmup.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    disconnect_during_prefill(&router, &prefill).await;
+    assert_eq!(decode.captured().len(), 2, "D was sent alongside P");
+    let d = router
+        .worker_registry()
+        .get_by_url(&decode.grpc_url)
+        .unwrap();
+    assert_eq!(d.load(), 0);
 }
 
 #[tokio::test]
