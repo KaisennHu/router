@@ -318,6 +318,83 @@ async fn grpc_pd_nixl_push_prefill_failure_fails_the_request() {
     );
 }
 
+/// Drops a streaming response before D's first output, as a disconnecting
+/// client does, and expects D's RPC to be cancelled and its load released.
+async fn disconnect_before_first_token(
+    router: &VllmPDRouter,
+    decode: &MockVllmRsServer,
+    cancelled_before: usize,
+) {
+    let response = router.route_chat(None, &chat(true), None).await;
+    assert!(response.status().is_success());
+    let d = router
+        .worker_registry()
+        .get_by_url(&decode.grpc_url)
+        .unwrap();
+    assert_eq!(d.load(), 1, "D stays loaded while its stream is open");
+
+    drop(response);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while decode.state.cancelled.load(Ordering::Relaxed) == cancelled_before
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        decode.state.cancelled.load(Ordering::Relaxed),
+        cancelled_before + 1,
+        "D's stream must be cancelled, not left waiting for its next output"
+    );
+    assert_eq!(d.load(), 0);
+}
+
+fn slow_decode() -> MockVllmRs {
+    MockVllmRs {
+        reply_delay: std::time::Duration::from_secs(5),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn grpc_pd_client_disconnect_cancels_decode_stream() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn_with_state(slow_decode()).await;
+    let router = pd_router(&prefill, &decode).await;
+
+    disconnect_before_first_token(&router, &decode, 0).await;
+    let p = router
+        .worker_registry()
+        .get_by_url(&prefill.grpc_url)
+        .unwrap();
+    assert_eq!(p.load(), 0);
+}
+
+#[tokio::test]
+async fn grpc_pd_nixl_push_client_disconnect_cancels_decode_stream() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(push_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn_with_state(slow_decode()).await;
+    let router = pd_router(&prefill, &decode).await;
+
+    // The first request runs sequentially and caches P's push identity;
+    // the second takes the concurrent path.
+    disconnect_before_first_token(&router, &decode, 0).await;
+    disconnect_before_first_token(&router, &decode, 1).await;
+    assert_eq!(decode.captured().len(), 2);
+    let p = router
+        .worker_registry()
+        .get_by_url(&prefill.grpc_url)
+        .unwrap();
+    assert_eq!(p.load(), 0);
+}
+
 #[tokio::test]
 async fn grpc_pd_rejects_non_chat_routes_before_dispatch() {
     let prefill = MockVllmRsServer::spawn().await;

@@ -49,6 +49,8 @@ pub struct MockVllmRs {
     pub finish_kv_transfer_params: Option<serde_json::Value>,
     /// Wait before sending any output, as a long prefill would.
     pub reply_delay: Duration,
+    /// Streams the client cancelled before their first output.
+    pub cancelled: Arc<AtomicUsize>,
 }
 
 impl Default for MockVllmRs {
@@ -60,6 +62,7 @@ impl Default for MockVllmRs {
             failures_remaining: Arc::new(AtomicUsize::new(0)),
             finish_kv_transfer_params: None,
             reply_delay: Duration::ZERO,
+            cancelled: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -209,8 +212,15 @@ impl Inference for MockVllmRs {
             .as_ref()
             .map(|params| json_to_proto_struct(params).expect("JSON object"));
         let reply_delay = self.reply_delay;
+        let cancelled = self.cancelled.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(reply_delay).await;
+            tokio::select! {
+                _ = tokio::time::sleep(reply_delay) => {}
+                _ = tx.closed() => {
+                    cancelled.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
             let _ = tx
                 .send(Ok(GenerateResponse {
                     prompt_info: Some(PromptInfo {

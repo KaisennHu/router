@@ -4,6 +4,7 @@ use super::dp_utils;
 use super::logprobs_merge;
 use super::pd_router::PdRouterBase;
 use super::pd_types::{error_chain, PDRouterError};
+use super::router::{hold_request_load_until_body_done, RequestLoadGuard};
 use super::vllm_service_discovery::{MoriIOTransferMode, ServiceRegistry, ServiceType};
 use crate::config::KvConnector;
 use crate::core::{BasicWorker, Worker, WorkerType};
@@ -1831,6 +1832,7 @@ impl VllmPDRouter {
         }
 
         prefill_worker.increment_load();
+        let prefill_load = RequestLoadGuard::new(Some(prefill_worker.clone()), None);
         let prefill_result = self
             .grpc_frontend
             .prefill(
@@ -1840,7 +1842,7 @@ impl VllmPDRouter {
                 &prefill_params,
             )
             .await;
-        prefill_worker.decrement_load();
+        drop(prefill_load);
         let prefill_kv = match prefill_result {
             Ok(kv) => kv,
             Err(response) => {
@@ -1873,11 +1875,13 @@ impl VllmPDRouter {
         }
 
         decode_worker.increment_load();
-        let response = self
-            .grpc_frontend
-            .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
-            .await;
-        decode_worker.decrement_load();
+        let decode_load = RequestLoadGuard::new(Some(decode_worker.clone()), None);
+        let response = hold_request_load_until_body_done(
+            self.grpc_frontend
+                .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
+                .await,
+            decode_load,
+        );
 
         RouterMetrics::record_pd_request(path);
         RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
@@ -1918,56 +1922,48 @@ impl VllmPDRouter {
         };
 
         prefill_worker.increment_load();
+        let prefill_load = RequestLoadGuard::new(Some(prefill_worker.clone()), None);
         decode_worker.increment_load();
+        let decode_load = RequestLoadGuard::new(Some(decode_worker.clone()), None);
         let prefill = self.grpc_frontend.prefill(
             prefill_worker.url(),
             &prepared,
             request_id.clone(),
             &prefill_params,
         );
-        let decode = self.grpc_frontend.dispatch_decode(
-            decode_worker.url(),
-            prepared.clone(),
-            request_id,
-            Some(decode_params),
-        );
+        // Dropping a held response, e.g. when P fails after D's stream opened,
+        // aborts D's stream and releases its load.
+        let decode = async {
+            let response = self
+                .grpc_frontend
+                .dispatch_decode(
+                    decode_worker.url(),
+                    prepared.clone(),
+                    request_id,
+                    Some(decode_params),
+                )
+                .await;
+            hold_request_load_until_body_done(response, decode_load)
+        };
         tokio::pin!(prefill, decode);
 
         let (prefill_kv, response) = tokio::select! {
             prefill_result = &mut prefill => {
-                prefill_worker.decrement_load();
+                drop(prefill_load);
                 match prefill_result {
-                    Ok(kv) => {
-                        let response = decode.await;
-                        decode_worker.decrement_load();
-                        (kv, response)
-                    }
-                    Err(response) => {
-                        decode_worker.decrement_load();
-                        return fail(response, true);
-                    }
+                    Ok(kv) => (kv, decode.await),
+                    Err(response) => return fail(response, true),
                 }
             }
             response = &mut decode => {
-                decode_worker.decrement_load();
                 if !response.status().is_success() {
-                    prefill_worker.decrement_load();
                     return fail(response, false);
                 }
                 let prefill_result = prefill.await;
-                prefill_worker.decrement_load();
+                drop(prefill_load);
                 match prefill_result {
                     Ok(kv) => (kv, response),
-                    Err(prefill_response) => {
-                        if let Some(task) = response
-                            .extensions()
-                            .get::<crate::backend::grpc::GrpcStreamTask>()
-                            .and_then(|task| task.take())
-                        {
-                            task.abort();
-                        }
-                        return fail(prefill_response, true);
-                    }
+                    Err(prefill_response) => return fail(prefill_response, true),
                 }
             }
         };
