@@ -3,6 +3,7 @@
 //! Tokenize on the router, send `token_ids`, detok the returned ids.
 //! Channel cache is per connect URI.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,16 +14,13 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, OnceCell};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::convert::{
-    chat_to_generate_request, limit_to_prefill, proto_struct_to_json, requires_worker_output_text,
-    set_kv_transfer_params,
-};
+use super::convert::{chat_to_generate_request_with_progress, requires_worker_output_text};
 use super::detect::{grpc_connect_uri, parse_dp_rank};
 use super::frontend::{PreparedRequest, ResponseShape};
 use super::openai::{
@@ -30,7 +28,6 @@ use super::openai::{
     sse_usage_chunk, SSE_DONE,
 };
 use super::pb::control_client::ControlClient;
-use super::pb::finish_info::FinishReason;
 use super::pb::inference_client::InferenceClient;
 use super::pb::AbortRequest;
 use super::stream_output::{output_frame_tracking, OutputFrameConsumer, OutputFrameProducer};
@@ -41,6 +38,8 @@ const DP_RANK_METADATA: &str = "x-data-parallel-rank";
 const ENGINE_ABORT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+pub(crate) type PrefillProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync + 'static>;
+type PrefillProgressCapabilityCache = Arc<DashMap<String, Arc<OnceCell<Result<bool, String>>>>>;
 
 /// P/D fields layered on a prepared chat. Default is a colocated request.
 #[derive(Clone, Debug, Default)]
@@ -206,7 +205,8 @@ fn grpc_status_code(status: &tonic::Status) -> StatusCode {
 
 #[derive(Clone)]
 pub struct GrpcEngineBackend {
-    clients: Arc<DashMap<String, Channel>>,
+    clients: Arc<DashMap<String, InferenceClient<Channel>>>,
+    prefill_progress_capabilities: PrefillProgressCapabilityCache,
     connect_timeout: Duration,
     request_timeout: Duration,
 }
@@ -237,6 +237,7 @@ impl GrpcEngineBackend {
     pub fn with_timeouts(connect_timeout: Duration, request_timeout: Duration) -> Self {
         Self {
             clients: Arc::new(DashMap::new()),
+            prefill_progress_capabilities: Arc::new(DashMap::new()),
             connect_timeout,
             request_timeout,
         }
@@ -257,9 +258,37 @@ impl GrpcEngineBackend {
         Ok(channel)
     }
 
+    async fn supports_prefill_progress(&self, worker_url: &str) -> Result<bool, String> {
+        let uri = grpc_connect_uri(worker_url)?;
+        let connect_timeout = self.connect_timeout;
+        cached_prefill_progress_capability(
+            &self.prefill_progress_capabilities,
+            uri.clone(),
+            || async move {
+                let channel = Channel::from_shared(uri.clone())
+                    .map_err(|e| format!("invalid grpc uri {uri}: {e}"))?
+                    .connect_timeout(connect_timeout)
+                    .connect()
+                    .await
+                    .map_err(|e| format!("grpc control connect {uri}: {e}"))?;
+                let mut client = ControlClient::new(channel);
+                let mut request = tonic::Request::new(super::pb::GetServerInfoRequest {});
+                request.set_timeout(Duration::from_secs(5));
+                let info = client
+                    .get_server_info(request)
+                    .await
+                    .map_err(|e| format!("grpc GetServerInfo {uri}: {e}"))?
+                    .into_inner();
+                Ok(info.supports_prefill_progress)
+            },
+        )
+        .await
+    }
+
     pub fn remove_client(&self, worker_url: &str) {
         if let Ok(uri) = grpc_connect_uri(worker_url) {
             self.clients.remove(&uri);
+            self.prefill_progress_capabilities.remove(&uri);
         }
     }
 
@@ -337,7 +366,7 @@ impl GrpcEngineBackend {
         worker_url: &str,
         prepared: PreparedRequest,
         on_first_output: Option<FirstOutputCallback>,
-        handoff: KvHandoff,
+        on_prefill_progress: Option<PrefillProgressCallback>,
     ) -> Response {
         let PreparedRequest {
             request,
@@ -349,6 +378,7 @@ impl GrpcEngineBackend {
             emit_token_ids,
         } = prepared;
         let request = request.as_ref();
+        let include_prefill_progress = on_prefill_progress.is_some();
         let n_prompt_tokens = tokenized.token_ids.len();
         let adapt_ms = tokenized.adapt_ms;
         let template_ms = tokenized.template_ms;
@@ -366,13 +396,11 @@ impl GrpcEngineBackend {
         let skip_special = request.skip_special_tokens;
         let detok_tokenizer = handle.tokenizer();
         let detok_prompt_ids = tokenized.token_ids.clone();
-        let abort_request_id = handoff.engine_request_id.clone();
-        let mut proto = match chat_to_generate_request(
+        let mut proto = match chat_to_generate_request_with_progress(
             request,
             tokenized.token_ids.as_ref().to_vec(),
-            handoff
-                .engine_request_id
-                .unwrap_or_else(|| request_id.clone()),
+            request_id.clone(),
+            include_prefill_progress,
         ) {
             Ok(proto) => proto,
             Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
@@ -381,6 +409,11 @@ impl GrpcEngineBackend {
             if let Err(error) = set_kv_transfer_params(&mut proto, params) {
                 return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
             }
+        }
+
+        if include_prefill_progress {
+            let supported = self.supports_prefill_progress(worker_url).await;
+            apply_prefill_progress_capability(&mut proto, supported, worker_url);
         }
 
         let t_connect = Instant::now();
@@ -467,8 +500,7 @@ impl GrpcEngineBackend {
             stages,
             t_req,
             on_first_output,
-            fail_on_abort: abort_request_id.is_some(),
-            abort,
+            on_prefill_progress,
         };
         if request.stream {
             stream_openai(stream, reply, n_prompt_tokens).await
@@ -497,10 +529,7 @@ struct ChatReply {
     stages: serde_json::Value,
     t_req: Instant,
     on_first_output: Option<FirstOutputCallback>,
-    /// A P/D decode leg reports an `abort` finish as an error, so the push
-    /// path can cancel P instead of returning an aborted reply as success.
-    fail_on_abort: bool,
-    abort: EngineAbortGuard,
+    on_prefill_progress: Option<PrefillProgressCallback>,
 }
 
 fn fill_engine_ms(stages: &mut serde_json::Value) {
@@ -544,8 +573,7 @@ async fn stream_openai(
         mut stages,
         t_req,
         on_first_output: _,
-        fail_on_abort: _,
-        abort,
+        on_prefill_progress,
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
@@ -553,19 +581,128 @@ async fn stream_openai(
     let (mut producer_output_frame, output_frame) = output_frame_tracking();
     let (failed_tx, failed_rx) = watch::channel(false);
     let producer = tokio::spawn(async move {
-        let finished = async {
-            let mut detok = tok
-                .as_ref()
-                .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
-            let mut first = true;
-            let mut first_token_logged = false;
-            let mut prompt_tokens = n_prompt_tokens as u32;
-            let mut completion_tokens = 0u32;
-            loop {
-                let item = match tokio::time::timeout(request_timeout, stream.next()).await {
-                    Ok(Some(item)) => item,
-                    Ok(None) => break,
-                    Err(_) => {
+        let mut detok = tok
+            .as_ref()
+            .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
+        let mut first = true;
+        let mut first_token_logged = false;
+        let mut prompt_tokens = n_prompt_tokens as u32;
+        let mut completion_tokens = 0u32;
+        loop {
+            let item = match tokio::time::timeout(request_timeout, stream.next()).await {
+                Ok(Some(item)) => item,
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = send_stream_chunk(
+                        &tx,
+                        &mut producer_output_frame,
+                        "data: {\"error\":\"gRPC stream exceeded request timeout\"}\n\n"
+                            .to_string(),
+                        false,
+                    );
+                    return;
+                }
+            };
+            match item {
+                Ok(msg) => {
+                    if stages.get("first_grpc_msg_ms").is_none() {
+                        stages["first_grpc_msg_ms"] =
+                            serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    if let Some(info) = &msg.prompt_info {
+                        prompt_tokens = info.num_prompt_tokens;
+                    }
+                    if let (Some(progress), Some(callback)) =
+                        (&msg.prefill_progress, on_prefill_progress.as_ref())
+                    {
+                        callback(
+                            progress.sequence,
+                            u64::from(progress.remaining_compute_tokens),
+                        );
+                    }
+                    if let Some(outputs) = &msg.outputs {
+                        completion_tokens = completion_tokens.saturating_add(outputs.num_tokens);
+                    }
+                    let (text, finish) =
+                        match output_text_and_finish(&msg, &mut detok, prefer_worker_text) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                let _ = send_stream_chunk(
+                                    &tx,
+                                    &mut producer_output_frame,
+                                    format!(
+                                        "data: {{\"error\":{}}}\n\n",
+                                        serde_json::to_string(&error).unwrap_or_default()
+                                    ),
+                                    false,
+                                );
+                                return;
+                            }
+                        };
+                    let generated_output = has_generated_output(&msg, &text);
+                    if !first_token_logged && !text.is_empty() {
+                        stages["first_token_ms"] =
+                            serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
+                        stages["first_detok_ms"] = stages["first_token_ms"].clone();
+                        fill_engine_ms(&mut stages);
+                        if stages_on {
+                            info!(%stages, "grpc generate stages");
+                            let _ = send_stream_chunk(
+                                &tx,
+                                &mut producer_output_frame,
+                                format!(": router-stages {stages}\n\n"),
+                                false,
+                            );
+                        }
+                        first_token_logged = true;
+                    }
+                    // Ids alone qualify: the decoder buffers byte-fallback
+                    // fragments, so text can be empty while the frame holds
+                    // tokens a token-exact client still needs.
+                    let output_token_ids = if emit_token_ids {
+                        msg.outputs
+                            .as_ref()
+                            .map(|outputs| outputs.token_ids.clone())
+                            .filter(|ids| !ids.is_empty())
+                    } else {
+                        None
+                    };
+                    if !text.is_empty()
+                        || output_token_ids.is_some()
+                        || finish.is_some()
+                        || (first && shape == ResponseShape::Chat && msg.prompt_info.is_some())
+                    {
+                        let line = sse_chunk(
+                            shape,
+                            &request_id,
+                            &model,
+                            created,
+                            &text,
+                            first,
+                            finish.clone(),
+                            output_token_ids,
+                        );
+                        if !send_stream_chunk(
+                            &tx,
+                            &mut producer_output_frame,
+                            line,
+                            generated_output,
+                        ) {
+                            break;
+                        }
+                        first = false;
+                    }
+                    if finish.is_some() {
+                        if include_usage {
+                            let usage = Usage {
+                                prompt_tokens,
+                                completion_tokens,
+                                total_tokens: prompt_tokens + completion_tokens,
+                                completion_tokens_details: None,
+                            };
+                            let line = sse_usage_chunk(shape, &request_id, &model, created, usage);
+                            let _ = send_stream_chunk(&tx, &mut producer_output_frame, line, false);
+                        }
                         let _ = send_stream_chunk(
                             &tx,
                             &mut producer_output_frame,
@@ -746,8 +883,7 @@ async fn collect_openai(
         mut stages,
         t_req,
         on_first_output,
-        fail_on_abort,
-        abort,
+        on_prefill_progress,
     } = reply;
     let mut detok = tok
         .as_ref()
@@ -778,6 +914,14 @@ async fn collect_openai(
                 }
                 if let Some(info) = &msg.prompt_info {
                     prompt_tokens = info.num_prompt_tokens;
+                }
+                if let (Some(progress), Some(callback)) =
+                    (&msg.prefill_progress, on_prefill_progress.as_ref())
+                {
+                    callback(
+                        progress.sequence,
+                        u64::from(progress.remaining_compute_tokens),
+                    );
                 }
                 let (delta, reason) =
                     match output_text_and_finish(&msg, &mut detok, prefer_worker_text) {
@@ -920,6 +1064,49 @@ fn output_text_and_finish(
     Ok((text, finish))
 }
 
+fn apply_prefill_progress_capability(
+    request: &mut super::pb::GenerateRequest,
+    supported: Result<bool, String>,
+    worker_url: &str,
+) {
+    let supported = match supported {
+        Ok(supported) => supported,
+        Err(error) => {
+            warn!(worker_url, %error, "worker prefill progress probe failed; continuing without progress");
+            false
+        }
+    };
+    if !supported {
+        request.include_prefill_progress = false;
+    }
+}
+
+async fn cached_prefill_progress_capability<F, Fut>(
+    cache: &DashMap<String, Arc<OnceCell<Result<bool, String>>>>,
+    uri: String,
+    probe: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<bool, String>>,
+{
+    let cell = cache
+        .entry(uri.clone())
+        .or_insert_with(|| Arc::new(OnceCell::new()))
+        .clone();
+    let result = cell.get_or_init(probe).await.clone();
+
+    if result.is_err() {
+        if let dashmap::mapref::entry::Entry::Occupied(entry) = cache.entry(uri) {
+            if Arc::ptr_eq(entry.get(), &cell) {
+                entry.remove();
+            }
+        }
+    }
+
+    result
+}
+
 fn has_generated_output(msg: &super::pb::GenerateResponse, text: &str) -> bool {
     msg.outputs.as_ref().is_some_and(|outputs| {
         outputs.num_tokens > 0 || !outputs.token_ids.is_empty() || !text.is_empty()
@@ -930,7 +1117,72 @@ fn has_generated_output(msg: &super::pb::GenerateResponse, text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::backend::pb::{GenerateResponse, PromptInfo, SequenceOutput};
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn unsupported_worker_keeps_the_admission_estimate_path() {
+        let mut request = crate::backend::pb::GenerateRequest {
+            include_prefill_progress: true,
+            ..Default::default()
+        };
+
+        apply_prefill_progress_capability(&mut request, Ok(false), "worker");
+
+        assert!(!request.include_prefill_progress);
+    }
+
+    #[test]
+    fn capability_probe_error_keeps_the_admission_estimate_path() {
+        let mut request = crate::backend::pb::GenerateRequest {
+            include_prefill_progress: true,
+            ..Default::default()
+        };
+
+        apply_prefill_progress_capability(
+            &mut request,
+            Err("control service unavailable".to_owned()),
+            "worker",
+        );
+
+        assert!(!request.include_prefill_progress);
+    }
+
+    #[tokio::test]
+    async fn concurrent_capability_probes_are_coalesced_and_failures_can_retry() {
+        let cache = Arc::new(DashMap::new());
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let mut requests = Vec::new();
+
+        for _ in 0..16 {
+            let cache = cache.clone();
+            let probe_count = probe_count.clone();
+            requests.push(tokio::spawn(async move {
+                cached_prefill_progress_capability(&cache, "worker".to_owned(), || async move {
+                    probe_count.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Err("control service unavailable".to_owned())
+                })
+                .await
+            }));
+        }
+
+        for request in requests {
+            assert_eq!(
+                request.await.unwrap(),
+                Err("control service unavailable".to_owned())
+            );
+        }
+        assert_eq!(probe_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            cached_prefill_progress_capability(&cache, "worker".to_owned(), || async {
+                probe_count.fetch_add(1, Ordering::Relaxed);
+                Ok(true)
+            })
+            .await,
+            Ok(true)
+        );
+        assert_eq!(probe_count.load(Ordering::Relaxed), 2);
+    }
 
     #[test]
     fn prompt_info_does_not_count_as_generated_output() {
@@ -940,6 +1192,7 @@ mod tests {
                 ..Default::default()
             }),
             outputs: None,
+            prefill_progress: None,
         };
         assert!(!has_generated_output(&prompt_info, ""));
 
@@ -959,6 +1212,7 @@ mod tests {
                 token_ids: vec![42],
                 ..Default::default()
             }),
+            prefill_progress: None,
         };
         assert!(has_generated_output(&output, ""));
         notify_first_output(&output, "", &mut first_output_seen, Some(&callback));

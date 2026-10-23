@@ -219,6 +219,7 @@ impl Inference for MockVllmRs {
                 finish_info: finish,
                 ..Default::default()
             }),
+            prefill_progress: None,
         }))
     }
 
@@ -315,6 +316,7 @@ impl Inference for MockVllmRs {
                         ..Default::default()
                     }),
                     outputs: None,
+                    prefill_progress: None,
                 }))
                 .await;
             if fail_stream {
@@ -342,6 +344,7 @@ impl Inference for MockVllmRs {
                             finish_info,
                             ..Default::default()
                         }),
+                        prefill_progress: None,
                     }))
                     .await;
                 if sent.is_err() {
