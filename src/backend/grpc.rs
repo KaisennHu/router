@@ -13,7 +13,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Channel;
 use tracing::{error, info, warn};
@@ -50,6 +50,7 @@ pub(crate) struct KvHandoff {
 pub struct GrpcStreamTask {
     handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     output_frame: Option<OutputFrameConsumer>,
+    failed: Option<watch::Receiver<bool>>,
 }
 
 impl GrpcStreamTask {
@@ -58,6 +59,7 @@ impl GrpcStreamTask {
         Self {
             handle: Arc::new(std::sync::Mutex::new(Some(handle))),
             output_frame: None,
+            failed: None,
         }
     }
 
@@ -68,6 +70,26 @@ impl GrpcStreamTask {
         Self {
             handle: Arc::new(std::sync::Mutex::new(Some(handle))),
             output_frame: Some(output_frame),
+            failed: None,
+        }
+    }
+
+    fn with_failure(mut self, failed: watch::Receiver<bool>) -> Self {
+        self.failed = Some(failed);
+        self
+    }
+
+    /// Resolves once the producer has queued an error frame and stopped.
+    /// Stays pending for a stream that finishes cleanly.
+    pub(crate) fn failure(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let failed = self.failed.clone();
+        async move {
+            if let Some(mut failed) = failed {
+                if failed.wait_for(|failed| *failed).await.is_ok() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await
         }
     }
 
@@ -410,139 +432,148 @@ async fn stream_openai(
     let stages_on = crate::backend::stages_enabled();
     let (tx, rx) = mpsc::unbounded_channel::<Result<String, std::io::Error>>();
     let (mut producer_output_frame, output_frame) = output_frame_tracking();
+    let (failed_tx, failed_rx) = watch::channel(false);
     let producer = tokio::spawn(async move {
-        let mut detok = tok
-            .as_ref()
-            .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
-        let mut first = true;
-        let mut first_token_logged = false;
-        let mut prompt_tokens = n_prompt_tokens as u32;
-        let mut completion_tokens = 0u32;
-        loop {
-            let item = match tokio::time::timeout(request_timeout, stream.next()).await {
-                Ok(Some(item)) => item,
-                Ok(None) => break,
-                Err(_) => {
-                    let _ = send_stream_chunk(
-                        &tx,
-                        &mut producer_output_frame,
-                        "data: {\"error\":\"gRPC stream exceeded request timeout\"}\n\n"
-                            .to_string(),
-                        false,
-                    );
-                    return;
-                }
-            };
-            match item {
-                Ok(msg) => {
-                    if stages.get("first_grpc_msg_ms").is_none() {
-                        stages["first_grpc_msg_ms"] =
-                            serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    if let Some(info) = &msg.prompt_info {
-                        prompt_tokens = info.num_prompt_tokens;
-                    }
-                    if let Some(outputs) = &msg.outputs {
-                        completion_tokens = completion_tokens.saturating_add(outputs.num_tokens);
-                    }
-                    let (text, finish) =
-                        match output_text_and_finish(&msg, &mut detok, prefer_worker_text) {
-                            Ok(output) => output,
-                            Err(error) => {
-                                let _ = send_stream_chunk(
-                                    &tx,
-                                    &mut producer_output_frame,
-                                    format!(
-                                        "data: {{\"error\":{}}}\n\n",
-                                        serde_json::to_string(&error).unwrap_or_default()
-                                    ),
-                                    false,
-                                );
-                                return;
-                            }
-                        };
-                    let generated_output = has_generated_output(&msg, &text);
-                    if !first_token_logged && !text.is_empty() {
-                        stages["first_token_ms"] =
-                            serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
-                        stages["first_detok_ms"] = stages["first_token_ms"].clone();
-                        fill_engine_ms(&mut stages);
-                        if stages_on {
-                            info!(%stages, "grpc generate stages");
-                            let _ = send_stream_chunk(
-                                &tx,
-                                &mut producer_output_frame,
-                                format!(": router-stages {stages}\n\n"),
-                                false,
-                            );
-                        }
-                        first_token_logged = true;
-                    }
-                    if !text.is_empty() || finish.is_some() || first {
-                        let chunk = stream_chunk(
-                            &request_id,
-                            &model,
-                            created,
-                            &text,
-                            first,
-                            finish.clone(),
-                            None,
-                        );
-                        if !send_stream_chunk(
-                            &tx,
-                            &mut producer_output_frame,
-                            format_sse(&chunk),
-                            generated_output,
-                        ) {
-                            break;
-                        }
-                        first = false;
-                    }
-                    if finish.is_some() {
-                        if include_usage {
-                            let usage = Usage {
-                                prompt_tokens,
-                                completion_tokens,
-                                total_tokens: prompt_tokens + completion_tokens,
-                                completion_tokens_details: None,
-                            };
-                            let chunk = stream_usage_chunk(&request_id, &model, created, usage);
-                            let _ = send_stream_chunk(
-                                &tx,
-                                &mut producer_output_frame,
-                                format_sse(&chunk),
-                                false,
-                            );
-                        }
+        let finished = async {
+            let mut detok = tok
+                .as_ref()
+                .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
+            let mut first = true;
+            let mut first_token_logged = false;
+            let mut prompt_tokens = n_prompt_tokens as u32;
+            let mut completion_tokens = 0u32;
+            loop {
+                let item = match tokio::time::timeout(request_timeout, stream.next()).await {
+                    Ok(Some(item)) => item,
+                    Ok(None) => break,
+                    Err(_) => {
                         let _ = send_stream_chunk(
                             &tx,
                             &mut producer_output_frame,
-                            SSE_DONE.to_string(),
+                            "data: {\"error\":\"gRPC stream exceeded request timeout\"}\n\n"
+                                .to_string(),
                             false,
                         );
-                        return;
+                        return false;
+                    }
+                };
+                match item {
+                    Ok(msg) => {
+                        if stages.get("first_grpc_msg_ms").is_none() {
+                            stages["first_grpc_msg_ms"] =
+                                serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        if let Some(info) = &msg.prompt_info {
+                            prompt_tokens = info.num_prompt_tokens;
+                        }
+                        if let Some(outputs) = &msg.outputs {
+                            completion_tokens =
+                                completion_tokens.saturating_add(outputs.num_tokens);
+                        }
+                        let (text, finish) =
+                            match output_text_and_finish(&msg, &mut detok, prefer_worker_text) {
+                                Ok(output) => output,
+                                Err(error) => {
+                                    let _ = send_stream_chunk(
+                                        &tx,
+                                        &mut producer_output_frame,
+                                        format!(
+                                            "data: {{\"error\":{}}}\n\n",
+                                            serde_json::to_string(&error).unwrap_or_default()
+                                        ),
+                                        false,
+                                    );
+                                    return false;
+                                }
+                            };
+                        let generated_output = has_generated_output(&msg, &text);
+                        if !first_token_logged && !text.is_empty() {
+                            stages["first_token_ms"] =
+                                serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
+                            stages["first_detok_ms"] = stages["first_token_ms"].clone();
+                            fill_engine_ms(&mut stages);
+                            if stages_on {
+                                info!(%stages, "grpc generate stages");
+                                let _ = send_stream_chunk(
+                                    &tx,
+                                    &mut producer_output_frame,
+                                    format!(": router-stages {stages}\n\n"),
+                                    false,
+                                );
+                            }
+                            first_token_logged = true;
+                        }
+                        if !text.is_empty() || finish.is_some() || first {
+                            let chunk = stream_chunk(
+                                &request_id,
+                                &model,
+                                created,
+                                &text,
+                                first,
+                                finish.clone(),
+                                None,
+                            );
+                            if !send_stream_chunk(
+                                &tx,
+                                &mut producer_output_frame,
+                                format_sse(&chunk),
+                                generated_output,
+                            ) {
+                                break;
+                            }
+                            first = false;
+                        }
+                        if finish.is_some() {
+                            if include_usage {
+                                let usage = Usage {
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens: prompt_tokens + completion_tokens,
+                                    completion_tokens_details: None,
+                                };
+                                let chunk = stream_usage_chunk(&request_id, &model, created, usage);
+                                let _ = send_stream_chunk(
+                                    &tx,
+                                    &mut producer_output_frame,
+                                    format_sse(&chunk),
+                                    false,
+                                );
+                            }
+                            let _ = send_stream_chunk(
+                                &tx,
+                                &mut producer_output_frame,
+                                SSE_DONE.to_string(),
+                                false,
+                            );
+                            return true;
+                        }
+                    }
+                    Err(status) => {
+                        let _ = send_stream_chunk(
+                            &tx,
+                            &mut producer_output_frame,
+                            format!(
+                                "data: {{\"error\":{}}}\n\n",
+                                serde_json::to_string(status.message()).unwrap_or_default()
+                            ),
+                            false,
+                        );
+                        return false;
                     }
                 }
-                Err(status) => {
-                    let _ = send_stream_chunk(
-                        &tx,
-                        &mut producer_output_frame,
-                        format!(
-                            "data: {{\"error\":{}}}\n\n",
-                            serde_json::to_string(status.message()).unwrap_or_default()
-                        ),
-                        false,
-                    );
-                    return;
-                }
             }
+            let _ = send_stream_chunk(
+                &tx,
+                &mut producer_output_frame,
+                "data: {\"error\":\"gRPC stream closed before finish_info\"}\n\n".to_string(),
+                false,
+            );
+            false
         }
-        let _ = send_stream_chunk(
-            &tx,
-            &mut producer_output_frame,
-            "data: {\"error\":\"gRPC stream closed before finish_info\"}\n\n".to_string(),
-            false,
-        );
+        .await;
+        if !finished {
+            failed_tx.send_replace(true);
+        }
     });
 
     let body = Body::from_stream(UnboundedReceiverStream::new(rx));
@@ -558,7 +589,7 @@ async fn stream_openai(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     response
         .extensions_mut()
-        .insert(GrpcStreamTask::with_output_frame(producer, output_frame));
+        .insert(GrpcStreamTask::with_output_frame(producer, output_frame).with_failure(failed_rx));
     response
 }
 

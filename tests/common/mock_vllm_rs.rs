@@ -51,6 +51,9 @@ pub struct MockVllmRs {
     pub reply_delay: Duration,
     /// Streams the client cancelled before their first output.
     pub cancelled: Arc<AtomicUsize>,
+    /// Streams to fail with a gRPC error after their prompt info, i.e.
+    /// after the stream has opened.
+    pub stream_failures_remaining: Arc<AtomicUsize>,
 }
 
 impl Default for MockVllmRs {
@@ -63,6 +66,7 @@ impl Default for MockVllmRs {
             finish_kv_transfer_params: None,
             reply_delay: Duration::ZERO,
             cancelled: Arc::new(AtomicUsize::new(0)),
+            stream_failures_remaining: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -213,6 +217,10 @@ impl Inference for MockVllmRs {
             .map(|params| json_to_proto_struct(params).expect("JSON object"));
         let reply_delay = self.reply_delay;
         let cancelled = self.cancelled.clone();
+        let fail_stream = self
+            .stream_failures_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(reply_delay) => {}
@@ -230,6 +238,10 @@ impl Inference for MockVllmRs {
                     outputs: None,
                 }))
                 .await;
+            if fail_stream {
+                let _ = tx.send(Err(Status::internal("decode failed"))).await;
+                return;
+            }
             let _ = tx
                 .send(Ok(GenerateResponse {
                     prompt_info: None,

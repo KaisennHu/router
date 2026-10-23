@@ -359,6 +359,47 @@ async fn grpc_pd_nixl_push_prefill_failure_fails_the_request() {
     );
 }
 
+#[tokio::test]
+async fn grpc_pd_nixl_push_decode_stream_failure_cancels_prefill() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(push_kv()),
+        reply_delay: std::time::Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    let warmup = router.route_chat(None, &chat(false), None).await;
+    assert!(warmup.status().is_success());
+    axum::body::to_bytes(warmup.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    decode
+        .state
+        .stream_failures_remaining
+        .store(1, Ordering::Relaxed);
+
+    // D opens its stream, so the response is a 200 whose body carries the error.
+    let response = router.route_chat(None, &chat(true), None).await;
+    assert!(response.status().is_success());
+    wait_for_cancel(&prefill, 0).await;
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("decode failed"));
+    for worker in [&prefill, &decode] {
+        let worker = router
+            .worker_registry()
+            .get_by_url(&worker.grpc_url)
+            .unwrap();
+        assert_eq!(worker.load(), 0, "{}", worker.url());
+    }
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        1.0
+    );
+}
+
 /// Drops a streaming response before D's first output, as a disconnecting
 /// client does, and expects D's RPC to be cancelled and its load released.
 async fn disconnect_before_first_token(

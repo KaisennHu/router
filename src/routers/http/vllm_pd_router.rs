@@ -1943,7 +1943,14 @@ impl VllmPDRouter {
                     Some(decode_params),
                 )
                 .await;
-            hold_request_load_until_body_done(response, decode_load)
+            let decode_failed = response
+                .extensions()
+                .get::<crate::backend::grpc::GrpcStreamTask>()
+                .map(crate::backend::grpc::GrpcStreamTask::failure);
+            (
+                hold_request_load_until_body_done(response, decode_load),
+                decode_failed,
+            )
         };
         tokio::pin!(prefill, decode);
 
@@ -1951,15 +1958,26 @@ impl VllmPDRouter {
             prefill_result = &mut prefill => {
                 drop(prefill_load);
                 match prefill_result {
-                    Ok(kv) => (kv, decode.await),
+                    Ok(kv) => (kv, decode.await.0),
                     Err(response) => return fail(response, true),
                 }
             }
-            response = &mut decode => {
+            (response, decode_failed) = &mut decode => {
                 if !response.status().is_success() {
                     return fail(response, false);
                 }
-                let prefill_result = prefill.await;
+                // D's stream can fail after it opened, while P is still
+                // running. Its error frame is already queued in `response`.
+                let decode_failed = async {
+                    match decode_failed {
+                        Some(failed) => failed.await,
+                        None => std::future::pending().await,
+                    }
+                };
+                let prefill_result = tokio::select! {
+                    prefill_result = &mut prefill => prefill_result,
+                    () = decode_failed => return fail(response, false),
+                };
                 drop(prefill_load);
                 match prefill_result {
                     Ok(kv) => (kv, response),
