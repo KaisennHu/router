@@ -88,6 +88,22 @@ Multimodal content also currently returns 400 on the gRPC path. The proto has
 chat content. Supporting it requires mapping OpenAI image/media parts into the
 proto media fields and adding parity tests against vLLM HTTP behavior.
 
+## P/D Disaggregation
+
+`--vllm-pd-disaggregation` accepts all-`grpc://` prefill and decode pools.
+The router sends P a unary one-token `Generate` and D a `GenerateStream`, both
+carrying the connector's JSON in `GenerateRequest.kv.kv_transfer_params`.
+P's `FinishInfo.kv_transfer_params` is handed to D. NIXL push mode runs both
+legs concurrently once P's push identity is cached.
+
+**P/D workers must run vLLM ≥ 0.30.0.** v0.29.x passes integer connector
+fields such as ports to the engine as floats, so every decode finishes
+`abort` with no tokens. Colocated gRPC serving works on v0.29.
+
+A P or D leg that finishes `abort` fails the request. When a leg is dropped
+before it finishes, for example on client disconnect or a failed sibling leg,
+the router sends that worker `Control.Abort` for the engine request id.
+
 ## Backend Modules
 
 | File | Role |

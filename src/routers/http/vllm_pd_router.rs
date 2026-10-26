@@ -94,6 +94,20 @@ fn build_prefill_request_builder(
     dp_utils::add_dp_rank_header(builder, dp_rank)
 }
 
+/// D stays loaded while a streaming body is open. A collected reply or an
+/// error is complete, so its load is released now.
+fn hold_grpc_decode_load(response: Response, load: RequestLoadGuard) -> Response {
+    if response
+        .extensions()
+        .get::<crate::backend::grpc::GrpcStreamTask>()
+        .is_some()
+    {
+        hold_request_load_until_body_done(response, load)
+    } else {
+        response
+    }
+}
+
 impl VllmPDRouter {
     /// Query the Mooncake bootstrap server on a prefill node to get engine_id per dp_rank.
     /// Retries with backoff since the prefill server may not be ready at router startup.
@@ -1876,7 +1890,7 @@ impl VllmPDRouter {
 
         decode_worker.increment_load();
         let decode_load = RequestLoadGuard::new(Some(decode_worker.clone()), None);
-        let response = hold_request_load_until_body_done(
+        let response = hold_grpc_decode_load(
             self.grpc_frontend
                 .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
                 .await,
@@ -1947,10 +1961,7 @@ impl VllmPDRouter {
                 .extensions()
                 .get::<crate::backend::grpc::GrpcStreamTask>()
                 .map(crate::backend::grpc::GrpcStreamTask::failure);
-            (
-                hold_request_load_until_body_done(response, decode_load),
-                decode_failed,
-            )
+            (hold_grpc_decode_load(response, decode_load), decode_failed)
         };
         tokio::pin!(prefill, decode);
 

@@ -150,6 +150,48 @@ async fn grpc_pd_hands_prefill_kv_params_to_decode() {
         assert_eq!(d.request_id, p.request_id);
         assert!(!d.had_text_prompt && !p.had_text_prompt);
     }
+    assert!(prefill.aborts().is_empty() && decode.aborts().is_empty());
+}
+
+#[tokio::test]
+async fn grpc_pd_aborted_prefill_skips_decode() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    prefill
+        .state
+        .aborted_finishes_remaining
+        .store(1, Ordering::Relaxed);
+
+    let response = router.route_chat(None, &chat(false), None).await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(decode.captured().is_empty());
+    assert_eq!(
+        worker_counter("vllm_router_pd_prefill_errors_total", &prefill.grpc_url),
+        1.0
+    );
+}
+
+#[tokio::test]
+async fn grpc_pd_non_streaming_decode_releases_load_before_body_is_read() {
+    let (_prefill, decode, router) = push_pair().await;
+    let d = router
+        .worker_registry()
+        .get_by_url(&decode.grpc_url)
+        .unwrap();
+
+    // Sequential first, then concurrent once P's push identity is cached.
+    for _ in 0..2 {
+        let response = router.route_chat(None, &chat(false), None).await;
+        assert!(response.status().is_success());
+        assert_eq!(d.load(), 0, "a collected reply holds no decode load");
+        drop(response);
+    }
+    assert_eq!(decode.captured().len(), 2);
 }
 
 #[tokio::test]
@@ -400,6 +442,43 @@ async fn grpc_pd_nixl_push_decode_stream_failure_cancels_prefill() {
     );
 }
 
+#[tokio::test]
+async fn grpc_pd_nixl_push_aborted_decode_cancels_prefill() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(push_kv()),
+        reply_delay: std::time::Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    let warmup = router.route_chat(None, &chat(false), None).await;
+    assert!(warmup.status().is_success());
+    decode
+        .state
+        .aborted_finishes_remaining
+        .store(1, Ordering::Relaxed);
+
+    let response = router.route_chat(None, &chat(true), None).await;
+    assert!(response.status().is_success());
+    wait_for_cancel(&prefill, 0).await;
+    let request_id = prefill.captured()[1].request_id.clone();
+    wait_for_abort(&prefill, &request_id).await;
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("\"finish_reason\":\"abort\""));
+    let p = router
+        .worker_registry()
+        .get_by_url(&prefill.grpc_url)
+        .unwrap();
+    assert_eq!(p.load(), 0);
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        1.0
+    );
+}
+
 /// Drops a streaming response before D's first output, as a disconnecting
 /// client does, and expects D's RPC to be cancelled and its load released.
 async fn disconnect_before_first_token(
@@ -418,6 +497,23 @@ async fn disconnect_before_first_token(
     drop(response);
     wait_for_cancel(decode, cancelled_before).await;
     assert_eq!(d.load(), 0);
+    let request_id = decode.captured().last().unwrap().request_id.clone();
+    wait_for_abort(decode, &request_id).await;
+}
+
+/// `Control.Abort` is sent from a spawned task after the leg is dropped.
+async fn wait_for_abort(server: &MockVllmRsServer, request_id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !server.aborts().iter().any(|id| id == request_id) && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        server.aborts().iter().any(|id| id == request_id),
+        "{} got aborts {:?}, expected {request_id}",
+        server.grpc_url,
+        server.aborts()
+    );
 }
 
 async fn wait_for_cancel(server: &MockVllmRsServer, cancelled_before: usize) {
@@ -453,6 +549,8 @@ async fn disconnect_during_prefill(router: &VllmPDRouter, prefill: &MockVllmRsSe
     drop(pending);
     wait_for_cancel(prefill, cancelled_before).await;
     assert_eq!(p.load(), 0);
+    let request_id = prefill.captured().last().unwrap().request_id.clone();
+    wait_for_abort(prefill, &request_id).await;
 }
 
 fn slow_decode() -> MockVllmRs {

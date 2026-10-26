@@ -1,7 +1,7 @@
-//! In-process vLLM 0.29 `Inference` gRPC worker for router tests.
+//! In-process vLLM `Inference` gRPC worker for router tests.
 //!
 //! Also serves `grpc.health.v1` as `SERVING` so `Router::new` startup
-//! probes pass. Used by `tests/grpc_vs_http_e2e.rs`. Records `token_ids`
+//! probes pass, and records `Control.Abort` calls. Used by `tests/grpc_vs_http_e2e.rs`. Records `token_ids`
 //! vs text prompt on each `GenerateStream`. Not Python EngineCore.
 
 #![allow(dead_code)]
@@ -17,6 +17,8 @@ use tokio_stream::Stream;
 use tonic::{transport::Server, Request, Response, Status};
 use vllm_router_rs::backend::convert::{json_to_proto_struct, proto_struct_to_json};
 use vllm_router_rs::backend::pb::{
+    self,
+    control_server::{Control, ControlServer},
     finish_info, generate_request,
     inference_server::{Inference, InferenceServer},
     FinishInfo, GenerateRequest, GenerateResponse, PromptInfo, SequenceOutput, TokenIds,
@@ -54,6 +56,10 @@ pub struct MockVllmRs {
     /// Streams to fail with a gRPC error after their prompt info, i.e.
     /// after the stream has opened.
     pub stream_failures_remaining: Arc<AtomicUsize>,
+    /// Requests to finish with `FinishReason::Aborted` instead of `Stop`.
+    pub aborted_finishes_remaining: Arc<AtomicUsize>,
+    /// Request ids received by `Control.Abort`.
+    pub aborts: Arc<Mutex<Vec<String>>>,
 }
 
 impl Default for MockVllmRs {
@@ -67,6 +73,8 @@ impl Default for MockVllmRs {
             reply_delay: Duration::ZERO,
             cancelled: Arc::new(AtomicUsize::new(0)),
             stream_failures_remaining: Arc::new(AtomicUsize::new(0)),
+            aborted_finishes_remaining: Arc::new(AtomicUsize::new(0)),
+            aborts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -93,10 +101,12 @@ impl MockVllmRsServer {
             .set_service_status("", tonic_health::ServingStatus::Serving)
             .await;
         let svc = InferenceServer::new(state.clone());
+        let control = ControlServer::new(state.clone());
         let handle = tokio::spawn(async move {
             Server::builder()
                 .add_service(health_service)
                 .add_service(svc)
+                .add_service(control)
                 .serve_with_incoming(incoming)
                 .await
                 .unwrap();
@@ -113,6 +123,10 @@ impl MockVllmRsServer {
 
     pub fn captured(&self) -> Vec<CapturedGrpcGenerate> {
         self.state.captured.lock().unwrap().clone()
+    }
+
+    pub fn aborts(&self) -> Vec<String> {
+        self.state.aborts.lock().unwrap().clone()
     }
 }
 
@@ -221,6 +235,15 @@ impl Inference for MockVllmRs {
             .stream_failures_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok();
+        let finish_reason = if self
+            .aborted_finishes_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            finish_info::FinishReason::Aborted
+        } else {
+            finish_info::FinishReason::Stop
+        };
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(reply_delay) => {}
@@ -252,7 +275,7 @@ impl Inference for MockVllmRs {
                         token_ids: vec![7, 8, 9],
                         finish_info: Some(FinishInfo {
                             num_output_tokens: 3,
-                            finish_reason: finish_info::FinishReason::Stop as i32,
+                            finish_reason: finish_reason as i32,
                             kv_transfer_params: finish_kv,
                             ..Default::default()
                         }),
@@ -263,4 +286,54 @@ impl Inference for MockVllmRs {
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
+}
+
+macro_rules! mock_control {
+    ($($method:ident($request:ident) -> $response:ident;)*) => {
+        /// Records `Abort`; every other Control RPC is unimplemented.
+        #[tonic::async_trait]
+        impl Control for MockVllmRs {
+            async fn abort(
+                &self,
+                request: Request<pb::AbortRequest>,
+            ) -> Result<Response<pb::AbortResponse>, Status> {
+                self.aborts
+                    .lock()
+                    .unwrap()
+                    .extend(request.into_inner().request_ids);
+                Ok(Response::new(pb::AbortResponse {}))
+            }
+
+            $(
+                async fn $method(
+                    &self,
+                    _request: Request<pb::$request>,
+                ) -> Result<Response<pb::$response>, Status> {
+                    Err(Status::unimplemented(stringify!($method)))
+                }
+            )*
+        }
+    };
+}
+
+mock_control! {
+    get_server_info(GetServerInfoRequest) -> ServerInfo;
+    get_model_info(GetModelInfoRequest) -> ModelInfo;
+    load_lora(LoadLoraRequest) -> LoadLoraResponse;
+    unload_lora(UnloadLoraRequest) -> UnloadLoraResponse;
+    list_loras(ListLorasRequest) -> ListLorasResponse;
+    get_kv_event_sources(GetKvEventSourcesRequest) -> GetKvEventSourcesResponse;
+    pause_generation(PauseGenerationRequest) -> PauseGenerationResponse;
+    resume_generation(ResumeGenerationRequest) -> ResumeGenerationResponse;
+    is_paused(IsPausedRequest) -> IsPausedResponse;
+    sleep(SleepRequest) -> SleepResponse;
+    wake_up(WakeUpRequest) -> WakeUpResponse;
+    is_sleeping(IsSleepingRequest) -> IsSleepingResponse;
+    init_weight_transfer_engine(InitWeightTransferEngineRequest) -> InitWeightTransferEngineResponse;
+    start_weight_update(StartWeightUpdateRequest) -> StartWeightUpdateResponse;
+    start_draft_weight_update(StartDraftWeightUpdateRequest) -> StartDraftWeightUpdateResponse;
+    update_weights(UpdateWeightsRequest) -> UpdateWeightsResponse;
+    finish_weight_update(FinishWeightUpdateRequest) -> FinishWeightUpdateResponse;
+    update_weight_version(UpdateWeightVersionRequest) -> UpdateWeightVersionResponse;
+    get_weight_version(GetWeightVersionRequest) -> GetWeightVersionResponse;
 }

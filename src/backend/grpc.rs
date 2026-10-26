@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::transport::Channel;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::convert::{
@@ -29,7 +29,10 @@ use super::openai::{
     final_response, finish_reason_name, format_sse, now_secs, stream_chunk, stream_usage_chunk,
     SSE_DONE,
 };
+use super::pb::control_client::ControlClient;
+use super::pb::finish_info::FinishReason;
 use super::pb::inference_client::InferenceClient;
+use super::pb::AbortRequest;
 use super::stream_output::{output_frame_tracking, OutputFrameConsumer, OutputFrameProducer};
 use super::vllm_frontend::{decode_stream, emit_detok, DynTokenizer, IncrementalDecoderTrait};
 use crate::protocols::spec::Usage;
@@ -44,6 +47,53 @@ pub(crate) struct KvHandoff {
     /// Engine `GenerateRequest.request_id`; the OpenAI response id is separate.
     pub engine_request_id: Option<String>,
     pub kv_transfer_params: Option<serde_json::Value>,
+}
+
+/// Sends `Control.Abort` for a P/D engine request if dropped before
+/// [`disarm`](Self::disarm). A vLLM worker notices a cancelled RPC only at its
+/// next send, so one waiting on KV would otherwise keep the request running.
+struct EngineAbortGuard {
+    target: Option<(Channel, String)>,
+    timeout: Duration,
+}
+
+impl EngineAbortGuard {
+    fn new(channel: &Channel, engine_request_id: Option<&str>, timeout: Duration) -> Self {
+        Self {
+            target: engine_request_id.map(|id| (channel.clone(), id.to_string())),
+            timeout,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.target = None;
+    }
+}
+
+impl Drop for EngineAbortGuard {
+    fn drop(&mut self) {
+        let Some((channel, request_id)) = self.target.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let timeout = self.timeout;
+        runtime.spawn(async move {
+            let request = AbortRequest {
+                request_ids: vec![request_id.clone()],
+            };
+            let result =
+                tokio::time::timeout(timeout, ControlClient::new(channel).abort(request)).await;
+            match result {
+                Ok(Ok(_)) => debug!(%request_id, "grpc Control.Abort sent"),
+                Ok(Err(status)) => {
+                    debug!(%request_id, code = ?status.code(), msg = %status.message(), "grpc Control.Abort failed")
+                }
+                Err(_) => debug!(%request_id, "grpc Control.Abort timed out"),
+            }
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -127,7 +177,7 @@ fn grpc_status_code(status: &tonic::Status) -> StatusCode {
 
 #[derive(Clone)]
 pub struct GrpcEngineBackend {
-    clients: Arc<DashMap<String, InferenceClient<Channel>>>,
+    clients: Arc<DashMap<String, Channel>>,
     connect_timeout: Duration,
     request_timeout: Duration,
 }
@@ -163,7 +213,7 @@ impl GrpcEngineBackend {
         }
     }
 
-    async fn client_for(&self, worker_url: &str) -> Result<InferenceClient<Channel>, String> {
+    async fn channel_for(&self, worker_url: &str) -> Result<Channel, String> {
         let uri = grpc_connect_uri(worker_url)?;
         if let Some(hit) = self.clients.get(&uri) {
             return Ok(hit.clone());
@@ -174,9 +224,8 @@ impl GrpcEngineBackend {
             .connect()
             .await
             .map_err(|e| format!("grpc connect {uri}: {e}"))?;
-        let client = InferenceClient::new(channel);
-        self.clients.insert(uri, client.clone());
-        Ok(client)
+        self.clients.insert(uri, channel.clone());
+        Ok(channel)
     }
 
     pub fn remove_client(&self, worker_url: &str) {
@@ -197,17 +246,19 @@ impl GrpcEngineBackend {
         let mut proto = chat_to_generate_request(
             prepared.request.as_ref(),
             prepared.tokenized.token_ids.as_ref().to_vec(),
-            engine_request_id,
+            engine_request_id.clone(),
         )
         .map_err(|error| (StatusCode::BAD_REQUEST, error).into_response())?;
         limit_to_prefill(&mut proto);
         set_kv_transfer_params(&mut proto, kv_transfer_params)
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())?;
 
-        let mut client = self.client_for(worker_url).await.map_err(|error| {
+        let channel = self.channel_for(worker_url).await.map_err(|error| {
             error!(error = %error, "grpc prefill connect failed");
             (StatusCode::BAD_GATEWAY, error).into_response()
         })?;
+        let abort = EngineAbortGuard::new(&channel, Some(&engine_request_id), self.connect_timeout);
+        let mut client = InferenceClient::new(channel);
         let mut tonic_req = tonic::Request::new(proto);
         tonic_req.set_timeout(self.request_timeout);
         if let Some(rank) = parse_dp_rank(worker_url) {
@@ -218,8 +269,12 @@ impl GrpcEngineBackend {
         let response = match tokio::time::timeout(self.request_timeout, client.generate(tonic_req))
             .await
         {
-            Ok(Ok(response)) => response.into_inner(),
+            Ok(Ok(response)) => {
+                abort.disarm();
+                response.into_inner()
+            }
             Ok(Err(status)) => {
+                abort.disarm();
                 warn!(code = ?status.code(), msg = %status.message(), "prefill Generate failed");
                 return Err((
                     grpc_status_code(&status),
@@ -235,9 +290,15 @@ impl GrpcEngineBackend {
                     .into_response());
             }
         };
-        Ok(response
-            .outputs
-            .and_then(|outputs| outputs.finish_info)
+        let finish = response.outputs.and_then(|outputs| outputs.finish_info);
+        if finish
+            .as_ref()
+            .is_some_and(|finish| finish.finish_reason == FinishReason::Aborted as i32)
+        {
+            warn!(%engine_request_id, "prefill Generate finished aborted");
+            return Err((StatusCode::BAD_GATEWAY, "grpc Generate: prefill aborted").into_response());
+        }
+        Ok(finish
             .and_then(|finish| finish.kv_transfer_params)
             .map(|params| proto_struct_to_json(&params)))
     }
@@ -270,6 +331,7 @@ impl GrpcEngineBackend {
         let skip_special = request.skip_special_tokens;
         let detok_tokenizer = handle.tokenizer();
         let detok_prompt_ids = tokenized.token_ids.clone();
+        let abort_request_id = handoff.engine_request_id.clone();
         let mut proto = match chat_to_generate_request(
             request,
             tokenized.token_ids.as_ref().to_vec(),
@@ -287,13 +349,16 @@ impl GrpcEngineBackend {
         }
 
         let t_connect = Instant::now();
-        let mut client = match self.client_for(worker_url).await {
+        let channel = match self.channel_for(worker_url).await {
             Ok(c) => c,
             Err(e) => {
                 error!(error = %e, "grpc backend connect failed");
                 return (StatusCode::BAD_GATEWAY, e).into_response();
             }
         };
+        let abort =
+            EngineAbortGuard::new(&channel, abort_request_id.as_deref(), self.connect_timeout);
+        let mut client = InferenceClient::new(channel);
         let grpc_connect_ms = t_connect.elapsed().as_secs_f64() * 1000.0;
 
         let mut tonic_req = tonic::Request::new(proto);
@@ -311,6 +376,7 @@ impl GrpcEngineBackend {
             {
                 Ok(Ok(s)) => s.into_inner(),
                 Ok(Err(status)) => {
+                    abort.disarm();
                     warn!(code = ?status.code(), msg = %status.message(), "GenerateStream failed");
                     return (
                         grpc_status_code(&status),
@@ -360,6 +426,7 @@ impl GrpcEngineBackend {
             stages,
             t_req,
             on_first_output,
+            abort,
         };
         if request.stream {
             stream_openai(stream, reply, n_prompt_tokens).await
@@ -386,6 +453,7 @@ struct ChatReply {
     stages: serde_json::Value,
     t_req: Instant,
     on_first_output: Option<FirstOutputCallback>,
+    abort: EngineAbortGuard,
 }
 
 fn fill_engine_ms(stages: &mut serde_json::Value) {
@@ -427,6 +495,7 @@ async fn stream_openai(
         mut stages,
         t_req,
         on_first_output: _,
+        abort,
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
@@ -545,7 +614,7 @@ async fn stream_openai(
                                 SSE_DONE.to_string(),
                                 false,
                             );
-                            return true;
+                            return finish.as_deref() != Some("abort");
                         }
                     }
                     Err(status) => {
@@ -571,7 +640,9 @@ async fn stream_openai(
             false
         }
         .await;
-        if !finished {
+        if finished {
+            abort.disarm();
+        } else {
             failed_tx.send_replace(true);
         }
     });
@@ -610,6 +681,7 @@ async fn collect_openai(
         mut stages,
         t_req,
         on_first_output,
+        abort,
     } = reply;
     let mut detok = tok
         .as_ref()
@@ -683,6 +755,7 @@ async fn collect_openai(
         )
             .into_response();
     }
+    abort.disarm();
     let body = final_response(
         &request_id,
         &model,
