@@ -108,6 +108,34 @@ fn hold_grpc_decode_load(response: Response, load: RequestLoadGuard) -> Response
     }
 }
 
+/// Read before [`hold_grpc_decode_load`], which moves the stream task into
+/// the body.
+fn grpc_decode_outcome(
+    response: &Response,
+) -> Option<impl std::future::Future<Output = bool> + Send + 'static> {
+    response
+        .extensions()
+        .get::<crate::backend::grpc::GrpcStreamTask>()
+        .map(crate::backend::grpc::GrpcStreamTask::outcome)
+}
+
+/// A gRPC decode stream answers 200 when it opens, so a failure after that,
+/// including an `abort` finish, is counted once the producer stops.
+fn record_grpc_decode_stream_failure(
+    outcome: Option<impl std::future::Future<Output = bool> + Send + 'static>,
+    decode_base_url: &str,
+) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    let decode_base_url = decode_base_url.to_string();
+    tokio::spawn(async move {
+        if outcome.await {
+            RouterMetrics::record_pd_decode_error(&decode_base_url);
+        }
+    });
+}
+
 impl VllmPDRouter {
     /// Query the Mooncake bootstrap server on a prefill node to get engine_id per dp_rank.
     /// Retries with backoff since the prefill server may not be ready at router startup.
@@ -1890,18 +1918,20 @@ impl VllmPDRouter {
 
         decode_worker.increment_load();
         let decode_load = RequestLoadGuard::new(Some(decode_worker.clone()), None);
-        let response = hold_grpc_decode_load(
-            self.grpc_frontend
-                .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
-                .await,
-            decode_load,
-        );
+        let response = self
+            .grpc_frontend
+            .dispatch_decode(decode_worker.url(), prepared, request_id, decode_params)
+            .await;
+        let decode_outcome = grpc_decode_outcome(&response);
+        let response = hold_grpc_decode_load(response, decode_load);
 
         RouterMetrics::record_pd_request(path);
         RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
         RouterMetrics::record_pd_prefill_request(&prefill_base_url);
         RouterMetrics::record_pd_decode_request(&decode_base_url);
-        if !response.status().is_success() {
+        if response.status().is_success() {
+            record_grpc_decode_stream_failure(decode_outcome, &decode_base_url);
+        } else {
             RouterMetrics::record_pd_decode_error(&decode_base_url);
         }
         response
@@ -1961,19 +1991,27 @@ impl VllmPDRouter {
                 .extensions()
                 .get::<crate::backend::grpc::GrpcStreamTask>()
                 .map(crate::backend::grpc::GrpcStreamTask::failure);
-            (hold_grpc_decode_load(response, decode_load), decode_failed)
+            let decode_outcome = grpc_decode_outcome(&response);
+            (
+                hold_grpc_decode_load(response, decode_load),
+                decode_failed,
+                decode_outcome,
+            )
         };
         tokio::pin!(prefill, decode);
 
-        let (prefill_kv, response) = tokio::select! {
+        let (prefill_kv, response, decode_outcome) = tokio::select! {
             prefill_result = &mut prefill => {
                 drop(prefill_load);
                 match prefill_result {
-                    Ok(kv) => (kv, decode.await.0),
+                    Ok(kv) => {
+                        let (response, _, decode_outcome) = decode.await;
+                        (kv, response, decode_outcome)
+                    }
                     Err(response) => return fail(response, true),
                 }
             }
-            (response, decode_failed) = &mut decode => {
+            (response, decode_failed, decode_outcome) = &mut decode => {
                 if !response.status().is_success() {
                     return fail(response, false);
                 }
@@ -1991,7 +2029,7 @@ impl VllmPDRouter {
                 };
                 drop(prefill_load);
                 match prefill_result {
-                    Ok(kv) => (kv, response),
+                    Ok(kv) => (kv, response, decode_outcome),
                     Err(prefill_response) => return fail(prefill_response, true),
                 }
             }
@@ -2008,7 +2046,9 @@ impl VllmPDRouter {
         RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
         RouterMetrics::record_pd_prefill_request(&prefill_base_url);
         RouterMetrics::record_pd_decode_request(&decode_base_url);
-        if !response.status().is_success() {
+        if response.status().is_success() {
+            record_grpc_decode_stream_failure(decode_outcome, &decode_base_url);
+        } else {
             RouterMetrics::record_pd_decode_error(&decode_base_url);
         }
         response

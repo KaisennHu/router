@@ -308,7 +308,8 @@ impl Inference for MockVllmRs {
 
 macro_rules! mock_control {
     ($($method:ident($request:ident) -> $response:ident;)*) => {
-        /// Records `Abort`; every other Control RPC is unimplemented.
+        /// Records `Abort` and serves model and server info; every other
+        /// Control RPC is unimplemented.
         #[tonic::async_trait]
         impl Control for MockVllmRs {
             async fn abort(
@@ -320,6 +321,27 @@ macro_rules! mock_control {
                     .unwrap()
                     .extend(request.into_inner().request_ids);
                 Ok(Response::new(pb::AbortResponse {}))
+            }
+
+            async fn get_model_info(
+                &self,
+                _request: Request<pb::GetModelInfoRequest>,
+            ) -> Result<Response<pb::ModelInfo>, Status> {
+                Ok(Response::new(pb::ModelInfo {
+                    model_id: "mock-model".into(),
+                    supports_token_ids_input: true,
+                    ..Default::default()
+                }))
+            }
+
+            async fn get_server_info(
+                &self,
+                _request: Request<pb::GetServerInfoRequest>,
+            ) -> Result<Response<pb::ServerInfo>, Status> {
+                Ok(Response::new(pb::ServerInfo {
+                    engine_version: "mock".into(),
+                    ..Default::default()
+                }))
             }
 
             $(
@@ -335,8 +357,6 @@ macro_rules! mock_control {
 }
 
 mock_control! {
-    get_server_info(GetServerInfoRequest) -> ServerInfo;
-    get_model_info(GetModelInfoRequest) -> ModelInfo;
     load_lora(LoadLoraRequest) -> LoadLoraResponse;
     unload_lora(UnloadLoraRequest) -> UnloadLoraResponse;
     list_loras(ListLorasRequest) -> ListLorasResponse;

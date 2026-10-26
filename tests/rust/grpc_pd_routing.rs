@@ -543,17 +543,39 @@ async fn disconnect_before_first_token(
 
 /// `Control.Abort` is sent from a spawned task after the leg is dropped.
 async fn wait_for_abort(server: &MockVllmRsServer, request_id: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while !server.aborts().iter().any(|id| id == request_id) && std::time::Instant::now() < deadline
-    {
+    wait_for_aborts(server, request_id, 1).await;
+}
+
+/// A leg dropped before its RPC was answered gets a second, delayed Abort.
+async fn wait_for_aborts(server: &MockVllmRsServer, request_id: &str, count: usize) {
+    let sent = || {
+        server
+            .aborts()
+            .iter()
+            .filter(|id| *id == request_id)
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while sent() < count && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(
-        server.aborts().iter().any(|id| id == request_id),
-        "{} got aborts {:?}, expected {request_id}",
+        sent() >= count,
+        "{} got aborts {:?}, expected {request_id} {count} time(s)",
         server.grpc_url,
         server.aborts()
     );
+}
+
+/// The decode error for a stream that fails after its 200 is recorded once
+/// the producer stops.
+async fn wait_for_decode_errors(decode: &MockVllmRsServer, count: f64) {
+    let errors = || worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while errors() < count && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(errors(), count);
 }
 
 async fn wait_for_cancel(server: &MockVllmRsServer, cancelled_before: usize) {
@@ -590,7 +612,7 @@ async fn disconnect_during_prefill(router: &VllmPDRouter, prefill: &MockVllmRsSe
     wait_for_cancel(prefill, cancelled_before).await;
     assert_eq!(p.load(), 0);
     let request_id = prefill.captured().last().unwrap().request_id.clone();
-    wait_for_abort(prefill, &request_id).await;
+    wait_for_aborts(prefill, &request_id, 2).await;
 }
 
 fn slow_decode() -> MockVllmRs {
@@ -616,6 +638,86 @@ async fn grpc_pd_client_disconnect_cancels_decode_stream() {
         .get_by_url(&prefill.grpc_url)
         .unwrap();
     assert_eq!(p.load(), 0);
+    // D answered before the drop, so vLLM had registered it: one Abort.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(decode.aborts().len(), 1, "{:?}", decode.aborts());
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        0.0,
+        "a client disconnect is not a decode error"
+    );
+}
+
+#[tokio::test]
+async fn grpc_pd_aborted_decode_stream_records_decode_error() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    decode
+        .state
+        .aborted_finishes_remaining
+        .store(1, Ordering::Relaxed);
+
+    let response = router.route_chat(None, &chat(true), None).await;
+    assert!(response.status().is_success());
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("\"finish_reason\":\"abort\""));
+    wait_for_decode_errors(&decode, 1.0).await;
+
+    let response = router.route_chat(None, &chat(true), None).await;
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        1.0,
+        "a clean stream records no decode error"
+    );
+}
+
+#[tokio::test]
+async fn grpc_pd_info_endpoints_use_grpc_control() {
+    let prefill = MockVllmRsServer::spawn().await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    let get = |uri: &str| {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let json_body = |response: axum::response::Response| async move {
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice::<Value>(&bytes).unwrap()
+    };
+
+    let models = json_body(router.get_models(get("/v1/models")).await).await;
+    assert_eq!(models["data"][0]["id"], "mock-model");
+    let model_info = json_body(router.get_model_info(get("/get_model_info")).await).await;
+    assert_eq!(model_info["model_id"], "mock-model");
+    let server_info = json_body(router.get_server_info(get("/get_server_info")).await).await;
+    assert_eq!(server_info["engine_version"], "mock");
+
+    let health_generate = router.health_generate(get("/health_generate")).await;
+    assert_eq!(
+        health_generate.status(),
+        axum::http::StatusCode::NOT_IMPLEMENTED
+    );
+    assert_eq!(
+        router.flush_cache().await.status(),
+        axum::http::StatusCode::NOT_IMPLEMENTED
+    );
+    assert!(prefill.captured().is_empty() && decode.captured().is_empty());
 }
 
 #[tokio::test]

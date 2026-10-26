@@ -135,9 +135,19 @@ legs concurrently once P's push identity is cached.
 fields such as ports to the engine as floats, so every decode finishes
 `abort` with no tokens. Colocated gRPC serving works on v0.29.
 
-A P or D leg that finishes `abort` fails the request. When a leg is dropped
-before it finishes, for example on client disconnect or a failed sibling leg,
-the router sends that worker `Control.Abort` for the engine request id.
+A P or D leg that finishes `abort` fails the request. A streaming decode that
+fails after its stream opened still counts as a decode error. When a leg is
+dropped before it finishes, for example on client disconnect or a failed
+sibling leg, the router sends that worker `Control.Abort` for the engine
+request id, and repeats it once shortly after if the worker had not yet
+answered the RPC.
+
+The info endpoints behave as in colocated gRPC mode: `/v1/models`,
+`/get_model_info`, and `/get_server_info` are answered from the first prefill
+worker's gRPC control service, and `/health_generate` returns `501`.
+`/flush_cache` also returns `501`, because vLLM's gRPC control service has no
+cache reset. `power_of_two` uses the router's own in-flight counts, since
+`grpc://` workers serve no HTTP `/get_load`.
 
 ## Backend Modules
 

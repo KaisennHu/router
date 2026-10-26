@@ -38,6 +38,7 @@ use super::vllm_frontend::{decode_stream, emit_detok, DynTokenizer, IncrementalD
 use crate::protocols::spec::Usage;
 
 const DP_RANK_METADATA: &str = "x-data-parallel-rank";
+const ENGINE_ABORT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -52,9 +53,14 @@ pub(crate) struct KvHandoff {
 /// Sends `Control.Abort` for a P/D engine request if dropped before
 /// [`disarm`](Self::disarm). A vLLM worker notices a cancelled RPC only at its
 /// next send, so one waiting on KV would otherwise keep the request running.
+///
+/// vLLM registers a request before it answers the RPC, and an Abort for an
+/// unregistered id is a no-op. A leg dropped before its answer may race its
+/// own registration, so it gets a second Abort after a short delay.
 struct EngineAbortGuard {
     target: Option<(Channel, String)>,
     timeout: Duration,
+    answered: bool,
 }
 
 impl EngineAbortGuard {
@@ -62,7 +68,12 @@ impl EngineAbortGuard {
         Self {
             target: engine_request_id.map(|id| (channel.clone(), id.to_string())),
             timeout,
+            answered: false,
         }
+    }
+
+    fn answered(&mut self) {
+        self.answered = true;
     }
 
     fn disarm(mut self) {
@@ -79,20 +90,29 @@ impl Drop for EngineAbortGuard {
             return;
         };
         let timeout = self.timeout;
+        let retry = !self.answered;
         runtime.spawn(async move {
-            let request = AbortRequest {
-                request_ids: vec![request_id.clone()],
-            };
-            let result =
-                tokio::time::timeout(timeout, ControlClient::new(channel).abort(request)).await;
-            match result {
-                Ok(Ok(_)) => debug!(%request_id, "grpc Control.Abort sent"),
-                Ok(Err(status)) => {
-                    debug!(%request_id, code = ?status.code(), msg = %status.message(), "grpc Control.Abort failed")
-                }
-                Err(_) => debug!(%request_id, "grpc Control.Abort timed out"),
+            send_engine_abort(&channel, &request_id, timeout).await;
+            if retry {
+                tokio::time::sleep(ENGINE_ABORT_RETRY_DELAY).await;
+                send_engine_abort(&channel, &request_id, timeout).await;
             }
         });
+    }
+}
+
+async fn send_engine_abort(channel: &Channel, request_id: &str, timeout: Duration) {
+    let request = AbortRequest {
+        request_ids: vec![request_id.to_string()],
+    };
+    let result =
+        tokio::time::timeout(timeout, ControlClient::new(channel.clone()).abort(request)).await;
+    match result {
+        Ok(Ok(_)) => debug!(%request_id, "grpc Control.Abort sent"),
+        Ok(Err(status)) => {
+            debug!(%request_id, code = ?status.code(), msg = %status.message(), "grpc Control.Abort failed")
+        }
+        Err(_) => debug!(%request_id, "grpc Control.Abort timed out"),
     }
 }
 
@@ -132,14 +152,23 @@ impl GrpcStreamTask {
     /// Resolves once the producer has queued an error frame and stopped.
     /// Stays pending for a stream that finishes cleanly.
     pub(crate) fn failure(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let outcome = self.outcome();
+        async move {
+            if !outcome.await {
+                std::future::pending::<()>().await
+            }
+        }
+    }
+
+    /// Resolves once the producer stops: `true` if it queued an error frame,
+    /// `false` if it finished cleanly or was dropped.
+    pub(crate) fn outcome(&self) -> impl std::future::Future<Output = bool> + Send + 'static {
         let failed = self.failed.clone();
         async move {
-            if let Some(mut failed) = failed {
-                if failed.wait_for(|failed| *failed).await.is_ok() {
-                    return;
-                }
+            match failed {
+                Some(mut failed) => failed.wait_for(|failed| *failed).await.is_ok(),
+                None => false,
             }
-            std::future::pending::<()>().await
         }
     }
 
@@ -361,7 +390,7 @@ impl GrpcEngineBackend {
                 return (StatusCode::BAD_GATEWAY, e).into_response();
             }
         };
-        let abort =
+        let mut abort =
             EngineAbortGuard::new(&channel, abort_request_id.as_deref(), self.connect_timeout);
         let mut client = InferenceClient::new(channel);
         let grpc_connect_ms = t_connect.elapsed().as_secs_f64() * 1000.0;
@@ -379,7 +408,10 @@ impl GrpcEngineBackend {
             match tokio::time::timeout(self.request_timeout, client.generate_stream(tonic_req))
                 .await
             {
-                Ok(Ok(s)) => s.into_inner(),
+                Ok(Ok(s)) => {
+                    abort.answered();
+                    s.into_inner()
+                }
                 Ok(Err(status)) => {
                     abort.disarm();
                     warn!(code = ?status.code(), msg = %status.message(), "GenerateStream failed");
