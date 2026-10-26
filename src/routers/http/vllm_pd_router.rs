@@ -4,7 +4,7 @@ use super::dp_utils;
 use super::logprobs_merge;
 use super::pd_router::PdRouterBase;
 use super::pd_types::{error_chain, PDRouterError};
-use super::router::{hold_request_load_until_body_done, RequestLoadGuard};
+use super::router::{hold_request_load_until_body_done, prepare_error_status, RequestLoadGuard};
 use super::vllm_service_discovery::{MoriIOTransferMode, ServiceRegistry, ServiceType};
 use crate::config::KvConnector;
 use crate::core::{BasicWorker, Worker, WorkerType};
@@ -812,7 +812,10 @@ impl VllmPDRouter {
             debug!("Logprobs requested and non-streaming - merging prefill and decode logprobs");
 
             let status = decode_response.status();
-            let resp_headers = decode_response.headers().clone();
+            let mut resp_headers =
+                header_utils::preserve_response_headers(decode_response.headers());
+            resp_headers.remove(axum::http::header::CONTENT_LENGTH);
+            resp_headers.remove(axum::http::header::CONTENT_ENCODING);
             let decode_body = decode_response
                 .bytes()
                 .await
@@ -867,7 +870,7 @@ impl VllmPDRouter {
         }
 
         // Non-streaming, no logprobs: read entire body
-        let decode_headers = decode_response.headers().clone();
+        let decode_headers = header_utils::preserve_response_headers(decode_response.headers());
         let body = decode_response
             .bytes()
             .await
@@ -1686,7 +1689,7 @@ impl VllmPDRouter {
         decode_worker.decrement_load();
 
         let status = decode_response.status();
-        let headers = decode_response.headers().clone();
+        let headers = header_utils::preserve_response_headers(decode_response.headers());
 
         info!("📥 Decode response status: {}", status);
         info!("📥 Decode response headers: {:?}", headers);
@@ -1752,7 +1755,10 @@ impl VllmPDRouter {
 
             let mut response_builder = Response::builder().status(status);
             for (key, value) in headers.iter() {
-                if key != "transfer-encoding" && key != "content-length" {
+                if key != "transfer-encoding"
+                    && key != "content-length"
+                    && key != "content-encoding"
+                {
                     response_builder = response_builder.header(key, value);
                 }
             }
@@ -1800,13 +1806,7 @@ impl VllmPDRouter {
         let prepared = match self.grpc_frontend.prepare(request).await {
             Ok(prepared) => prepared,
             Err(error) => {
-                let status =
-                    if error.starts_with("tokenizer:") || error.starts_with("sampling defaults:") {
-                        StatusCode::SERVICE_UNAVAILABLE
-                    } else {
-                        StatusCode::BAD_REQUEST
-                    };
-                return (status, error).into_response();
+                return (prepare_error_status(&error), error.to_string()).into_response();
             }
         };
 
@@ -1913,7 +1913,7 @@ impl VllmPDRouter {
     #[allow(clippy::too_many_arguments)]
     async fn process_grpc_concurrent_chat(
         &self,
-        prepared: crate::backend::PreparedChat,
+        prepared: crate::backend::PreparedRequest,
         prefill_worker: Arc<dyn Worker>,
         decode_worker: Arc<dyn Worker>,
         request_id: String,
@@ -3124,6 +3124,116 @@ impl WorkerManagement for VllmPDRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_decode_response_filters_headers_in_every_branch() {
+        let policies = Arc::new(PolicyRegistry::new(crate::config::PolicyConfig::RoundRobin));
+        let router = VllmPDRouter {
+            epd: None,
+            pd_router: PdRouterBase {
+                worker_registry: Arc::new(crate::core::WorkerRegistry::new()),
+                policy_registry: policies.clone(),
+                worker_startup_timeout_secs: 5,
+                worker_startup_check_interval_secs: 1,
+                worker_loads: Arc::new(tokio::sync::watch::channel(HashMap::new()).1),
+                load_monitor_handle: None,
+                client: reqwest::Client::new(),
+                circuit_breaker_config: crate::core::CircuitBreakerConfig::default(),
+                dp_size: 1,
+            },
+            service_registry: Arc::new(ServiceRegistry::new()),
+            http_client: reqwest::Client::new(),
+            policy_registry: policies,
+            use_discovery: false,
+            enable_profiling: false,
+            profile_timeout_secs: 1,
+            profiling_tasks: Arc::new(Mutex::new(HashMap::new())),
+            intra_node_data_parallel_size: 1,
+            prefill_dp_round_robin: Arc::new(AtomicUsize::new(0)),
+            kv_connector: KvConnector::Nixl,
+            mooncake_prefill_info: Arc::new(Mutex::new(HashMap::new())),
+            nixl_prefill_info: RwLock::new(HashMap::new()),
+            grpc_frontend: crate::backend::EngineFrontend::new(),
+        };
+        for (streaming, logprobs) in [(false, false), (false, true), (true, false)] {
+            // A real reqwest response, with a backend content length that will
+            // become invalid when prompt logprobs are merged into the JSON.
+            let decode: reqwest::Response = axum::http::Response::builder()
+                .header("connection", "X-Internal")
+                .header("x-internal", "private")
+                .header("trailer", "x-checksum")
+                .header("content-length", "2")
+                .header("content-type", "application/json")
+                .header("set-cookie", "a=1")
+                .header("set-cookie", "b=2")
+                .body("{}")
+                .unwrap()
+                .into();
+            let prefill = json!({"prompt_logprobs": [1, 2, 3]});
+            let response = router
+                .handle_decode_response(
+                    decode,
+                    Some(&prefill),
+                    "/v1/chat/completions",
+                    "prefill",
+                    "decode",
+                    "decode",
+                    Instant::now(),
+                    streaming,
+                    logprobs,
+                )
+                .await
+                .unwrap();
+            for name in ["connection", "x-internal", "trailer"] {
+                assert!(
+                    !response.headers().contains_key(name),
+                    "{name} leaked (streaming={streaming}, logprobs={logprobs})"
+                );
+            }
+            assert_eq!(response.headers().get_all("set-cookie").iter().count(), 2);
+            if streaming || logprobs {
+                assert!(!response.headers().contains_key("content-length"));
+            }
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            if logprobs {
+                let decoded: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(decoded["prompt_logprobs"], prefill["prompt_logprobs"]);
+            } else {
+                assert_eq!(bytes.as_ref(), b"{}");
+            }
+        }
+        for streaming in [false, true] {
+            // Encoded bytes are relayed unchanged; removing their encoding
+            // would make the client interpret compressed data as plaintext.
+            let encoded = vec![0x1f, 0x8b, 0x08, 0x00, 0xff];
+            let decode: reqwest::Response = axum::http::Response::builder()
+                .header("content-encoding", "gzip")
+                .body(encoded.clone())
+                .unwrap()
+                .into();
+            let response = router
+                .handle_decode_response(
+                    decode,
+                    None,
+                    "/v1/chat/completions",
+                    "prefill",
+                    "decode",
+                    "decode",
+                    Instant::now(),
+                    streaming,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.headers().get("content-encoding").unwrap(), "gzip");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(bytes.as_ref(), encoded.as_slice());
+        }
+    }
     use serde_json::json;
 
     #[test]

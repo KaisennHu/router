@@ -1,7 +1,8 @@
 //! In-process vLLM `Inference` gRPC worker for router tests.
 //!
 //! Also serves `grpc.health.v1` as `SERVING` so `Router::new` startup
-//! probes pass, and records `Control.Abort` calls. Used by `tests/grpc_vs_http_e2e.rs`. Records `token_ids`
+//! probes pass, and records `Control.Abort` calls. Used by
+//! `tests/rust/grpc_vs_http_e2e.rs`. Records `token_ids`
 //! vs text prompt on each `GenerateStream`. Not Python EngineCore.
 
 #![allow(dead_code)]
@@ -45,6 +46,10 @@ pub struct CapturedGrpcGenerate {
 pub struct MockVllmRs {
     pub captured: Arc<Mutex<Vec<CapturedGrpcGenerate>>>,
     pub reply_text: String,
+    /// `(text, token_ids)` per streamed frame; the last one carries
+    /// `finish_info`. `None` sends a single frame: `reply_text` + `[7, 8, 9]`.
+    /// Empty text with non-empty ids reproduces a buffered decoder fragment.
+    pub frames: Option<Vec<(String, Vec<u32>)>>,
     pub capture_limit: usize,
     pub failures_remaining: Arc<AtomicUsize>,
     /// Returned in `FinishInfo.kv_transfer_params`, as a P/D prefill engine does.
@@ -67,6 +72,7 @@ impl Default for MockVllmRs {
         Self {
             captured: Arc::new(Mutex::new(Vec::new())),
             reply_text: "hello from worker".to_string(),
+            frames: None,
             capture_limit: usize::MAX,
             failures_remaining: Arc::new(AtomicUsize::new(0)),
             finish_kv_transfer_params: None,
@@ -223,7 +229,10 @@ impl Inference for MockVllmRs {
         }
 
         let (tx, rx) = mpsc::channel(4);
-        let reply = self.reply_text.clone();
+        let frames = self
+            .frames
+            .clone()
+            .unwrap_or_else(|| vec![(self.reply_text.clone(), vec![7, 8, 9])]);
         let n_prompt = token_ids.len() as u32;
         let finish_kv = self
             .finish_kv_transfer_params
@@ -265,24 +274,33 @@ impl Inference for MockVllmRs {
                 let _ = tx.send(Err(Status::internal("decode failed"))).await;
                 return;
             }
-            let _ = tx
-                .send(Ok(GenerateResponse {
-                    prompt_info: None,
-                    outputs: Some(SequenceOutput {
-                        index: 0,
-                        text: reply,
-                        num_tokens: 3,
-                        token_ids: vec![7, 8, 9],
-                        finish_info: Some(FinishInfo {
-                            num_output_tokens: 3,
-                            finish_reason: finish_reason as i32,
-                            kv_transfer_params: finish_kv,
+            let last = frames.len().saturating_sub(1);
+            let total: u32 = frames.iter().map(|(_, ids)| ids.len() as u32).sum();
+            let mut finish_kv = finish_kv;
+            for (index, (text, token_ids)) in frames.into_iter().enumerate() {
+                let finish_info = (index == last).then(|| FinishInfo {
+                    num_output_tokens: total,
+                    finish_reason: finish_reason as i32,
+                    kv_transfer_params: finish_kv.take(),
+                    ..Default::default()
+                });
+                let sent = tx
+                    .send(Ok(GenerateResponse {
+                        prompt_info: None,
+                        outputs: Some(SequenceOutput {
+                            index: 0,
+                            text,
+                            num_tokens: token_ids.len() as u32,
+                            token_ids,
+                            finish_info,
                             ..Default::default()
                         }),
-                        ..Default::default()
-                    }),
-                }))
-                .await;
+                    }))
+                    .await;
+                if sent.is_err() {
+                    break;
+                }
+            }
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
