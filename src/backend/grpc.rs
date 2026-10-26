@@ -433,6 +433,7 @@ impl GrpcEngineBackend {
             stages,
             t_req,
             on_first_output,
+            fail_on_abort: abort_request_id.is_some(),
             abort,
         };
         if request.stream {
@@ -462,6 +463,9 @@ struct ChatReply {
     stages: serde_json::Value,
     t_req: Instant,
     on_first_output: Option<FirstOutputCallback>,
+    /// A P/D decode leg reports an `abort` finish as an error, so the push
+    /// path can cancel P instead of returning an aborted reply as success.
+    fail_on_abort: bool,
     abort: EngineAbortGuard,
 }
 
@@ -506,6 +510,7 @@ async fn stream_openai(
         mut stages,
         t_req,
         on_first_output: _,
+        fail_on_abort: _,
         abort,
     } = reply;
     let header_stages = stages.clone();
@@ -707,6 +712,7 @@ async fn collect_openai(
         mut stages,
         t_req,
         on_first_output,
+        fail_on_abort,
         abort,
     } = reply;
     let mut detok = tok
@@ -786,6 +792,10 @@ async fn collect_openai(
             .into_response();
     }
     abort.disarm();
+    if fail_on_abort && finish.as_deref() == Some("abort") {
+        warn!(%request_id, "gRPC decode finished aborted");
+        return (StatusCode::BAD_GATEWAY, "gRPC decode finished aborted").into_response();
+    }
     let mut resp = match shape {
         ResponseShape::Chat => axum::Json(final_response(
             &request_id,

@@ -479,6 +479,46 @@ async fn grpc_pd_nixl_push_aborted_decode_cancels_prefill() {
     );
 }
 
+#[tokio::test]
+async fn grpc_pd_nixl_push_aborted_non_streaming_decode_cancels_prefill() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(push_kv()),
+        reply_delay: std::time::Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    let warmup = router.route_chat(None, &chat(false), None).await;
+    assert!(warmup.status().is_success());
+    decode
+        .state
+        .aborted_finishes_remaining
+        .store(1, Ordering::Relaxed);
+
+    let started = std::time::Instant::now();
+    let response = router.route_chat(None, &chat(false), None).await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "the router waited for P"
+    );
+    wait_for_cancel(&prefill, 0).await;
+    let request_id = prefill.captured()[1].request_id.clone();
+    wait_for_abort(&prefill, &request_id).await;
+    for worker in [&prefill, &decode] {
+        let worker = router
+            .worker_registry()
+            .get_by_url(&worker.grpc_url)
+            .unwrap();
+        assert_eq!(worker.load(), 0, "{}", worker.url());
+    }
+    assert_eq!(
+        worker_counter("vllm_router_pd_decode_errors_total", &decode.grpc_url),
+        1.0
+    );
+}
+
 /// Drops a streaming response before D's first output, as a disconnecting
 /// client does, and expects D's RPC to be cancelled and its load released.
 async fn disconnect_before_first_token(
