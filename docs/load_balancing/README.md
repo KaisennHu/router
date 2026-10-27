@@ -261,6 +261,8 @@ Affinity is off by default. Add `--kv-aware-session-affinity-ttl-secs 1800` for 
 
 Affinity can improve multi-turn cache reuse but may increase waiting time on a busy worker. Unavailable workers trigger fresh selection. Bindings are local to each router, so multiple router replicas need ingress stickiness.
 
+Worker-reported prefill progress is opt-in and disabled by default. To enable it for `kv_aware` gRPC workers, set `--prefill-progress-stale-after-secs <seconds>`. The value is Router's receipt-age threshold: after that much time without a newer valid snapshot, Router marks the last-known reservation stale and keeps it (it does not assume the request completed). The value must be at least 2 seconds and less than `--request-timeout-secs`. Worker capability is checked before Router requests progress; unsupported workers continue with the admission estimate. This setting does not create a worker refresh interval, so it does not guarantee updates at a fixed cadence.
+
 ---
 
 ## Choosing a Policy

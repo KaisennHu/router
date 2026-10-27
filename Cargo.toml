@@ -115,6 +115,7 @@ cpu = []
 ready = []
 
 [dev-dependencies]
+tokio = { version = "1.42.0", features = ["test-util"] }
 libc = "0.2"
 criterion = { version = "0.5", features = ["html_reports"] }
 tower = { version = "0.5", features = ["util"] }

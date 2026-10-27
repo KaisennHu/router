@@ -329,6 +329,14 @@ impl Router {
 
         // All-http or all-grpc. Mixed schemes fail here (not a silent fallback).
         let pool_kind = crate::backend::classify_worker_urls(&worker_urls)?;
+        if ctx
+            .router_config
+            .prefill_progress_stale_after_secs
+            .is_some()
+            && pool_kind == Some(crate::backend::WorkerPoolKind::Http)
+        {
+            return Err("Prefill progress requires a gRPC worker pool".into());
+        }
         let request_timeout = Duration::from_secs(ctx.router_config.request_timeout_secs);
         let frontend = if pool_kind == Some(crate::backend::WorkerPoolKind::Http) {
             crate::backend::frontend::warn_ignored_encoding_caches();
@@ -336,7 +344,12 @@ impl Router {
         } else {
             crate::backend::EngineFrontend::from_env(request_timeout)
                 .map_err(|error| format!("tokenizer cache: {error}"))?
-        };
+        }
+        .with_prefill_progress_stale_after(
+            ctx.router_config
+                .prefill_progress_stale_after_secs
+                .map(Duration::from_secs),
+        );
 
         // Wait for workers to be healthy (skip if empty - for service discovery mode)
         if !worker_urls.is_empty() {
@@ -1746,9 +1759,7 @@ impl Router {
                 )
                     .into_response();
             };
-            let on_first_output = if is_stream {
-                None
-            } else {
+            let on_first_output = {
                 let load = load.clone();
                 Some(Arc::new(move || load.begin_decode())
                     as crate::backend::grpc::FirstOutputCallback)
@@ -4484,6 +4495,15 @@ mod tests {
         worker.increment_load();
         for cancel in [false, true] {
             let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
+            load.update_prefill_progress(1, 40);
+            load.begin_decode();
+            load.update_prefill_progress(2, 32);
+            let slot = load.state.kv_slot.as_ref().unwrap().clone();
+            assert_eq!(
+                crate::policies::LoadProvider::sample(manager.as_ref(), &target)
+                    .active_prefill_tokens,
+                39,
+            );
             let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
             let producer = tokio::spawn(async move {
                 let _ = finish_rx.await;
@@ -4508,6 +4528,7 @@ mod tests {
                 .unwrap();
                 drop(response);
             }
+            slot.update_prefill_progress(3, 64);
             assert_eq!(worker.load(), 1);
             assert_eq!(
                 crate::policies::LoadProvider::sample(manager.as_ref(), &target),

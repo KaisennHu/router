@@ -15,6 +15,25 @@ The current gRPC wire sends router-produced `token_ids`:
 This is the current backend contract, not a policy that gRPC can never support
 text prompts or richer payloads.
 
+## Prefill progress
+
+For a regular `kv_aware` gRPC pool, `--prefill-progress-stale-after-secs 5`
+opts in to worker progress; omitting the option preserves static admission
+accounting. Unsupported workers retain that fallback. The threshold must be
+at least 2 seconds and less than `--request-timeout-secs`.
+
+Only newer snapshots for the current request update the reservation or its
+receipt time. Stale progress increments
+`vllm_router_prefill_progress_stale_total` and retains the last-known balance;
+`vllm_router_prefill_progress_update_gap_seconds` records gaps between valid
+snapshots, and `vllm_router_prefill_progress_updates_total{outcome}` counts
+accepted snapshots and those ignored for a different request identity or a
+non-increasing sequence. With `RUST_LOG=kv_ledger=debug`, each reservation
+transition logs the resulting per-target ledger. Receipt age is not sample age. Prefill can resume after first
+output, and completion, errors and cancellation release the current balance
+exactly once. The overall gRPC request deadline is independent of progress;
+incoming progress frames do not reset it.
+
 ## API Compatibility
 
 Support status of the OpenAI HTTP surface when the worker pool is `grpc://`:
