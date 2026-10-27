@@ -1,3 +1,5 @@
+#![cfg(all(feature = "cpu", feature = "ready"))]
+
 //! P/D disaggregation over `grpc://` prefill and decode pools.
 //!
 //! Two in-process `Inference` mocks stand in for vLLM Rust workers. The
@@ -5,9 +7,11 @@
 //! `kv_transfer_params`, then send D a `GenerateStream` that carries P's
 //! `FinishInfo.kv_transfer_params`. No GPU or KV connector is involved.
 //!
-//!   cargo test --test grpc_pd_routing
+//!   cargo test --features cpu,ready --test grpc_pd_routing
 
 mod common;
+#[path = "common/grpc_frontend_fixture.rs"]
+mod fixture;
 
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
@@ -17,6 +21,7 @@ use common::create_test_context;
 use common::mock_vllm_rs::{MockVllmRs, MockVllmRsServer};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use serde_json::{json, Value};
+use vllm_router_rs::backend::EngineFrontend;
 use vllm_router_rs::config::{KvConnector, PolicyConfig, RouterConfig, RoutingMode};
 use vllm_router_rs::policies::PolicyFactory;
 use vllm_router_rs::protocols::spec::ChatCompletionRequest;
@@ -59,7 +64,9 @@ async fn pd_router_with_dp(
     decode: &MockVllmRsServer,
     dp_size: usize,
 ) -> VllmPDRouter {
-    pd_router_with_pools(&[prefill], decode, dp_size, PolicyConfig::RoundRobin).await
+    let router = pd_router_with_pools(&[prefill], decode, dp_size, PolicyConfig::RoundRobin).await;
+    router.pin_test_token_ids(vec![1, 2, 3]);
+    router
 }
 
 async fn pd_router_with_pools(
@@ -96,7 +103,6 @@ async fn pd_router_with_pools(
     let router = VllmPDRouter::new(prefill_urls, vec![decode.grpc_url.clone()], None, &ctx)
         .await
         .expect("grpc P/D workers should pass grpc.health.v1");
-    router.pin_test_token_ids(vec![1, 2, 3]);
     router
 }
 
@@ -331,6 +337,7 @@ async fn grpc_pd_power_of_two_uses_local_prefill_load() {
         load_check_interval_secs: 1,
     };
     let router = pd_router_with_pools(&[&busy, &idle], &decode, 1, policy).await;
+    router.pin_test_token_ids(vec![1, 2, 3]);
     // Let the load monitor run its first pass.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     router
@@ -795,4 +802,175 @@ async fn grpc_pd_rejects_non_chat_routes_before_dispatch() {
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("/v1/chat/completions"));
     assert!(prefill.captured().is_empty() && decode.captured().is_empty());
+}
+
+/// Turns `VLLM_ROUTER_L0_CACHE` and `VLLM_ROUTER_L1_CACHE` on for one test
+/// and puts the process environment back on drop, including after a panic.
+struct EncodingCacheEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl EncodingCacheEnv {
+    fn enable() -> Self {
+        let keys = [
+            "VLLM_ROUTER_L0_CACHE",
+            "VLLM_ROUTER_L1_CACHE",
+            "VLLM_ROUTER_MODEL",
+            "VLLM_ROUTER_TOKENIZER",
+        ];
+        let saved = keys
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect();
+        std::env::set_var("VLLM_ROUTER_L0_CACHE", "1");
+        std::env::set_var("VLLM_ROUTER_L1_CACHE", "1");
+        // The request model is the fixture directory. A shell override would
+        // send the tokenizer at a different checkpoint.
+        std::env::remove_var("VLLM_ROUTER_MODEL");
+        std::env::remove_var("VLLM_ROUTER_TOKENIZER");
+        Self(saved)
+    }
+}
+
+impl Drop for EncodingCacheEnv {
+    fn drop(&mut self) {
+        for (key, value) in &self.0 {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+fn cache_chat(model: &std::path::Path, messages: Value) -> ChatCompletionRequest {
+    serde_json::from_value(json!({
+        "model": model.to_str().unwrap(),
+        "messages": messages,
+        "max_tokens": 8,
+        "stream": false,
+    }))
+    .unwrap()
+}
+
+/// L0 and L1 on, with a real tokenizer. A repeated chat hits L0. A longer
+/// chat that shares the prefix hits L1. Both legs still receive the same
+/// token ids as an uncached frontend, plus the usual KV hand-off.
+/// The other tests in this file pin token ids and leave both caches off.
+#[tokio::test]
+async fn grpc_pd_encoding_caches_keep_token_ids_on_both_legs() {
+    let _env = EncodingCacheEnv::enable();
+    let model = fixture::qwen_model_fixture();
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router_with_pools(&[&prefill], &decode, 1, PolicyConfig::RoundRobin).await;
+    let (l0, l1) = router.test_encoding_cache_stats();
+    assert!(l0.is_some() && l1.is_some());
+
+    let off = EngineFrontend::new();
+    let short_messages = json!([
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "question 0"},
+    ]);
+    let short = cache_chat(model.path(), short_messages.clone());
+    let expected_short = off
+        .prepare(short.clone())
+        .await
+        .unwrap()
+        .tokenized
+        .token_ids
+        .to_vec();
+
+    let (p_ids, d_ids) = send_chat(&router, &prefill, &decode, &short).await;
+    assert_eq!(p_ids, expected_short);
+    assert_eq!(d_ids, expected_short);
+    let (l0, l1) = router.test_encoding_cache_stats();
+    let l0 = l0.unwrap();
+    let l1 = l1.unwrap();
+    assert!(l0.misses >= 1, "first prompt must miss L0");
+    assert_eq!(l0.hits, 0);
+    assert!(l1.lookups >= 1, "first prompt must enter L1");
+    let l1_lookups = l1.lookups;
+    let l1_hits = l1.hits;
+
+    let (p_ids, d_ids) = send_chat(&router, &prefill, &decode, &short).await;
+    assert_eq!(p_ids, expected_short);
+    assert_eq!(d_ids, expected_short);
+    let (l0, l1) = router.test_encoding_cache_stats();
+    let l0 = l0.unwrap();
+    let l1 = l1.unwrap();
+    assert!(l0.hits >= 1, "repeat must hit L0");
+    assert_eq!(l1.lookups, l1_lookups, "an L0 hit does not consult L1");
+
+    let grown = cache_chat(
+        model.path(),
+        json!([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "question 0"},
+            {"role": "assistant", "content": "answer 0"},
+            {"role": "user", "content": "question 1"},
+        ]),
+    );
+    let expected_grown = off
+        .prepare(grown.clone())
+        .await
+        .unwrap()
+        .tokenized
+        .token_ids
+        .to_vec();
+    assert_ne!(expected_grown, expected_short);
+    let (p_ids, d_ids) = send_chat(&router, &prefill, &decode, &grown).await;
+    assert_eq!(p_ids, expected_grown);
+    assert_eq!(d_ids, expected_grown);
+    let (_, l1) = router.test_encoding_cache_stats();
+    let l1 = l1.unwrap();
+    assert!(l1.hits > l1_hits, "the shared prefix must hit L1");
+    assert!(l1.cached_tokens > 0);
+
+    let p = prefill.captured();
+    let d = decode.captured();
+    assert_eq!((p.len(), d.len()), (3, 3));
+    for (p, d) in p.iter().zip(&d) {
+        assert!(p.unary);
+        assert_eq!((p.max_new_tokens, p.min_new_tokens), (1, 1));
+        assert_eq!(
+            p.kv_transfer_params.as_ref().unwrap()["do_remote_decode"],
+            true
+        );
+        assert!(!d.unary);
+        assert_eq!(d.kv_transfer_params.as_ref(), Some(&prefill_kv()));
+        assert_eq!(d.token_ids, p.token_ids);
+        assert_eq!(d.request_id, p.request_id);
+        assert!(!d.had_text_prompt && !p.had_text_prompt);
+    }
+    assert!(prefill.aborts().is_empty() && decode.aborts().is_empty());
+}
+
+async fn send_chat(
+    router: &VllmPDRouter,
+    prefill: &MockVllmRsServer,
+    decode: &MockVllmRsServer,
+    request: &ChatCompletionRequest,
+) -> (Vec<u32>, Vec<u32>) {
+    let before = prefill.captured().len();
+    let response = router.route_chat(None, request, None).await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        status.is_success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let p = prefill.captured();
+    let d = decode.captured();
+    assert_eq!(p.len(), before + 1);
+    assert_eq!(d.len(), before + 1);
+    (
+        p.last().unwrap().token_ids.clone(),
+        d.last().unwrap().token_ids.clone(),
+    )
 }

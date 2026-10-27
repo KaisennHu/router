@@ -298,6 +298,138 @@ steps:
     artifact_paths:
       - "/tmp/router.log"
 
+  # Rust gRPC P/D. Same layout as the HTTP job above: one prefill and one
+  # decode, each at data-parallel size 2, on four L4s.
+  - label: ":satellite: gRPC P/D Disaggregation Test (4 GPUs)"
+    key: "grpc-pd-disagg-test"
+    if: build.env("ROCM_ONLY") != "1"
+    timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: "*"
+          limit: 2
+      manual:
+        allowed: true
+        reason: "GPU tests can be flaky - retry if needed"
+    plugins:
+      - kubernetes:
+          metadata:
+            annotations:
+              cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+              karpenter.sh/do-not-disrupt: "true"
+          podSpec:
+            priorityClassName: ci
+            serviceAccountName: buildkite-gpu-jobs
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            nodeSelector:
+              vllm.ci/gpu-pool: l4x4
+            containers:
+              - image: nvidia/cuda:13.0.2-devel-ubuntu22.04
+                resources:
+                  limits:
+                    nvidia.com/gpu: 4
+                  requests:
+                    nvidia.com/gpu: 4
+                    cpu: "40"
+                    memory: 160Gi
+                volumeMounts:
+                  - name: devshm
+                    mountPath: /dev/shm
+                  - name: hf-cache
+                    mountPath: /fsx/hf_cache
+                env:
+                  - name: HF_HOME
+                    value: /fsx/hf_cache
+                  - name: HF_HUB_ENABLE_HF_TRANSFER
+                    value: "1"
+                  - name: NCCL_CUMEM_HOST_ENABLE
+                    value: "0"
+                  - name: VLLM_USE_V1
+                    value: "1"
+                  - name: VLLM_LOGGING_LEVEL
+                    value: INFO
+                  - name: UCX_TLS
+                    value: all
+                  - name: UCX_NET_DEVICES
+                    value: all
+                  - name: HF_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: hf-token-secret
+                        key: token
+                  - name: BUILDKITE_SHELL
+                    value: "/bin/bash -e -c"
+            volumes:
+              - name: devshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 96Gi
+              - name: hf-cache
+                hostPath:
+                  path: /fsx/hf_cache
+                  type: DirectoryOrCreate
+    command: |
+      bash <<'BASH'
+      set -euo pipefail
+
+      if [ -z "$${HF_TOKEN:-}" ]; then
+        echo "ERROR: HF_TOKEN is not set. This is required for gated models."
+        exit 1
+      fi
+
+      apt-get update && apt-get install -y \
+        curl \
+        python3 \
+        python3-pip \
+        pkg-config \
+        libssl-dev \
+        protobuf-compiler \
+        git
+
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+      source /root/.local/bin/env
+      uv venv --python 3.12 --seed
+      source .venv/bin/activate
+      uv pip install vllm --torch-backend=cu130
+      uv pip install nixl-cu13
+      uv pip install nixl --no-deps
+      uv pip install requests pytest openai 'lm-eval[api]>=0.4.0' hf_transfer
+
+      python - <<'PY'
+      from importlib.metadata import version
+
+      def parse(value):
+          return tuple(int(part) for part in value.split(".")[:3])
+
+      found = version("vllm")
+      if parse(found) < (0, 30, 0):
+          raise SystemExit(f"gRPC P/D needs vLLM >= 0.30.0, found {found}")
+      print(f"vLLM {found}")
+      PY
+
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source /root/.cargo/env
+      cargo build --release
+      export PATH="$$PWD/target/release:$$PATH"
+      export VLLM_RS
+      VLLM_RS="$(python -c 'import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), "vllm-rs"))')"
+      export MODEL_NAMES="$${MODEL_NAMES:-meta-llama/Llama-3.2-1B-Instruct}"
+      export PREFILL_GPUS=0,1
+      export DECODE_GPUS=2,3
+      export RUN_LM_EVAL=1
+      export LOG_DIR=/tmp/vllm-router-grpc-pd
+
+      pytest tests/python/integration/test_grpc_pd_disagg.py -v -m "ready and L4 and cards_4"
+      BASH
+    agents:
+      queue: "l4-k8s"
+    depends_on: "build"
+    artifact_paths:
+      - "/tmp/vllm-router-grpc-pd/*.log"
+
   # This queue is intentionally separate from the shared amd_mi300_* queues.
   # Those agents run --no-plugins, while this lane needs the Docker plugin
   # to provide the pinned vLLM/MoRI userspace on a two-GPU xGMI host. Put the

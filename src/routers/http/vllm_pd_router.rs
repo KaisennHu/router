@@ -2552,6 +2552,19 @@ impl VllmPDRouter {
     pub fn pin_test_token_ids(&self, token_ids: Vec<u32>) {
         self.grpc_frontend.pin_test_token_ids(token_ids);
     }
+
+    /// Test hook: L0 and L1 stats. Each is `None` when that cache is off.
+    pub fn test_encoding_cache_stats(
+        &self,
+    ) -> (
+        Option<crate::tokenizer::TokenizerCacheStats>,
+        Option<crate::backend::L1CacheStats>,
+    ) {
+        (
+            self.grpc_frontend.tokenizer_cache_stats(),
+            self.grpc_frontend.l1_cache_stats(),
+        )
+    }
 }
 
 // Delegate most RouterTrait methods to the underlying PdRouterBase,
