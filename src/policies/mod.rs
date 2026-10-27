@@ -119,6 +119,11 @@ pub trait LoadBalancingPolicy: Send + Sync + Debug {
         false
     }
 
+    /// Whether the router must track requests in flight for this policy.
+    fn tracks_request_load(&self) -> bool {
+        false
+    }
+
     /// Check if this policy needs HTTP headers for routing decisions
     fn needs_headers(&self) -> bool {
         false // Default: most policies don't need headers

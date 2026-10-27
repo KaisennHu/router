@@ -1243,6 +1243,24 @@ impl Router {
         }
     }
 
+    fn has_http_kv_affinity(
+        &self,
+        model_id: Option<&str>,
+        lora_name: Option<&str>,
+        cache_salt: Option<&str>,
+        affinity_key: Option<&AffinityKey>,
+    ) -> bool {
+        let policy = self.policy_for_model(model_id);
+        let Some((ops, key)) = kv_aware_ops(policy.as_ref()).zip(affinity_key) else {
+            return false;
+        };
+        let workers = match model_id {
+            Some(model) => self.worker_registry.get_by_model_fast(model),
+            None => self.worker_registry.get_all(),
+        };
+        ops.has_affinity(&workers, lora_name, cache_salt, key)
+    }
+
     async fn worker_input_json(
         &self,
         worker_url: &str,
@@ -1446,6 +1464,9 @@ impl Router {
     ) -> Response {
         let start = Instant::now();
         let is_stream = typed_req.is_stream();
+        let model_id = model_id
+            .or_else(|| typed_req.get_model())
+            .filter(|model| self.worker_registry.has_model(model));
 
         // Re-check live URLs. Mix is rejected at init / add_worker; this
         // catches a registry that somehow became mixed.
@@ -1524,29 +1545,7 @@ impl Router {
         };
         let cache_key = std::sync::OnceLock::new();
 
-        let http_inputs = if prepared.is_none()
-            && kv_aware_ops(self.policy_for_model(model_id).as_ref()).is_some()
-        {
-            match serde_json::to_value(typed_req) {
-                Ok(body) => {
-                    self.prepare_http_kv_inputs(headers, &body, route, model_id)
-                        .await
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-        let request_tokens = if let Some(prepared) = &prepared {
-            if kv_aware_ops(self.policy_for_model(model_id).as_ref()).is_some() {
-                RouterMetrics::record_kv_routing_input("grpc", "prepared");
-            }
-            KvRequestTokens::Shared(Some(prepared.tokenized.token_ids.as_ref()))
-        } else if let Some(inputs) = &http_inputs {
-            KvRequestTokens::PerWorker(inputs)
-        } else {
-            KvRequestTokens::Shared(None)
-        };
+        let http_inputs = tokio::sync::OnceCell::new();
 
         // KV-aware retries may bypass a target without rewriting its binding.
         let failed_workers = Mutex::new(Vec::new());
@@ -1582,6 +1581,41 @@ impl Router {
                     .as_ref()
                     .map(|completion| completion.dispatch().target_id.as_str());
                 let policy = self.policy_for_model(model_id);
+                let excluded_workers = failed_workers.lock().clone();
+                let inputs = if prepared.is_none()
+                    && kv_aware_ops(policy.as_ref()).is_some()
+                    && !(excluded_workers.is_empty()
+                        && self.has_http_kv_affinity(
+                            model_id,
+                            lora_name,
+                            cache_salt,
+                            affinity_key.as_ref(),
+                        )) {
+                    http_inputs
+                        .get_or_init(|| async {
+                            match serde_json::to_value(typed_req) {
+                                Ok(body) => {
+                                    self.prepare_http_kv_inputs(headers, &body, route, model_id)
+                                        .await
+                                }
+                                Err(_) => None,
+                            }
+                        })
+                        .await
+                        .as_ref()
+                } else {
+                    None
+                };
+                let request_tokens = if let Some(prepared) = &prepared {
+                    if kv_aware_ops(policy.as_ref()).is_some() {
+                        RouterMetrics::record_kv_routing_input("grpc", "prepared");
+                    }
+                    KvRequestTokens::Shared(Some(prepared.tokenized.token_ids.as_ref()))
+                } else {
+                    inputs
+                        .map(KvRequestTokens::PerWorker)
+                        .unwrap_or(KvRequestTokens::Shared(None))
+                };
                 let selected_worker = if let Some(target) = forced_worker_url {
                     let worker = self
                         .worker_registry
@@ -1602,7 +1636,6 @@ impl Router {
                     });
                     Some(SelectedWorker { worker, kv_receipt })
                 } else {
-                    let excluded_workers = failed_workers.lock().clone();
                     self.select_worker_for_model(
                         model_id,
                         Some(if policy.needs_cache_routing_key() {
@@ -1633,8 +1666,7 @@ impl Router {
                 let load = RequestLoadGuard::from_selection(
                     worker.clone(),
                     kv_receipt,
-                    matches!(policy.name(), "cache_aware" | "kv_aware")
-                        || program_completion.is_some(),
+                    policy.tracks_request_load() || program_completion.is_some(),
                 );
 
                 let response = self
@@ -2921,16 +2953,6 @@ impl RouterTrait for Router {
             .get("stream")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let http_inputs = if *method == Method::POST && kv_aware_ops(policy.as_ref()).is_some() {
-            self.prepare_http_kv_inputs(headers, &body, path, routing_model)
-                .await
-        } else {
-            None
-        };
-        let request_tokens = http_inputs
-            .as_ref()
-            .map(KvRequestTokens::PerWorker)
-            .unwrap_or(KvRequestTokens::Shared(None));
         let lora_name = body
             .get("lora_name")
             .and_then(serde_json::Value::as_str)
@@ -2945,6 +2967,23 @@ impl RouterTrait for Router {
             .and_then(|_| {
                 AffinityKey::from_request(headers, Some(&body), model_id.unwrap_or("default"))
             });
+        let http_inputs = if *method == Method::POST
+            && kv_aware_ops(policy.as_ref()).is_some()
+            && !self.has_http_kv_affinity(
+                routing_model,
+                lora_name,
+                cache_salt,
+                affinity_key.as_ref(),
+            ) {
+            self.prepare_http_kv_inputs(headers, &body, path, routing_model)
+                .await
+        } else {
+            None
+        };
+        let request_tokens = http_inputs
+            .as_ref()
+            .map(KvRequestTokens::PerWorker)
+            .unwrap_or(KvRequestTokens::Shared(None));
         let program_completion = if *method == Method::POST {
             match self
                 .acquire_program_completion_from_payload(
@@ -3024,8 +3063,7 @@ impl RouterTrait for Router {
         };
         let url = worker.endpoint_url(path);
 
-        let load_tracked =
-            matches!(policy.name(), "cache_aware" | "kv_aware") || program_completion.is_some();
+        let load_tracked = policy.tracks_request_load() || program_completion.is_some();
         let load = load_tracked
             .then(|| RequestLoadGuard::from_selection(worker.clone(), kv_receipt, true));
 
@@ -3556,6 +3594,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_affinity_hits_skip_render_on_typed_and_transparent_paths() {
+        for transparent in [false, true] {
+            let ids = vec![1, 2, 3, 4, 5, 6];
+            let mut fixture = http_kv_fixture([vec![ids.clone()], vec![ids]], 0, true).await;
+            fixture.router.kv_aware_session_affinity_ttl_secs = Some(1800);
+            let body = serde_json::json!({"messages":[{"role":"user","content":"hello"}], "session_params":{"session_id":"session"}});
+            let request: ChatCompletionRequest = serde_json::from_value(body.clone()).unwrap();
+            for turn in 0..2 {
+                let response = if transparent {
+                    fixture
+                        .router
+                        .route_transparent(
+                            None,
+                            "/v1/chat/completions",
+                            &Method::POST,
+                            body.clone(),
+                        )
+                        .await
+                } else {
+                    fixture
+                        .router
+                        .route_typed_request(None, &request, "/v1/chat/completions", None)
+                        .await
+                };
+                assert_eq!(selected_http_worker(response).await, 0);
+                let calls = fixture.calls.lock();
+                assert_eq!(
+                    calls
+                        .iter()
+                        .filter(|(_, path, _)| path.ends_with("/render"))
+                        .count(),
+                    if turn == 0 { 2 } else { 0 }
+                );
+                drop(calls);
+                fixture.calls.lock().clear();
+                if turn == 0 {
+                    for _ in 0..8 {
+                        fixture.workers[0].increment_load();
+                    }
+                }
+            }
+            // An unavailable binding must return to preparation and fresh selection.
+            fixture.workers[0].set_healthy(false);
+            let response = fixture
+                .router
+                .route_typed_request(None, &request, "/v1/chat/completions", None)
+                .await;
+            assert_eq!(selected_http_worker(response).await, 1);
+            assert_eq!(
+                fixture
+                    .calls
+                    .lock()
+                    .iter()
+                    .filter(|(_, path, _)| path.ends_with("/render"))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn http_chat_shapes_preserve_full_render_and_dispatch_payloads() {
         let ids = vec![1, 2, 3, 4, 5, 6];
         let fixture = http_kv_fixture([vec![ids.clone()], vec![ids]], 0, true).await;
@@ -3672,32 +3771,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transparent_preparation_only_contacts_the_selected_model_pool() {
-        let ids = vec![1, 2, 3, 4, 5, 6];
-        let fixture = http_kv_fixture([vec![ids.clone()], vec![ids]], 0, true).await;
-        fixture
-            .router
-            .worker_registry
-            .remove_by_url(fixture.workers[1].url());
-        fixture.router.worker_registry.register(Arc::new(
-            BasicWorker::new(fixture.workers[1].url().into(), WorkerType::Regular)
-                .with_labels(HashMap::from([("model_id".into(), "other-model".into())])),
-        ));
-        let response = fixture
-            .router
-            .route_transparent(
-                None,
-                "/v1/responses",
-                &Method::POST,
-                serde_json::json!({"model":fixture.workers[0].model_id(),"input":"hello"}),
-            )
-            .await;
-        assert_eq!(selected_http_worker(response).await, 0);
-        assert!(fixture
-            .calls
-            .lock()
-            .iter()
-            .all(|(worker, _, _)| *worker == 0));
+    async fn http_preparation_only_contacts_the_selected_model_pool() {
+        for transparent in [false, true] {
+            let ids = vec![1, 2, 3, 4, 5, 6];
+            let fixture = http_kv_fixture([vec![ids.clone()], vec![ids]], 0, true).await;
+            fixture
+                .router
+                .worker_registry
+                .remove_by_url(fixture.workers[1].url());
+            fixture.router.worker_registry.register(Arc::new(
+                BasicWorker::new(fixture.workers[1].url().into(), WorkerType::Regular)
+                    .with_labels(HashMap::from([("model_id".into(), "other-model".into())])),
+            ));
+            let response = if transparent {
+                fixture
+                    .router
+                    .route_transparent(
+                        None,
+                        "/v1/responses",
+                        &Method::POST,
+                        serde_json::json!({"model":fixture.workers[0].model_id(),"input":"hello"}),
+                    )
+                    .await
+            } else {
+                let request: CompletionRequest = serde_json::from_value(
+                    serde_json::json!({"model":fixture.workers[0].model_id(), "prompt":"hello"}),
+                )
+                .unwrap();
+                fixture
+                    .router
+                    .route_typed_request(None, &request, "/v1/completions", None)
+                    .await
+            };
+            assert_eq!(selected_http_worker(response).await, 0);
+            assert!(fixture
+                .calls
+                .lock()
+                .iter()
+                .all(|(worker, _, _)| *worker == 0));
+        }
     }
 
     #[tokio::test]
@@ -3713,6 +3825,11 @@ mod tests {
             (
                 "/inference/v1/generate",
                 serde_json::json!({"token_ids":[1,2,3,4,5,6]}),
+                0,
+            ),
+            (
+                "/generate",
+                serde_json::json!({"input_ids":[1,2,3,4,5,6]}),
                 0,
             ),
             (

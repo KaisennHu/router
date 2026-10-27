@@ -56,6 +56,15 @@ pub trait KvAwareOps: Send + Sync {
         matches: Option<Arc<dyn TieredMatchProvider>>,
     );
     fn unregister_worker(&self, worker_url: &str);
+    /// Preparation hint only; selection revalidates the binding before reserving.
+    fn has_affinity(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        lora_name: Option<&str>,
+        cache_salt: Option<&str>,
+        affinity_key: &AffinityKey,
+    ) -> bool;
+
     /// Select and reserve atomically: the returned receipt already carries the
     /// request slot and worker-load reservation made in the policy's short
     /// critical section, plus any affinity binding reference. Workers in
@@ -1466,6 +1475,10 @@ impl LoadBalancingPolicy for KvAwarePolicy {
         self.select_worker_with_token_ids(workers, None)
     }
 
+    fn tracks_request_load(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &'static str {
         "kv_aware"
     }
@@ -1476,6 +1489,27 @@ impl LoadBalancingPolicy for KvAwarePolicy {
 }
 
 impl KvAwareOps for KvAwarePolicy {
+    fn has_affinity(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        lora_name: Option<&str>,
+        cache_salt: Option<&str>,
+        affinity_key: &AffinityKey,
+    ) -> bool {
+        let _guard = self.selection_lock.lock();
+        let records = self.affinity.records.lock();
+        let Some(record) = records.peek(&affinity_key.scoped_digest(lora_name, cache_salt)) else {
+            return false;
+        };
+        !record.is_expired(Instant::now())
+            && workers.iter().any(|worker| {
+                worker.is_available()
+                    && self.targets.get(worker.url()).is_some_and(|binding| {
+                        binding.generation == record.generation && binding.target == record.target
+                    })
+            })
+    }
+
     fn select_worker_with_inputs(
         &self,
         workers: &[Arc<dyn Worker>],
@@ -2300,6 +2334,32 @@ mod tests {
             "default",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn affinity_preparation_hint_rejects_stale_and_out_of_scope_bindings() {
+        let policy = KvAwarePolicy::default();
+        let workers = registered_worker_pair(&policy);
+        let key = affinity_key("session-a");
+        assert!(!policy.has_affinity(&workers, None, None, &key));
+        let receipt = policy
+            .select_worker_with_receipt(&workers, None, None, None, Some(&key), &[])
+            .unwrap();
+        release_receipt(&workers, &receipt);
+        assert!(policy.has_affinity(&workers, None, None, &key));
+        assert!(!policy.has_affinity(&workers, Some("adapter"), None, &key));
+        assert!(!policy.has_affinity(&workers, None, Some("salt"), &key));
+        assert!(!policy.has_affinity(&[], None, None, &key));
+        let worker = &workers[receipt.worker_index];
+        worker.set_healthy(false);
+        assert!(!policy.has_affinity(&workers, None, None, &key));
+        worker.set_healthy(true);
+        let record = policy.affinity.get(&key.scoped_digest(None, None)).unwrap();
+        record.state.lock().idle_deadline = Some(Instant::now());
+        assert!(!policy.has_affinity(&workers, None, None, &key));
+        record.state.lock().idle_deadline = None;
+        policy.register_target(worker.url(), record.target.clone());
+        assert!(!policy.has_affinity(&workers, None, None, &key));
     }
 
     #[test]

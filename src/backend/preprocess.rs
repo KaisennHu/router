@@ -115,6 +115,29 @@ pub(crate) fn http_kv_input(
             }
             "/v1/responses/render"
         }
+        "/generate" => {
+            // Text/prompt take precedence over input_ids on the native route.
+            if ["text", "prompt"]
+                .iter()
+                .any(|field| body.get(field).is_some_and(|value| !value.is_null()))
+            {
+                return Err("unsupported_input");
+            }
+            let ids = body
+                .get("input_ids")
+                .and_then(serde_json::Value::as_array)
+                .ok_or("invalid_token_ids")?;
+            if ids.first().is_some_and(serde_json::Value::is_array) {
+                return Ok(HttpKvInput::Direct(Arc::from(
+                    ids.iter()
+                        .map(dense_token_ids)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )));
+            }
+            return Ok(HttpKvInput::Direct(Arc::from(vec![dense_token_ids(
+                &body["input_ids"],
+            )?])));
+        }
         "/inference/v1/generate" => {
             return Ok(HttpKvInput::Direct(Arc::from(vec![dense_token_ids(
                 &body["token_ids"],
@@ -696,6 +719,23 @@ mod tests {
         };
         assert_eq!(prompts.as_ref(), &[vec![1, 2], vec![3, 4]]);
         assert!(http_kv_input(&json!({"prompt":[-1,2]}), "/v1/completions").is_err());
+        for ids in [json!([1, 2]), json!([[1, 2], [3, 4]])] {
+            let HttpKvInput::Direct(prompts) =
+                http_kv_input(&json!({"input_ids":ids}), "/generate").unwrap()
+            else {
+                panic!("native token ids")
+            };
+            assert_eq!(prompts[0], vec![1, 2]);
+        }
+        for body in [
+            json!({"input_ids":[]}),
+            json!({"input_ids":[-1]}),
+            json!({"input_ids":[1], "text":"preferred"}),
+            json!({"input_ids":[1], "prompt":"preferred"}),
+        ] {
+            assert!(http_kv_input(&body, "/generate").is_err());
+        }
+
         for body in [
             json!({"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":"auto"}),
             json!({"messages":[{"role":"assistant","tool_calls":[]}],"response_format":{"type":"json_object"}}),
