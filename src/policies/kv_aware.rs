@@ -7,17 +7,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use http::HeaderMap;
 use lru::LruCache;
 use parking_lot::Mutex;
 use rand::Rng;
-use serde_json::Value as JsonValue;
 use sha2::{Digest as _, Sha256};
 
 use super::{get_healthy_worker_indices, LoadBalancingPolicy, RequestHeaders};
 use crate::core::Worker;
 use crate::kv_index::{CacheKey, MatchQuery, RoutableTarget, StorageTier, TierMatch, WorkerKvInfo};
-use crate::request_identity::{context_string, resolve_stable_identity};
+use crate::request_identity::StableIdentity;
 
 /// Read-only placement port owned by its policy consumer.
 pub trait TieredMatchProvider: Send + Sync {
@@ -416,23 +414,11 @@ pub struct AffinityKey {
 }
 
 impl AffinityKey {
-    pub fn from_request(
-        headers: Option<&HeaderMap>,
-        request: Option<&JsonValue>,
-        model_scope: &str,
-    ) -> Option<Self> {
-        match resolve_stable_identity(headers, request) {
-            Ok(Some(identity)) => Some(Self {
-                model_scope: model_scope.to_string(),
-                source: identity.source.as_str(),
-                identity: identity.program_id,
-            }),
-            Ok(None) => body_session_identity(request).map(|identity| Self {
-                model_scope: model_scope.to_string(),
-                source: "body_session",
-                identity,
-            }),
-            Err(_) => None,
+    pub fn from_identity(identity: StableIdentity, model_scope: &str) -> Self {
+        Self {
+            model_scope: model_scope.to_string(),
+            source: identity.source.as_str(),
+            identity: identity.program_id,
         }
     }
 
@@ -451,19 +437,6 @@ impl AffinityKey {
         }
         hasher.finalize().into()
     }
-}
-
-fn body_session_identity(request: Option<&JsonValue>) -> Option<String> {
-    let object = request?.as_object()?;
-    if let Some(params) = object
-        .get("session_params")
-        .filter(|value| !value.is_null())
-    {
-        if let Some(session_id) = context_string(params.as_object()?, &["session_id"]).ok()? {
-            return Some(session_id);
-        }
-    }
-    context_string(object, &["session_id"]).ok().flatten()
 }
 
 /// One affinity binding. Guards hold direct `Arc` references so a record
@@ -502,12 +475,6 @@ impl AffinityRecord {
 pub(crate) struct KvAffinityTable {
     records: Mutex<LruCache<[u8; 32], Arc<AffinityRecord>>>,
     ttl: Option<Duration>,
-}
-
-impl Default for KvAffinityTable {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl KvAffinityTable {
@@ -1560,6 +1527,24 @@ impl KvAwareOps for KvAwarePolicy {
 #[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
     use super::*;
+    use crate::request_identity::{resolve_affinity_identity, IdentityFields};
+    use http::HeaderMap;
+    use serde_json::Value as JsonValue;
+
+    fn affinity_from_request(
+        headers: Option<&HeaderMap>,
+        body: Option<&JsonValue>,
+        model: &str,
+    ) -> Option<AffinityKey> {
+        resolve_affinity_identity(
+            headers,
+            body.map(IdentityFields::from_body).unwrap_or_default(),
+        )
+        .ok()
+        .flatten()
+        .map(|identity| AffinityKey::from_identity(identity, model))
+    }
+
     use crate::core::{BasicWorker, DPAwareWorker, WorkerType};
     use crate::kv_index::Locality;
     use crate::policies::RoundRobinPolicy;
@@ -2328,7 +2313,7 @@ mod tests {
     }
 
     fn affinity_key(session: &str) -> AffinityKey {
-        AffinityKey::from_request(
+        affinity_from_request(
             None,
             Some(&serde_json::json!({"session_id": session})),
             "default",
@@ -2502,7 +2487,7 @@ mod tests {
         let body = serde_json::json!({
             "agent_hint": {"session_id": "hint-session", "blocks_parent": true}
         });
-        let key = AffinityKey::from_request(None, Some(&body), "model").unwrap();
+        let key = affinity_from_request(None, Some(&body), "model").unwrap();
         assert_eq!(
             (key.source, key.identity.as_str()),
             ("agent_hint", "hint-session")
@@ -2565,7 +2550,7 @@ mod tests {
             "vllm_xargs": {"agentic_context": {"program_id": "task-a:researcher"}},
             "session_id": "ignored"
         });
-        let key = AffinityKey::from_request(None, Some(&canonical), "model").unwrap();
+        let key = affinity_from_request(None, Some(&canonical), "model").unwrap();
         assert_eq!(
             (key.source, key.identity.as_str()),
             ("agentic_context", "task-a:researcher")
@@ -2574,7 +2559,7 @@ mod tests {
         let agent_hint = serde_json::json!({
             "agent_hint": {"session_id": "hint-session"}
         });
-        let key = AffinityKey::from_request(
+        let key = affinity_from_request(
             Some(&header_map("x-session-id", "header-session")),
             Some(&agent_hint),
             "model",
@@ -2587,7 +2572,7 @@ mod tests {
 
         let mut claude = header_map("x-claude-code-session-id", "claude-session");
         claude.insert("x-claude-code-agent-id", "researcher".parse().unwrap());
-        let key = AffinityKey::from_request(Some(&claude), None, "model").unwrap();
+        let key = affinity_from_request(Some(&claude), None, "model").unwrap();
         assert_eq!(
             (key.source, key.identity.as_str()),
             ("framework_header", "claude-session:researcher")
@@ -2595,11 +2580,11 @@ mod tests {
 
         let mut codex = header_map("session-id", "codex-session");
         codex.insert("thread-id", "worker".parse().unwrap());
-        let key = AffinityKey::from_request(Some(&codex), None, "model").unwrap();
+        let key = affinity_from_request(Some(&codex), None, "model").unwrap();
         assert_eq!(key.identity, "codex-session:worker");
 
         let body = serde_json::json!({"session_id": "body-session"});
-        let key = AffinityKey::from_request(
+        let key = affinity_from_request(
             Some(&header_map("x-session-id", "generic-session")),
             Some(&body),
             "model",
@@ -2607,13 +2592,13 @@ mod tests {
         .unwrap();
         assert_eq!(key.identity, "generic-session:lead");
 
-        let key = AffinityKey::from_request(None, Some(&body), "model").unwrap();
+        let key = affinity_from_request(None, Some(&body), "model").unwrap();
         assert_eq!(
             (key.source, key.identity.as_str()),
             ("body_session", "body-session")
         );
         let params = serde_json::json!({"session_params": {"session_id": "params-session"}});
-        let key = AffinityKey::from_request(None, Some(&params), "model").unwrap();
+        let key = affinity_from_request(None, Some(&params), "model").unwrap();
         assert_eq!(key.identity, "params-session");
     }
 
@@ -2622,26 +2607,26 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-request-id", "request-1".parse().unwrap());
         headers.insert("x-trace-id", "trace-1".parse().unwrap());
-        assert!(AffinityKey::from_request(Some(&headers), None, "model").is_none());
+        assert!(affinity_from_request(Some(&headers), None, "model").is_none());
 
         let user_scoped = serde_json::json!({"user": "user-a", "user_id": "user-a"});
-        assert!(AffinityKey::from_request(None, Some(&user_scoped), "model").is_none());
+        assert!(affinity_from_request(None, Some(&user_scoped), "model").is_none());
 
         let malformed_hint = serde_json::json!({"agent_hint": {"session_id": []}});
-        assert!(AffinityKey::from_request(None, Some(&malformed_hint), "model").is_none());
+        assert!(affinity_from_request(None, Some(&malformed_hint), "model").is_none());
 
         let malformed_context = serde_json::json!({
             "vllm_xargs": {"agentic_context": {"task_id": [], "agent_id": "worker"}}
         });
-        assert!(AffinityKey::from_request(None, Some(&malformed_context), "model").is_none());
+        assert!(affinity_from_request(None, Some(&malformed_context), "model").is_none());
         for params in [serde_json::json!({"session_id": []}), serde_json::json!([])] {
             let body = serde_json::json!({"session_params": params, "session_id": "fallback"});
-            assert!(AffinityKey::from_request(None, Some(&body), "model").is_none());
+            assert!(affinity_from_request(None, Some(&body), "model").is_none());
         }
         for params in [serde_json::json!({}), JsonValue::Null] {
             let body = serde_json::json!({"session_params": params, "session_id": "fallback"});
             assert_eq!(
-                AffinityKey::from_request(None, Some(&body), "model")
+                affinity_from_request(None, Some(&body), "model")
                     .unwrap()
                     .identity,
                 "fallback"
@@ -2652,8 +2637,8 @@ mod tests {
     #[test]
     fn affinity_digest_scopes_model_lora_salt_and_identity_kind() {
         let body = serde_json::json!({"session_id": "session-a"});
-        let key = AffinityKey::from_request(None, Some(&body), "model-a").unwrap();
-        let header_key = AffinityKey::from_request(
+        let key = affinity_from_request(None, Some(&body), "model-a").unwrap();
+        let header_key = affinity_from_request(
             Some(&header_map("x-session-id", "session-a")),
             None,
             "model-a",
@@ -2664,7 +2649,7 @@ mod tests {
             header_key.scoped_digest(None, None)
         );
 
-        let other_model = AffinityKey::from_request(None, Some(&body), "model-b").unwrap();
+        let other_model = affinity_from_request(None, Some(&body), "model-b").unwrap();
         assert_ne!(
             key.scoped_digest(None, None),
             other_model.scoped_digest(None, None)

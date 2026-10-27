@@ -1,7 +1,5 @@
 use super::program_adapter::ProgramCompletion;
-use crate::backend::preprocess::{
-    dense_token_ids, http_kv_input, http_rendered_tokens, http_tokenize_fallback, HttpKvInput,
-};
+use crate::backend::preprocess::prepare_http_kv_inputs;
 use crate::backend::{stream_output::OutputFrameConsumer, PrepareError};
 use crate::config::types::RetryConfig;
 use crate::core::{
@@ -10,11 +8,11 @@ use crate::core::{
 };
 use crate::metrics::RouterMetrics;
 use crate::otel_http::{self, ClientRequestOptions};
+use crate::policies::KvRequestTokens;
 use crate::policies::{
     kv_aware_ops, AffinityKey, KvRequestSlot, KvSelectionReceipt, LoadBalancingPolicy,
     PolicyRegistry,
 };
-use crate::policies::{KvRequestTokens, WorkerTokenInputs};
 use crate::program_scheduling::{
     BackendObservationProvider, ProgramIdentity, ProgramScheduler, ProgramSchedulerConfig,
     ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
@@ -24,6 +22,7 @@ use crate::protocols::spec::{
     GrpcRequestRef, InferenceGenerateRequest, RerankRequest, RerankResponse, RerankResult,
     ResponsesRequest,
 };
+use crate::request_identity::{resolve_affinity_identity, IdentityFields};
 use crate::routers::header_utils;
 use crate::routers::http::dp_utils;
 use crate::routers::{RouterTrait, WorkerManagement};
@@ -1243,159 +1242,15 @@ impl Router {
         }
     }
 
-    fn has_http_kv_affinity(
-        &self,
-        model_id: Option<&str>,
-        lora_name: Option<&str>,
-        cache_salt: Option<&str>,
-        affinity_key: Option<&AffinityKey>,
-    ) -> bool {
-        let policy = self.policy_for_model(model_id);
-        let Some((ops, key)) = kv_aware_ops(policy.as_ref()).zip(affinity_key) else {
-            return false;
-        };
+    fn available_workers(&self, model_id: Option<&str>) -> Vec<Arc<dyn Worker>> {
         let workers = match model_id {
             Some(model) => self.worker_registry.get_by_model_fast(model),
             None => self.worker_registry.get_all(),
         };
-        ops.has_affinity(&workers, lora_name, cache_salt, key)
-    }
-
-    async fn worker_input_json(
-        &self,
-        worker_url: &str,
-        path: &str,
-        body: &serde_json::Value,
-        headers: Option<&HeaderMap>,
-    ) -> Result<serde_json::Value, &'static str> {
-        let mut request = self
-            .client
-            .post(format!("{}{path}", worker_url.trim_end_matches('/')))
-            .timeout(Duration::from_secs(5))
-            .json(body);
-        if let Some(value) = headers.and_then(|headers| headers.get("authorization")) {
-            request = request.header("authorization", value);
-        }
-        if let Some(key) = &self.api_key {
-            request = request.bearer_auth(key);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| "preparation_unavailable")?;
-        match response.status() {
-            StatusCode::NOT_FOUND
-            | StatusCode::METHOD_NOT_ALLOWED
-            | StatusCode::NOT_IMPLEMENTED => return Err("render_unavailable"),
-            status if !status.is_success() => return Err("preparation_rejected"),
-            _ => {}
-        }
-        response
-            .json()
-            .await
-            .map_err(|_| "invalid_preparation_response")
-    }
-
-    async fn prepare_http_kv_inputs(
-        &self,
-        headers: Option<&HeaderMap>,
-        body: &serde_json::Value,
-        route: &str,
-        model_id: Option<&str>,
-    ) -> Option<WorkerTokenInputs> {
-        let input = match http_kv_input(body, route) {
-            Ok(input) => input,
-            Err(reason) => {
-                RouterMetrics::record_kv_routing_input("http", reason);
-                return None;
-            }
-        };
-        let workers = match model_id {
-            Some(model) => self.worker_registry.get_by_model_fast(model),
-            None => self.worker_registry.get_all(),
-        };
-        let mut urls: Vec<_> = workers
-            .iter()
+        workers
+            .into_iter()
             .filter(|worker| worker.is_available())
-            .map(|worker| worker.base_url().to_string())
-            .collect();
-        urls.sort();
-        urls.dedup();
-        if urls.is_empty() {
-            return None;
-        }
-        if let HttpKvInput::Direct(prompts) = input {
-            RouterMetrics::record_kv_routing_input("http", "token_ids");
-            return Some(urls.into_iter().map(|url| (url, prompts.clone())).collect());
-        }
-        let HttpKvInput::Render { path } = input else {
-            unreachable!()
-        };
-        let expected_prompts = if route == "/v1/completions" {
-            body.get("prompt")
-                .and_then(serde_json::Value::as_array)
-                .filter(|items| {
-                    items
-                        .first()
-                        .is_some_and(|item| item.is_string() || item.is_array())
-                })
-                .map_or(1, Vec::len)
-        } else {
-            1
-        };
-        let tokenize_fallback = std::sync::OnceLock::new();
-        let results = futures_util::stream::iter(urls)
-            .map(|url| {
-                let tokenize_fallback = &tokenize_fallback;
-                async move {
-                    let (prompts, source) =
-                        match self.worker_input_json(&url, path, body, headers).await {
-                            Ok(rendered) => (http_rendered_tokens(&rendered)?, "render"),
-                            Err("render_unavailable") => {
-                                let requests = tokenize_fallback
-                                    .get_or_init(|| http_tokenize_fallback(body, route))
-                                    .as_ref()
-                                    .ok_or("render_unavailable")?;
-                                let mut prompts = Vec::with_capacity(requests.len());
-                                for request in requests {
-                                    let tokenized = self
-                                        .worker_input_json(&url, "/tokenize", request, headers)
-                                        .await?;
-                                    let ids = dense_token_ids(&tokenized["tokens"])?;
-                                    if tokenized["count"].as_u64() != Some(ids.len() as u64) {
-                                        return Err("invalid_preparation_response");
-                                    }
-                                    prompts.push(ids);
-                                }
-                                (Arc::from(prompts), "tokenize")
-                            }
-                            Err(reason) => return Err(reason),
-                        };
-                    if prompts.len() != expected_prompts {
-                        return Err("invalid_preparation_response");
-                    }
-                    Ok((url, prompts, source))
-                }
-            })
-            .buffer_unordered(8);
-        futures_util::pin_mut!(results);
-        // Preparation is optional placement evidence. Keep completed workers'
-        // results and cancel slow candidates after one shared ingress budget.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        let mut inputs = WorkerTokenInputs::new();
-        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, results.next()).await {
-            match result {
-                Ok((url, prompts, source)) => {
-                    RouterMetrics::record_kv_routing_input("http", source);
-                    inputs.insert(url, prompts);
-                }
-                Err(reason) => {
-                    RouterMetrics::record_kv_routing_input("http", reason);
-                    debug!(reason, "KV-aware candidate received no placement credit");
-                }
-            }
-        }
-        Some(inputs)
+            .collect()
     }
 
     /// Select worker for a specific model considering circuit breaker state
@@ -1403,6 +1258,7 @@ impl Router {
     fn select_worker_for_model(
         &self,
         model_id: Option<&str>,
+        available: &[Arc<dyn Worker>],
         text: Option<&str>,
         headers: Option<&HeaderMap>,
         token_ids: KvRequestTokens<'_>,
@@ -1411,17 +1267,6 @@ impl Router {
         affinity_key: Option<&AffinityKey>,
         excluded_workers: &[String],
     ) -> Option<SelectedWorker> {
-        // Get workers for the specified model (O(1) lookup if model_id is provided)
-        let workers = match model_id {
-            Some(model) => self.worker_registry.get_by_model_fast(model),
-            None => self.worker_registry.get_all(),
-        };
-
-        let available: Vec<Arc<dyn Worker>> = workers
-            .iter()
-            .filter(|w| w.is_available())
-            .cloned()
-            .collect();
         if available.is_empty() {
             return None;
         }
@@ -1435,7 +1280,7 @@ impl Router {
             // The policy sees the full list: a retry exclusion must not
             // rewrite a still-valid binding.
             let receipt = kv_aware.select_worker_with_inputs(
-                &available,
+                available,
                 token_ids,
                 lora_name,
                 cache_salt,
@@ -1448,7 +1293,7 @@ impl Router {
             });
         }
 
-        let idx = policy.select_worker_with_headers(&available, text, request_headers.as_ref())?;
+        let idx = policy.select_worker_with_headers(available, text, request_headers.as_ref())?;
         Some(SelectedWorker {
             worker: available.get(idx)?.clone(),
             kv_receipt: None,
@@ -1554,13 +1399,17 @@ impl Router {
             .kv_aware_session_affinity_ttl_secs
             .filter(|_| kv_aware_ops(self.policy_for_model(model_id).as_ref()).is_some())
             .and_then(|_| {
-                AffinityKey::from_request(
-                    headers,
-                    typed_req.extract_affinity_identity_payload().as_ref(),
-                    model_id
-                        .or_else(|| typed_req.get_model())
-                        .unwrap_or("default"),
-                )
+                resolve_affinity_identity(headers, typed_req.affinity_identity())
+                    .ok()
+                    .flatten()
+                    .map(|identity| {
+                        AffinityKey::from_identity(
+                            identity,
+                            model_id
+                                .or_else(|| typed_req.get_model())
+                                .unwrap_or("default"),
+                        )
+                    })
             });
 
         let response = RetryExecutor::execute_response_with_retry(
@@ -1581,22 +1430,31 @@ impl Router {
                     .as_ref()
                     .map(|completion| completion.dispatch().target_id.as_str());
                 let policy = self.policy_for_model(model_id);
+                let kv_ops = kv_aware_ops(policy.as_ref());
+                let workers = self.available_workers(model_id);
                 let excluded_workers = failed_workers.lock().clone();
                 let inputs = if prepared.is_none()
-                    && kv_aware_ops(policy.as_ref()).is_some()
+                    && kv_ops.is_some()
                     && !(excluded_workers.is_empty()
-                        && self.has_http_kv_affinity(
-                            model_id,
-                            lora_name,
-                            cache_salt,
-                            affinity_key.as_ref(),
-                        )) {
+                        && affinity_key.as_ref().is_some_and(|key| {
+                            kv_ops.is_some_and(|ops| {
+                                ops.has_affinity(&workers, lora_name, cache_salt, key)
+                            })
+                        })) {
                     http_inputs
                         .get_or_init(|| async {
                             match serde_json::to_value(typed_req) {
                                 Ok(body) => {
-                                    self.prepare_http_kv_inputs(headers, &body, route, model_id)
-                                        .await
+                                    prepare_http_kv_inputs(
+                                        &self.client,
+                                        &workers,
+                                        headers,
+                                        &body,
+                                        route,
+                                        self.api_key.as_deref(),
+                                        Duration::from_secs(1),
+                                    )
+                                    .await
                                 }
                                 Err(_) => None,
                             }
@@ -1607,7 +1465,7 @@ impl Router {
                     None
                 };
                 let request_tokens = if let Some(prepared) = &prepared {
-                    if kv_aware_ops(policy.as_ref()).is_some() {
+                    if kv_ops.is_some() {
                         RouterMetrics::record_kv_routing_input("grpc", "prepared");
                     }
                     KvRequestTokens::Shared(Some(prepared.tokenized.token_ids.as_ref()))
@@ -1624,7 +1482,7 @@ impl Router {
                     let Some(worker) = worker else {
                         return Self::program_target_unavailable_response(route);
                     };
-                    let kv_receipt = kv_aware_ops(policy.as_ref()).and_then(|kv_aware| {
+                    let kv_receipt = kv_ops.and_then(|kv_aware| {
                         kv_aware.select_worker_with_inputs(
                             std::slice::from_ref(&worker),
                             request_tokens,
@@ -1638,6 +1496,7 @@ impl Router {
                 } else {
                     self.select_worker_for_model(
                         model_id,
+                        &workers,
                         Some(if policy.needs_cache_routing_key() {
                             cache_key.get_or_init(|| typed_req.extract_cache_routing_key())
                         } else {
@@ -1692,7 +1551,7 @@ impl Router {
                 if was_available != worker.is_available() {
                     self.worker_registry.notify_worker_state_change();
                 }
-                if is_retryable_status(status) && kv_aware_ops(policy.as_ref()).is_some() {
+                if is_retryable_status(status) && kv_ops.is_some() {
                     failed_workers.lock().push(worker.url().to_string());
                 }
 
@@ -2921,15 +2780,7 @@ impl RouterTrait for Router {
         // Select a worker (filter by availability like select_worker_for_model)
         let model_id = body.get("model").and_then(serde_json::Value::as_str);
         let routing_model = model_id.filter(|model| self.worker_registry.has_model(model));
-        let all_workers = match routing_model {
-            Some(model) => self.worker_registry.get_by_model_fast(model),
-            None => self.worker_registry.get_all(),
-        };
-        let workers: Vec<Arc<dyn Worker>> = all_workers
-            .iter()
-            .filter(|w| w.is_available())
-            .cloned()
-            .collect();
+        let workers = self.available_workers(routing_model);
         if workers.is_empty() {
             RouterMetrics::record_request_error(path, "no_available_workers");
             return (
@@ -2940,6 +2791,7 @@ impl RouterTrait for Router {
         }
 
         let policy = self.policy_for_model(routing_model);
+        let kv_ops = kv_aware_ops(policy.as_ref());
         // Serializing the whole body is expensive when it carries base64
         // media; only consumers that actually read the text pay for it.
         let request_text = if (policy.needs_request_text() && !policy.needs_cache_routing_key())
@@ -2963,20 +2815,30 @@ impl RouterTrait for Router {
             .filter(|salt| !salt.is_empty());
         let affinity_key = self
             .kv_aware_session_affinity_ttl_secs
-            .filter(|_| kv_aware_ops(policy.as_ref()).is_some())
+            .filter(|_| kv_ops.is_some())
             .and_then(|_| {
-                AffinityKey::from_request(headers, Some(&body), model_id.unwrap_or("default"))
+                resolve_affinity_identity(headers, IdentityFields::from_body(&body))
+                    .ok()
+                    .flatten()
+                    .map(|identity| {
+                        AffinityKey::from_identity(identity, model_id.unwrap_or("default"))
+                    })
             });
         let http_inputs = if *method == Method::POST
-            && kv_aware_ops(policy.as_ref()).is_some()
-            && !self.has_http_kv_affinity(
-                routing_model,
-                lora_name,
-                cache_salt,
-                affinity_key.as_ref(),
-            ) {
-            self.prepare_http_kv_inputs(headers, &body, path, routing_model)
-                .await
+            && kv_ops.is_some()
+            && !affinity_key.as_ref().is_some_and(|key| {
+                kv_ops.is_some_and(|ops| ops.has_affinity(&workers, lora_name, cache_salt, key))
+            }) {
+            prepare_http_kv_inputs(
+                &self.client,
+                &workers,
+                headers,
+                &body,
+                path,
+                self.api_key.as_deref(),
+                Duration::from_secs(1),
+            )
+            .await
         } else {
             None
         };
@@ -3009,7 +2871,7 @@ impl RouterTrait for Router {
                 .get_by_url(&completion.dispatch().target_id)
                 .filter(|worker| worker.is_available())
                 .map(|worker| {
-                    let kv_receipt = kv_aware_ops(policy.as_ref()).and_then(|ops| {
+                    let kv_receipt = kv_ops.and_then(|ops| {
                         ops.select_worker_with_inputs(
                             std::slice::from_ref(&worker),
                             request_tokens,
@@ -3021,7 +2883,7 @@ impl RouterTrait for Router {
                     });
                     SelectedWorker { worker, kv_receipt }
                 })
-        } else if let Some(ops) = kv_aware_ops(policy.as_ref()) {
+        } else if let Some(ops) = kv_ops {
             ops.select_worker_with_inputs(
                 &workers,
                 request_tokens,
@@ -4975,6 +4837,7 @@ mod tests {
             let worker = router
                 .select_worker_for_model(
                     None,
+                    &router.available_workers(None),
                     Some(r#"{"prompt": "test"}"#),
                     Some(&header_map),
                     KvRequestTokens::Shared(None),
@@ -5014,6 +4877,7 @@ mod tests {
         let worker = router
             .select_worker_for_model(
                 None,
+                &router.available_workers(None),
                 Some(r#"{"prompt": "test"}"#),
                 None,
                 KvRequestTokens::Shared(None),
@@ -5044,6 +4908,7 @@ mod tests {
 
         let result = router.select_worker_for_model(
             None,
+            &router.available_workers(None),
             Some(r#"{"prompt": "test"}"#),
             None,
             KvRequestTokens::Shared(None),
@@ -5065,6 +4930,7 @@ mod tests {
             router
                 .select_worker_for_model(
                     None,
+                    &router.available_workers(None),
                     Some(r#"{"prompt": "test"}"#),
                     None,
                     KvRequestTokens::Shared(None),
@@ -5095,6 +4961,7 @@ mod tests {
 
             if let Some(worker) = router.select_worker_for_model(
                 None,
+                &router.available_workers(None),
                 Some(r#"{"prompt": "test"}"#),
                 Some(&header_map),
                 KvRequestTokens::Shared(None),

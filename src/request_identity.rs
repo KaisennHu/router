@@ -9,7 +9,7 @@ use std::io::{self, Write};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct IdentityError(pub String);
+pub struct IdentityError(pub String);
 
 pub(crate) const MAX_IDENTITY_COMPONENT_BYTES: usize = 256;
 pub(crate) const MAX_AGENTIC_CONTEXT_BYTES: usize = 16 * 1024;
@@ -24,13 +24,15 @@ pub(crate) const GENERIC_SESSION_HEADER: &str = "x-session-id";
 /// kind so identical identifiers from different contracts never share a
 /// binding scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IdentitySource {
+pub enum IdentitySource {
     /// Canonical `vllm_xargs.agentic_context` body contract.
     CanonicalContext,
     /// `agent_hint` body contract.
     AgentHint,
     /// Supported framework session headers.
     FrameworkHeader,
+    /// Body session_params.session_id or session_id fallback.
+    BodySession,
 }
 
 impl IdentitySource {
@@ -39,13 +41,14 @@ impl IdentitySource {
             IdentitySource::CanonicalContext => "agentic_context",
             IdentitySource::AgentHint => "agent_hint",
             IdentitySource::FrameworkHeader => "framework_header",
+            IdentitySource::BodySession => "body_session",
         }
     }
 }
 
 /// Identity and its protocol components, without scheduling metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StableIdentity {
+pub struct StableIdentity {
     pub source: IdentitySource,
     pub program_id: String,
     pub task_id: Option<String>,
@@ -62,6 +65,63 @@ impl StableIdentity {
     }
 }
 
+/// Borrowed identity fields at the protocol boundary; no prompt data is copied.
+#[derive(Default, Clone, Copy)]
+pub struct IdentityFields<'a> {
+    pub other: Option<&'a JsonMap<String, JsonValue>>,
+    pub session_params: Option<&'a std::collections::HashMap<String, JsonValue>>,
+}
+
+impl<'a> IdentityFields<'a> {
+    pub fn from_body(body: &'a JsonValue) -> Self {
+        Self {
+            other: body.as_object(),
+            session_params: None,
+        }
+    }
+}
+
+/// Parse transport metadata before handing a typed identity to the policy.
+pub fn resolve_affinity_identity(
+    headers: Option<&HeaderMap>,
+    fields: IdentityFields<'_>,
+) -> Result<Option<StableIdentity>, IdentityError> {
+    let context = canonical_context(fields.other)?;
+    if let Some(identity) = identity_from_parts(headers, fields.other, context.as_ref())? {
+        return Ok(Some(identity));
+    }
+    let session_id = if let Some(params) = fields.session_params {
+        identity_value(params.get("session_id"), "session_id")?
+    } else if let Some(params) = fields
+        .other
+        .and_then(|body| body.get("session_params"))
+        .filter(|value| !value.is_null())
+    {
+        let params = params
+            .as_object()
+            .ok_or_else(|| IdentityError("session_params must be an object".into()))?;
+        context_string(params, &["session_id"])?
+    } else {
+        None
+    };
+    let session_id = match session_id {
+        Some(id) => Some(id),
+        None => fields
+            .other
+            .map(|body| context_string(body, &["session_id"]))
+            .transpose()?
+            .flatten(),
+    };
+    Ok(session_id.map(|id| StableIdentity {
+        source: IdentitySource::BodySession,
+        program_id: id,
+        task_id: None,
+        session_id: None,
+        agent_id: None,
+    }))
+}
+
+#[cfg(all(test, feature = "cpu", feature = "ready"))]
 pub(crate) fn resolve_stable_identity(
     headers: Option<&HeaderMap>,
     request: Option<&JsonValue>,
@@ -306,27 +366,30 @@ pub(crate) fn context_string(
     keys: &[&str],
 ) -> Result<Option<String>, IdentityError> {
     for key in keys {
-        let Some(value) = context.get(*key) else {
-            continue;
-        };
-        if value.is_null() {
-            continue;
+        if let Some(value) = identity_value(context.get(*key), key)? {
+            return Ok(Some(value));
         }
-        let normalized = match value {
-            JsonValue::String(value) => value.trim().to_string(),
-            JsonValue::Number(value) if value.is_i64() || value.is_u64() => value.to_string(),
-            _ => {
-                return Err(IdentityError(format!(
-                    "{key} must be a string-compatible identifier"
-                )))
-            }
-        };
-        if normalized.is_empty() {
-            return Err(IdentityError(format!("{key} must not be empty")));
-        }
-        return Ok(Some(normalized));
     }
     Ok(None)
+}
+
+fn identity_value(value: Option<&JsonValue>, key: &str) -> Result<Option<String>, IdentityError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let normalized = match value {
+        JsonValue::String(value) => value.trim().to_string(),
+        JsonValue::Number(value) if value.is_i64() || value.is_u64() => value.to_string(),
+        _ => {
+            return Err(IdentityError(format!(
+                "{key} must be a string-compatible identifier"
+            )))
+        }
+    };
+    if normalized.is_empty() {
+        return Err(IdentityError(format!("{key} must not be empty")));
+    }
+    Ok(Some(normalized))
 }
 
 pub(crate) fn scoped_program_id(session_id: &str, actor_id: Option<&str>) -> String {

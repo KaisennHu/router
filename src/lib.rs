@@ -15,7 +15,7 @@ pub mod otel_trace;
 pub mod policies;
 pub mod program_scheduling;
 pub mod protocols;
-mod request_identity;
+pub mod request_identity;
 pub mod routers;
 pub mod server;
 pub mod service_discovery;

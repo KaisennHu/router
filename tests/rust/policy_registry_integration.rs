@@ -44,9 +44,14 @@ async fn igw_kv_affinity_survives_load_changes_and_rebinds_after_registration() 
     }
     let policy = policies.get_policy("model").unwrap();
     let ops = kv_aware_ops(policy.as_ref()).unwrap();
-    let key =
-        AffinityKey::from_request(None, Some(&serde_json::json!({"session_id": "s"})), "model")
-            .unwrap();
+    let body = serde_json::json!({"session_id": "s"});
+    let identity = vllm_router_rs::request_identity::resolve_affinity_identity(
+        None,
+        vllm_router_rs::request_identity::IdentityFields::from_body(&body),
+    )
+    .unwrap()
+    .unwrap();
+    let key = AffinityKey::from_identity(identity, "model");
     let select = || {
         let candidates = workers.get_by_model_fast("model");
         let receipt = ops
