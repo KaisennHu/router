@@ -793,7 +793,7 @@ mod tests {
             (None, None),
             (Some("backend-key"), Some("Bearer backend-key")),
         ] {
-            let request = worker_get(&client, "http://worker/v1/models", key)
+            let request = worker_get(&client, "https://worker/v1/models", key)
                 .build()
                 .unwrap();
             assert_eq!(
