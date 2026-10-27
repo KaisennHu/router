@@ -337,26 +337,14 @@ impl Router {
 
         // All-http or all-grpc. Mixed schemes fail here (not a silent fallback).
         let pool_kind = crate::backend::classify_worker_urls(&worker_urls)?;
-        let default_policy = ctx.policy_registry.get_default_policy();
-        let pending_kv_supervisor = if kv_aware_ops(default_policy.as_ref()).is_some() {
-            let (mut supervisor, signals) =
-                crate::kv_index::KvIndexSupervisor::new_http_full_attention(
-                    ctx.client.clone(),
-                    crate::kv_index::HashMode::Sha256,
-                );
-            supervisor.set_api_key(ctx.router_config.api_key.clone());
-            let static_sources = match &ctx.router_config.policy {
-                crate::config::PolicyConfig::KvAware {
-                    static_kv_event_sources,
-                    ..
-                } => static_kv_event_sources.as_ref().clone(),
-                _ => HashMap::new(),
-            };
-            let supervisor = supervisor.with_static_sources(static_sources);
-            Some((supervisor, signals))
-        } else {
-            None
-        };
+        if ctx
+            .router_config
+            .prefill_progress_stale_after_secs
+            .is_some()
+            && pool_kind == Some(crate::backend::WorkerPoolKind::Http)
+        {
+            return Err("Prefill progress requires a gRPC worker pool".into());
+        }
         let request_timeout = Duration::from_secs(ctx.router_config.request_timeout_secs);
         let frontend = if pool_kind == Some(crate::backend::WorkerPoolKind::Http) {
             crate::backend::frontend::warn_ignored_encoding_caches();
@@ -364,7 +352,13 @@ impl Router {
         } else {
             crate::backend::EngineFrontend::from_env(request_timeout)
                 .map_err(|error| format!("tokenizer cache: {error}"))?
-        };
+        }
+        .with_prefill_progress_stale_after(
+            ctx.router_config
+                .prefill_progress_stale_after_secs
+                .map(Duration::from_secs),
+        );
+
         // Wait for workers to be healthy (skip if empty - for service discovery mode)
         if !worker_urls.is_empty() {
             Self::wait_for_healthy_workers(
@@ -1901,9 +1895,7 @@ impl Router {
                 )
                     .into_response();
             };
-            let on_first_output = if is_stream {
-                None
-            } else {
+            let on_first_output = {
                 let load = load.clone();
                 Some(Arc::new(move || load.begin_decode())
                     as crate::backend::grpc::FirstOutputCallback)
@@ -6564,6 +6556,15 @@ mod tests {
         worker.increment_load();
         for cancel in [false, true] {
             let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
+            load.update_prefill_progress(1, 40);
+            load.begin_decode();
+            load.update_prefill_progress(2, 32);
+            let slot = load.state.kv_slot.as_ref().unwrap().clone();
+            assert_eq!(
+                crate::policies::LoadProvider::sample(manager.as_ref(), &target)
+                    .active_prefill_tokens,
+                39,
+            );
             let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
             let producer = tokio::spawn(async move {
                 let _ = finish_rx.await;
@@ -6589,6 +6590,7 @@ mod tests {
                 .unwrap();
                 drop(response);
             }
+            slot.update_prefill_progress(3, 64);
             assert_eq!(worker.load(), 1);
             assert_eq!(
                 crate::policies::LoadProvider::sample(manager.as_ref(), &target),

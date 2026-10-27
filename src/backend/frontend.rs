@@ -84,6 +84,15 @@ impl EngineFrontend {
         }
     }
 
+    /// Opt in to worker progress and retain last-known work when updates become stale.
+    pub(crate) fn with_prefill_progress_stale_after(
+        mut self,
+        stale_after: Option<Duration>,
+    ) -> Self {
+        self.grpc.prefill_progress_stale_after = stale_after;
+        self
+    }
+
     /// Enable L0 with a shared budget across models.
     pub fn with_tokenizer_cache(
         request_timeout: Duration,
