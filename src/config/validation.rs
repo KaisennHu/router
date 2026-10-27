@@ -794,11 +794,15 @@ impl ConfigValidator {
                         .iter()
                         .chain(sources.replay_endpoints.iter().flatten())
                     {
-                        if !(endpoint.starts_with("tcp://") || endpoint.starts_with("ipc://")) {
+                        if !is_reachable_tcp_endpoint(endpoint)
+                            && endpoint
+                                .strip_prefix("ipc://")
+                                .is_none_or(|path| path.is_empty())
+                        {
                             return Err(ConfigError::IncompatibleConfig {
                                 reason: format!(
                                     "pd_kv_event_sources['{url}'] endpoint '{endpoint}' must be \
-                                     a ZMQ address (tcp:// or ipc://)"
+                                     a reachable ZMQ address (tcp://HOST:PORT or ipc://PATH)"
                                 ),
                             });
                         }
@@ -1446,8 +1450,14 @@ mod tests {
             (
                 vec!["http://prefill:5557".to_string()],
                 16,
-                "must be a ZMQ address",
+                "must be a reachable ZMQ address",
             ),
+            (vec!["tcp://*:5557".into()], 16, "reachable ZMQ"),
+            (vec!["tcp://0.0.0.0:5557".into()], 16, "reachable ZMQ"),
+            (vec!["tcp://[::]:5557".into()], 16, "reachable ZMQ"),
+            (vec!["tcp://prefill:0".into()], 16, "reachable ZMQ"),
+            (vec!["tcp://prefill".into()], 16, "reachable ZMQ"),
+            (vec!["ipc://".into()], 16, "reachable ZMQ"),
             (vec![], 16, "no endpoints"),
             (vec!["tcp://prefill:5557".to_string()], 0, "block_size"),
         ] {
@@ -1461,6 +1471,24 @@ mod tests {
             let err = ConfigValidator::validate(&config).unwrap_err().to_string();
             assert!(err.contains(message), "{err}");
         }
+    }
+
+    #[test]
+    fn test_pd_kv_event_sources_validates_replay_and_accepts_ipc_and_ipv6() {
+        let mut config = pd_config_with_static_kv_sources();
+        let source = config
+            .pd_kv_event_sources
+            .get_mut("http://prefill:8000")
+            .unwrap();
+        source.endpoints = vec!["ipc:///tmp/prefill-kv-events".into()];
+        source.replay_endpoints = Some(vec!["tcp://[::1]:5558".into()]);
+        assert!(ConfigValidator::validate(&config).is_ok());
+        config
+            .pd_kv_event_sources
+            .get_mut("http://prefill:8000")
+            .unwrap()
+            .replay_endpoints = Some(vec!["tcp://[::]:5558".into()]);
+        assert!(ConfigValidator::validate(&config).is_err());
     }
 
     #[test]

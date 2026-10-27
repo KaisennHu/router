@@ -342,10 +342,8 @@ impl CacheAwarePolicy {
         stage: &'static str,
     ) -> Option<usize> {
         let healthy = get_healthy_worker_indices(workers);
-        let min_load = healthy.iter().map(|&i| workers[i].load()).min()?;
-        let max_load = healthy.iter().map(|&i| workers[i].load()).max()?;
-        let imbalanced = max_load.saturating_sub(min_load) > self.config.balance_abs_threshold
-            && max_load as f32 > min_load as f32 * self.config.balance_rel_threshold;
+        let (min_load, max_load) = self.load_range(workers, &healthy);
+        let imbalanced = self.is_imbalanced(min_load, max_load);
         if imbalanced {
             RouterMetrics::record_load_balancing_event();
             RouterMetrics::set_load_range(max_load, min_load);
@@ -356,10 +354,8 @@ impl CacheAwarePolicy {
             .collect();
         let Some((prepared, matches)) = prepared.zip(matches) else {
             RouterMetrics::record_prefix_routing_decision("cache_aware", stage, "missing_tokens");
-            let index = *healthy.iter().min_by_key(|&&i| workers[i].load())?;
-            workers[index].increment_processed();
-            RouterMetrics::record_processed_request(workers[index].url());
-            RouterMetrics::record_policy_decision(self.name(), workers[index].url());
+            let index = Self::least_loaded(workers, &healthy)?;
+            Self::record_selection(workers, index);
             return Some(index);
         };
         let best_rate = matches
@@ -392,9 +388,7 @@ impl CacheAwarePolicy {
             batch_prompts = matches[position].0.len(),
             "Cache prefix decision"
         );
-        workers[index].increment_processed();
-        RouterMetrics::record_processed_request(workers[index].url());
-        RouterMetrics::record_policy_decision(self.name(), workers[index].url());
+        Self::record_selection(workers, index);
         Some(index)
     }
 

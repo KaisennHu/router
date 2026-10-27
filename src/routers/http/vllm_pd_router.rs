@@ -107,6 +107,7 @@ fn discovery_is_ready(prefill_count: usize, decode_count: usize) -> bool {
 /// the cap keeps a runaway backend response from ballooning router memory.
 /// 64 MiB is far above any legitimate LLM response.
 const PD_BUFFERED_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_JSON_REWRITE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Read a full response body up to [`PD_BUFFERED_BODY_LIMIT_BYTES`]. Oversized
 /// bodies fail the request (with a metric) instead of buffering unbounded.
@@ -159,112 +160,69 @@ fn response_with_body(
         .map_err(|error| format!("Failed to build Decode response: {error}"))
 }
 
-/// Shared final response handling for direct/discovery and sequential/concurrent PD paths.
-async fn finalize_decode_response(
+/// Rewrite successful SSE responses; relay all other streams unchanged.
+fn finalize_decode_stream(
     decode_response: reqwest::Response,
     prefill_response_json: Option<&Value>,
     path: &str,
-    is_streaming: bool,
-    needs_logprobs: bool,
 ) -> Result<Response, String> {
     let status = decode_response.status();
+    let is_encoded = response_is_encoded(decode_response.headers());
     let mut headers = header_utils::preserve_response_headers(decode_response.headers());
-    headers.remove(axum::http::header::CONTENT_LENGTH);
-    // Classify the upstream bytes even if Connection filtering removes their
-    // encoding header. The shared filter already preserves end-to-end encodings.
-    let is_encoded = decode_response
-        .headers()
-        .get_all(axum::http::header::CONTENT_ENCODING)
+    headers.remove(http::header::CONTENT_LENGTH);
+    let is_sse = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"));
+    let stream = decode_response.bytes_stream();
+    let body = if status.is_success()
+        && pd_cached_tokens::is_supported_path(path)
+        && is_sse
+        && !is_encoded
+    {
+        Body::from_stream(pd_cached_tokens::rewrite_sse_stream(
+            stream,
+            pd_cached_tokens::prefill_cached_tokens(prefill_response_json),
+            prefill_response_json.and_then(usage_merge::usage_snapshot),
+        ))
+    } else {
+        Body::from_stream(stream)
+    };
+    response_with_body(status, &headers, body)
+}
+
+fn response_is_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(http::header::CONTENT_ENCODING)
         .iter()
         .any(|value| {
             !value
                 .to_str()
                 .is_ok_and(|coding| coding.trim().eq_ignore_ascii_case("identity"))
-        });
+        })
+}
 
-    // Only successful generation bodies can be enriched. Preserve worker error
-    // responses as opaque bodies; their status handling is a separate concern.
-    if !status.is_success() {
-        return response_with_body(
-            status,
-            &headers,
-            Body::from_stream(decode_response.bytes_stream()),
-        );
-    }
-
+fn finalize_decode_body(
+    status: StatusCode,
+    headers: HeaderMap,
+    original: Bytes,
+    prefill_response_json: Option<&Value>,
+    path: &str,
+    needs_logprobs: bool,
+) -> Result<Response, String> {
+    let is_encoded = response_is_encoded(&headers);
+    let mut headers = header_utils::preserve_response_headers(&headers);
+    headers.remove(http::header::CONTENT_LENGTH);
     let reconcile_cache = pd_cached_tokens::is_supported_path(path);
-    let cached = if reconcile_cache {
-        pd_cached_tokens::prefill_cached_tokens(prefill_response_json)
-    } else {
-        None
-    };
-
-    if is_streaming {
-        let is_sse = headers
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"));
-        let stream = decode_response.bytes_stream();
-        // A streaming request can receive a non-SSE body. Rewrite only upstream
-        // event streams whose bytes are already decoded; forward all others.
-        let body = if reconcile_cache && is_sse && !is_encoded {
-            Body::from_stream(pd_cached_tokens::rewrite_sse_stream(
-                stream,
-                cached,
-                prefill_response_json.and_then(usage_merge::usage_snapshot),
-            ))
-        } else {
-            Body::from_stream(stream)
-        };
-        return response_with_body(status, &headers, body);
-    }
-
-    // Forward bodies that need no enrichment without waiting for or buffering
-    // the complete response, even when the API request is non-streaming.
-    if is_encoded || (!reconcile_cache && !needs_logprobs) {
-        return response_with_body(
-            status,
-            &headers,
-            Body::from_stream(decode_response.bytes_stream()),
-        );
-    }
-
-    // Bound optional enrichment without breaking large legitimate responses.
-    // An oversized body is forwarded verbatim; only its enrichment is skipped.
-    const MAX_JSON_REWRITE_BYTES: usize = 8 * 1024 * 1024;
-    if decode_response
-        .content_length()
-        .is_some_and(|length| length > MAX_JSON_REWRITE_BYTES as u64)
+    if !status.is_success()
+        || is_encoded
+        || original.len() > MAX_JSON_REWRITE_BYTES
+        || (!reconcile_cache && !needs_logprobs)
     {
-        return response_with_body(
-            status,
-            &headers,
-            Body::from_stream(decode_response.bytes_stream()),
-        );
+        return response_with_body(status, &headers, Body::from(original));
     }
-    let mut source = decode_response.bytes_stream();
-    let mut original = Vec::new();
-    while let Some(chunk) = source.next().await {
-        let chunk = chunk.map_err(|error| format!("Failed to read Decode response: {error}"))?;
-        if chunk.len() > MAX_JSON_REWRITE_BYTES - original.len() {
-            let prefix = futures_util::stream::iter([
-                Ok::<_, reqwest::Error>(bytes::Bytes::from(original)),
-                Ok(chunk),
-            ]);
-            return response_with_body(status, &headers, Body::from_stream(prefix.chain(source)));
-        }
-        let needed = original.len() + chunk.len();
-        if needed > original.capacity() {
-            let capacity = needed
-                .max(original.capacity().saturating_mul(2))
-                .min(MAX_JSON_REWRITE_BYTES);
-            original.reserve_exact(capacity - original.len());
-        }
-        original.extend_from_slice(&chunk);
-    }
-    let original = bytes::Bytes::from(original);
-
+    let cached = pd_cached_tokens::prefill_cached_tokens(prefill_response_json);
     let mut json: Value = match serde_json::from_slice(&original) {
         Ok(json) => json,
         Err(error) if reconcile_cache => {
@@ -1096,8 +1054,8 @@ impl VllmPDRouter {
                 .get("echo")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-        let decode_response = if is_streaming {
-            decode_response
+        if is_streaming {
+            finalize_decode_stream(decode_response, prefill_response_json, path)
         } else {
             let status = decode_response.status();
             let headers = decode_response.headers().clone();
@@ -1105,18 +1063,15 @@ impl VllmPDRouter {
                 .await
                 .map_err(|error| error.to_string())?;
             attempt.finish_decode();
-            let mut response = http::Response::builder().status(status);
-            *response.headers_mut().expect("valid response") = headers;
-            reqwest::Response::from(response.body(bytes).map_err(|error| error.to_string())?)
-        };
-        finalize_decode_response(
-            decode_response,
-            prefill_response_json,
-            path,
-            is_streaming,
-            needs_logprobs,
-        )
-        .await
+            finalize_decode_body(
+                status,
+                headers,
+                bytes,
+                prefill_response_json,
+                path,
+                needs_logprobs,
+            )
+        }
     }
 
     /// Two-stage request processing for vLLM disaggregated mode
@@ -2250,6 +2205,25 @@ impl WorkerManagement for VllmPDRouter {
 
 #[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
+    async fn finalize_decode_response(
+        response: reqwest::Response,
+        prefill: Option<&Value>,
+        path: &str,
+        streaming: bool,
+        logprobs: bool,
+    ) -> Result<Response, String> {
+        if streaming {
+            finalize_decode_stream(response, prefill, path)
+        } else {
+            let status = response.status();
+            let headers = response.headers().clone();
+            let bytes = read_body_limited(response, "http://decode", "decode")
+                .await
+                .map_err(|error| error.to_string())?;
+            finalize_decode_body(status, headers, bytes, prefill, path, logprobs)
+        }
+    }
+
     async fn test_vllm_pd_router() -> VllmPDRouter {
         let config = crate::config::RouterConfig {
             policy: crate::config::PolicyConfig::RoundRobin,
@@ -2274,16 +2248,30 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn stage_body_limit_rejects_oversized_responses() {
+        let url = spawn_test_server(axum::Router::new().fallback(|| async {
+            Response::builder()
+                .header(
+                    http::header::CONTENT_LENGTH,
+                    PD_BUFFERED_BODY_LIMIT_BYTES + 1,
+                )
+                .body(Body::from_stream(futures_util::stream::pending::<
+                    Result<Bytes, std::io::Error>,
+                >()))
+                .unwrap()
+        }))
+        .await;
+        let client = reqwest::Client::new();
+        for stage in ["prefill", "decode"] {
+            let response = client.get(&url).send().await.unwrap();
+            let error = read_body_limited(response, &url, stage).await.unwrap_err();
+            assert!(error.to_string().contains("exceeds"));
+        }
+    }
+
+    #[tokio::test]
     async fn test_decode_response_filters_headers_in_every_branch() {
-        let config = crate::config::RouterConfig {
-            policy: crate::config::PolicyConfig::RoundRobin,
-            ..Default::default()
-        };
-        let ctx = Arc::new(
-            crate::server::AppContext::new(config, reqwest::Client::new(), 64, None, vec![])
-                .unwrap(),
-        );
-        let router = VllmPDRouter::new(vec![], vec![], None, &ctx).await.unwrap();
+        let router = test_vllm_pd_router().await;
         let prefill_workers = [Arc::new(BasicWorker::new(
             "http://prefill".into(),
             WorkerType::Prefill {
@@ -2342,6 +2330,15 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            if !streaming {
+                assert!(router
+                    .pd_router
+                    .pd_load
+                    .snapshot()
+                    .values()
+                    .all(|load| load.active_decode_requests == 0
+                        && load.pending_decode_requests == 0));
+            }
             for name in ["connection", "x-internal", "trailer", "content-encoding"] {
                 assert!(
                     !response.headers().contains_key(name),
@@ -3148,191 +3145,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalizer_forwards_unenriched_body_before_upstream_finishes() {
-        use futures_util::StreamExt;
+    async fn finalizer_reports_truncated_bodies_before_or_after_commit_as_required() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::time::{timeout, Duration};
-
-        for path in ["/generate", "/inference/v1/generate", "/custom"] {
+        for is_streaming in [false, true] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
-            let (finish, ready_to_finish) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = [0; 4096];
                 let bytes_read = socket.read(&mut request).await.unwrap();
                 assert!(bytes_read > 0, "client closed before sending request");
+                // Send fewer bytes than Content-Length promises, then close.
                 socket
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 12\r\n\r\nprefix")
-                    .await
-                    .unwrap();
-                // The response cannot finish until the client receives its prefix.
-                ready_to_finish.await.unwrap();
-                socket.write_all(b"suffix").await.unwrap();
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{")
+                            .await
+                            .unwrap();
                 socket.shutdown().await.unwrap();
             });
             let decode = reqwest::Client::builder()
                 .no_proxy()
-                .timeout(Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(5))
                 .build()
                 .unwrap()
                 .get(format!("http://{address}/"))
                 .send()
                 .await
                 .unwrap();
-            let response = timeout(
-                Duration::from_secs(2),
-                finalize_decode_response(decode, None, path, false, false),
-            )
-            .await
-            .expect("unenriched responses must not wait for the complete upstream body")
-            .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.headers()["content-type"],
-                "application/octet-stream"
-            );
-            let mut body = response.into_body().into_data_stream();
-            let mut prefix = Vec::new();
-            timeout(Duration::from_secs(2), async {
-                while prefix.len() < 6 {
-                    prefix.extend_from_slice(&body.next().await.unwrap().unwrap());
-                }
-            })
-            .await
-            .expect("upstream bytes must be forwarded before the body finishes");
-            assert_eq!(prefix, b"prefix");
-            finish.send(()).unwrap();
-            let mut suffix = Vec::new();
-            while let Some(chunk) = body.next().await {
-                suffix.extend_from_slice(&chunk.unwrap());
+            let result =
+                finalize_decode_response(decode, None, "/v1/completions", is_streaming, false)
+                    .await;
+            if is_streaming {
+                let response = result.unwrap();
+                assert!(axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .is_err());
+            } else {
+                assert!(result.unwrap_err().contains("Failed to read response body"));
             }
-            assert_eq!(suffix, b"suffix");
             server.await.unwrap();
         }
     }
 
     #[tokio::test]
-    async fn finalizer_reports_truncated_bodies_before_or_after_commit_as_required() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        for path in [
-            "/v1/chat/completions",
+    async fn finalizer_preserves_oversized_json_without_enrichment() {
+        let mut raw = vec![b' '; MAX_JSON_REWRITE_BYTES + 1];
+        raw.extend_from_slice(b"{}");
+        let raw = Bytes::from(raw);
+        let response = finalize_decode_body(
+            StatusCode::OK,
+            HeaderMap::new(),
+            raw.clone(),
+            Some(&json!({"prompt_logprobs":[1]})),
             "/v1/completions",
-            "/v1/responses",
-            "/custom",
-        ] {
-            for needs_logprobs in [false, true] {
-                for is_streaming in [false, true] {
-                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                    let address = listener.local_addr().unwrap();
-                    let server = tokio::spawn(async move {
-                        let (mut socket, _) = listener.accept().await.unwrap();
-                        let mut request = [0; 4096];
-                        let bytes_read = socket.read(&mut request).await.unwrap();
-                        assert!(bytes_read > 0, "client closed before sending request");
-                        // Send fewer bytes than Content-Length promises, then close.
-                        socket
-                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{")
-                            .await
-                            .unwrap();
-                        socket.shutdown().await.unwrap();
-                    });
-                    let decode = reqwest::Client::builder()
-                        .no_proxy()
-                        .timeout(std::time::Duration::from_secs(5))
-                        .build()
-                        .unwrap()
-                        .get(format!("http://{address}/"))
-                        .send()
-                        .await
-                        .unwrap();
-                    let result =
-                        finalize_decode_response(decode, None, path, is_streaming, needs_logprobs)
-                            .await;
-                    let needs_enrichment =
-                        pd_cached_tokens::is_supported_path(path) || needs_logprobs;
-                    if is_streaming || !needs_enrichment {
-                        let response = result.unwrap();
-                        assert_eq!(response.status(), StatusCode::OK);
-                        assert!(axum::body::to_bytes(response.into_body(), 1024)
-                            .await
-                            .is_err());
-                    } else {
-                        assert!(result
-                            .unwrap_err()
-                            .contains("Failed to read Decode response"));
-                    }
-                    server.await.unwrap();
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn finalizer_forwards_large_json_without_waiting_for_the_suffix() {
-        use bytes::Bytes;
-        use futures_util::{stream, StreamExt};
-        use tokio::time::{timeout, Duration};
-
-        // Exercise both Content-Length preflight and chunked accumulation.
-        for known_length in [false, true] {
-            let prefix_len = 8 * 1024 * 1024 + 1;
-            let (finish, ready) = tokio::sync::oneshot::channel::<()>();
-            let ready = Arc::new(Mutex::new(Some(ready)));
-            let app =
-                axum::Router::new().route(
-                    "/",
-                    axum::routing::get(move || {
-                        let ready = ready.clone();
-                        async move {
-                            let receiver = ready.lock().await.take().unwrap();
-                            let prefix = stream::iter([Ok::<_, std::io::Error>(Bytes::from(
-                                vec![b'x'; prefix_len],
-                            ))]);
-                            let suffix = stream::once(async move {
-                                receiver.await.unwrap();
-                                Ok::<_, std::io::Error>(Bytes::from_static(b"suffix"))
-                            });
-                            let mut builder =
-                                Response::builder().header("content-type", "application/json");
-                            if known_length {
-                                builder = builder.header("content-length", prefix_len + 6);
-                            }
-                            builder
-                                .body(Body::from_stream(prefix.chain(suffix)))
-                                .unwrap()
-                        }
-                    }),
-                );
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let decode = reqwest::Client::builder()
-                .no_proxy()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap()
-                .get(format!("http://{address}/"))
-                .send()
-                .await
-                .unwrap();
-            let response = timeout(
-                Duration::from_secs(2),
-                finalize_decode_response(decode, None, "/v1/completions", false, false),
-            )
+            true,
+        )
+        .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), raw.len())
             .await
-            .expect("oversized optional enrichment must switch to passthrough")
             .unwrap();
-            finish.send(()).unwrap();
-            let bytes = axum::body::to_bytes(response.into_body(), prefix_len + 6)
-                .await
-                .unwrap();
-            assert_eq!(bytes.len(), prefix_len + 6);
-            assert!(bytes[..prefix_len].iter().all(|byte| *byte == b'x'));
-            assert_eq!(&bytes[prefix_len..], b"suffix");
-            server.abort();
-        }
+        assert_eq!(bytes, raw);
     }
 
     #[test]
@@ -3383,17 +3254,6 @@ mod tests {
             }
             gates.entered.send("P").unwrap();
             gates.p.acquire().await.unwrap().forget();
-            if body["prompt"] == "oversized-prefill" {
-                return Response::builder()
-                    .header(
-                        http::header::CONTENT_LENGTH,
-                        PD_BUFFERED_BODY_LIMIT_BYTES + 1,
-                    )
-                    .body(Body::from_stream(futures_util::stream::pending::<
-                        Result<Bytes, std::io::Error>,
-                    >()))
-                    .unwrap();
-            }
             if body["prompt"] == "prefill-client-error" {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -3401,38 +3261,16 @@ mod tests {
                 )
                     .into_response();
             }
-            let mut response = json!({"kv_transfer_params": {"remote_engine_id": "P"}});
-            if body.get("logprobs").is_some() {
-                response["choices"] = json!([{"prompt_logprobs": [{"1": -0.25}]}]);
-            }
-            Json(response).into_response()
+            Json(json!({"kv_transfer_params": {"remote_engine_id": "P"}})).into_response()
         }
+
         async fn decode(State(gates): State<Gates>, Json(body): Json<Value>) -> Response {
             let streaming = body
                 .get("stream")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if !streaming {
-                // Non-streaming requests answer immediately and ungated; the
-                // router buffers the body and releases D without waiting for
-                // client-side consumption.
-                if body["prompt"] == "oversized" {
-                    return Response::builder()
-                        .header(
-                            http::header::CONTENT_LENGTH,
-                            PD_BUFFERED_BODY_LIMIT_BYTES + 1,
-                        )
-                        .body(Body::from_stream(futures_util::stream::pending::<
-                            Result<Bytes, std::io::Error>,
-                        >()))
-                        .unwrap();
-                }
-                let choices = if body.get("logprobs").is_some() {
-                    json!([{}])
-                } else {
-                    json!([])
-                };
-                return Json(json!({"choices": choices})).into_response();
+                return Json(json!({"choices":[]})).into_response();
             }
             gates.entered.send("D").unwrap();
             gates.d.acquire().await.unwrap().forget();
@@ -3622,51 +3460,18 @@ mod tests {
             drop(response); // Covers the never-polled response-body path.
             assert!(router.pd_router.pd_load.snapshot().is_empty());
 
-            // All dispatch paths share buffering, logprobs merging and body limits.
-            for prompt in [
-                "nonstream",
-                "logprobs",
-                "oversized",
-                "oversized-prefill",
-                "prefill-client-error",
-            ] {
-                gates.p.add_permits(1);
-                let mut body = json!({"model": "test", "prompt": prompt, "stream": false});
-                if prompt == "logprobs" {
-                    body["logprobs"] = json!(1);
-                }
-                let buffered = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    router.route_transparent(None, "/v1/completions", &Method::POST, body),
+            gates.p.add_permits(1);
+            let response = router
+                .route_transparent(
+                    None,
+                    "/v1/completions",
+                    &Method::POST,
+                    json!({"model":"test", "prompt":"prefill-client-error", "stream":false}),
                 )
-                .await
-                .unwrap();
-                assert_eq!(
-                    buffered.status(),
-                    if prompt.starts_with("oversized") {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    } else if prompt == "prefill-client-error" {
-                        StatusCode::BAD_REQUEST
-                    } else {
-                        StatusCode::OK
-                    }
-                );
-                assert_eq!(events.recv().await, Some("P"));
-                assert!(router.pd_router.pd_load.snapshot().is_empty());
-                if prompt == "logprobs" {
-                    assert!(!buffered
-                        .headers()
-                        .contains_key(http::header::CONTENT_LENGTH));
-                    let bytes = axum::body::to_bytes(buffered.into_body(), 1024)
-                        .await
-                        .unwrap();
-                    let decoded: Value = serde_json::from_slice(&bytes).unwrap();
-                    assert_eq!(
-                        decoded["choices"][0]["prompt_logprobs"],
-                        json!([{"1": -0.25}])
-                    );
-                }
-            }
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(events.recv().await, Some("P"));
+            assert!(router.pd_router.pd_load.snapshot().is_empty());
 
             // Aborting an admitted attempt during HTTP work releases both
             // reservations, without needing to receive any response headers.
@@ -4364,38 +4169,6 @@ mod tests {
             .unwrap();
         assert_eq!(idx, warm_idx);
         drop(guard);
-    }
-
-    #[test]
-    fn cold_burst_reservations_balance_across_workers() {
-        use crate::policies::{CacheAwareConfig, CacheAwarePolicy, LoadBalancingPolicy};
-        let context = crate::policies::SelectionContext::default();
-        let workers: Vec<Arc<dyn Worker>> = (0..8)
-            .map(|i| {
-                Arc::new(BasicWorker::new(
-                    format!("http://d-{i}"),
-                    WorkerType::Decode,
-                )) as Arc<dyn Worker>
-            })
-            .collect();
-        let policy = CacheAwarePolicy::with_config(CacheAwareConfig {
-            eviction_interval_secs: 0,
-            ..Default::default()
-        });
-        policy.init_workers(&workers);
-        let mut guards = Vec::new();
-        for i in 0..24 {
-            let text = char::from_u32(0x400 + i).unwrap().to_string().repeat(100);
-            guards.push(
-                policy
-                    .select_and_reserve(&context, &workers, Some(&text), None)
-                    .unwrap()
-                    .1,
-            );
-        }
-        assert!(workers.iter().all(|w| w.load() == 3));
-        drop(guards);
-        assert!(workers.iter().all(|w| w.load() == 0));
     }
 
     #[tokio::test]

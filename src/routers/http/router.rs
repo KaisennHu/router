@@ -1452,7 +1452,7 @@ impl Router {
                     http_inputs
                         .get_or_init(|| async {
                             match serde_json::to_value(typed_req) {
-                                Ok(body) => {
+                                Ok(body) => Some(
                                     prepare_http_kv_inputs(
                                         &self.client,
                                         &workers,
@@ -1462,8 +1462,8 @@ impl Router {
                                         self.api_key.as_deref(),
                                         Duration::from_secs(1),
                                     )
-                                    .await
-                                }
+                                    .await,
+                                ),
                                 Err(_) => None,
                             }
                         })
@@ -2833,16 +2833,18 @@ impl RouterTrait for Router {
             && !affinity_key.as_ref().is_some_and(|key| {
                 kv_ops.is_some_and(|ops| ops.has_affinity(&workers, lora_name, cache_salt, key))
             }) {
-            prepare_http_kv_inputs(
-                &self.client,
-                &workers,
-                headers,
-                &body,
-                path,
-                self.api_key.as_deref(),
-                Duration::from_secs(1),
+            Some(
+                prepare_http_kv_inputs(
+                    &self.client,
+                    &workers,
+                    headers,
+                    &body,
+                    path,
+                    self.api_key.as_deref(),
+                    Duration::from_secs(1),
+                )
+                .await,
             )
-            .await
         } else {
             None
         };

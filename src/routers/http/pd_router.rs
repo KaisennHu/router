@@ -801,6 +801,7 @@ impl PdKvState {
             route,
             headers,
             self.api_key.as_deref(),
+            Duration::from_secs(1),
         )
         .await;
         let mut prepared = HashMap::new();
@@ -839,24 +840,30 @@ impl PdKvState {
             prepared.insert(base, input);
         }
         if let Some(kv) = kv_aware_ops(policy.as_ref()) {
-            for worker in workers {
-                if let Some(input) = prepared.get_mut(worker.base_url()) {
-                    if let Some(prompts) = &input.prompts {
-                        let mut estimate = crate::policies::PrefillWorkEstimate {
-                            new_prefill_tokens: 0,
-                            placement_verified: true,
-                        };
-                        for ids in prompts.iter() {
-                            let work =
-                                kv.estimate_prefill_work(worker.as_ref(), ids, input.allow_credit);
-                            estimate.new_prefill_tokens = estimate
-                                .new_prefill_tokens
-                                .saturating_add(work.new_prefill_tokens);
-                            estimate.placement_verified &= work.placement_verified;
-                        }
-                        input.work_by_rank.insert(worker.dp_rank(), estimate);
-                    }
-                }
+            let inputs: Vec<_> = workers
+                .iter()
+                .filter_map(|worker| {
+                    let input = prepared.get(worker.base_url())?;
+                    Some((
+                        worker.as_ref(),
+                        input.prompts.as_deref()?,
+                        input.allow_credit,
+                    ))
+                })
+                .collect();
+            let work: Vec<_> = inputs
+                .iter()
+                .zip(kv.estimate_prefill_work(&inputs))
+                .map(|((worker, _, _), estimate)| {
+                    (worker.base_url().to_owned(), worker.dp_rank(), estimate)
+                })
+                .collect();
+            for (base, rank, work) in work {
+                prepared
+                    .get_mut(&base)
+                    .unwrap()
+                    .work_by_rank
+                    .insert(rank, work);
             }
         }
         metrics::histogram!("vllm_router_pd_kv_prepare_seconds")
@@ -959,6 +966,7 @@ impl PdRouterBase {
             route,
             headers,
             self.api_key.as_deref(),
+            Duration::from_secs(1),
         )
         .await;
         Some(
@@ -1003,6 +1011,7 @@ impl PdRouterBase {
             route,
             headers,
             self.api_key.as_deref(),
+            Duration::from_secs(1),
         )
         .await;
         Some(
@@ -2940,11 +2949,11 @@ mod admission_tests {
                         prompts: Some(Arc::from(vec![tokens.to_vec()])),
                         work_by_rank: HashMap::from([(
                             worker.dp_rank(),
-                            kv_aware_ops(policy).unwrap().estimate_prefill_work(
+                            kv_aware_ops(policy).unwrap().estimate_prefill_work(&[(
                                 worker.as_ref(),
-                                tokens,
+                                &[tokens.to_vec()],
                                 true,
-                            ),
+                            )])[0],
                         )]),
                         allow_credit: true,
                         fallback_reason: None,
@@ -3770,68 +3779,81 @@ mod kv_input_tests {
             routing::{get, post},
             Json, Router,
         };
-        let expected_auth = format!(
-            "Bearer {}",
-            std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "test".to_owned())
-        );
-        let app = Router::new()
-            .route(
-                "/get_server_info",
-                get(|| async { Json(json!({"model_id":"m","block_size":16,"instance_id":"p"})) }),
-            )
-            .route("/kv_event_sources", get(|| async { Json(json!({})) }))
-            .route(
-                "/v1/models",
-                get(|| async { Json(json!({"data":[{"id":"m","parent":null}]})) }),
-            )
-            .route(
-                "/tokenize",
-                post(move |headers: HeaderMap, Json(body): Json<Value>| {
-                    let expected_auth = expected_auth.clone();
-                    async move {
-                        assert!(headers
-                            .get("authorization")
-                            .is_some_and(|value| value.as_bytes() == expected_auth.as_bytes()));
-                        assert_eq!(body["prompt"], "hello");
-                        Json(json!({"tokens":[7,8,9],"count":3,"max_model_len":128}))
-                    }
-                }),
+        for (configured_key, forwarded_auth, expected_auth) in [
+            (None, None, None),
+            (None, Some("Bearer caller"), Some("Bearer caller")),
+            (
+                Some("backend-key"),
+                Some("Bearer caller"),
+                Some("Bearer backend-key"),
+            ),
+        ] {
+            let app = Router::new()
+                .route(
+                    "/get_server_info",
+                    get(|| async {
+                        Json(json!({"model_id":"m","block_size":16,"instance_id":"p"}))
+                    }),
+                )
+                .route("/kv_event_sources", get(|| async { Json(json!({})) }))
+                .route(
+                    "/v1/models",
+                    get(|| async { Json(json!({"data":[{"id":"m","parent":null}]})) }),
+                )
+                .route(
+                    "/tokenize",
+                    post(
+                        move |headers: HeaderMap, Json(body): Json<Value>| async move {
+                            assert_eq!(
+                                headers
+                                    .get("authorization")
+                                    .map(|value| value.to_str().unwrap()),
+                                expected_auth
+                            );
+                            assert_eq!(body["prompt"], "hello");
+                            Json(json!({"tokens":[7,8,9],"count":3,"max_model_len":128}))
+                        },
+                    ),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let mut state = PdKvState::new(reqwest::Client::new());
+            state.api_key = configured_key.map(str::to_owned);
+            let policy: Arc<dyn LoadBalancingPolicy> = Arc::new(KvAwarePolicy::default());
+            let workers: Vec<Arc<dyn Worker>> = vec![Arc::new(BasicWorker::new(
+                base.clone(),
+                WorkerType::Regular,
+            ))];
+            let mut headers = HeaderMap::new();
+            if let Some(auth) = forwarded_auth {
+                headers.insert("authorization", auth.parse().unwrap());
+            }
+            state
+                .bind(&workers, kv_aware_ops(policy.as_ref()).unwrap())
+                .await;
+            let inputs = state
+                .prepare(
+                    &workers,
+                    &policy,
+                    &json!({"model":"m","prompt":"hello"}),
+                    "/v1/completions",
+                    Some(&headers),
+                )
+                .await;
+            assert_eq!(
+                inputs[&base].prompts.as_deref(),
+                Some([vec![7, 8, 9]].as_slice())
             );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let state = PdKvState::new(reqwest::Client::new());
-        let policy: Arc<dyn LoadBalancingPolicy> = Arc::new(KvAwarePolicy::default());
-        let workers: Vec<Arc<dyn Worker>> = vec![Arc::new(BasicWorker::new(
-            base.clone(),
-            WorkerType::Regular,
-        ))];
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer test".parse().unwrap());
-        state
-            .bind(&workers, kv_aware_ops(policy.as_ref()).unwrap())
-            .await;
-        let inputs = state
-            .prepare(
-                &workers,
-                &policy,
-                &json!({"model":"m","prompt":"hello"}),
-                "/v1/completions",
-                Some(&headers),
-            )
-            .await;
-        assert_eq!(
-            inputs[&base].prompts.as_deref(),
-            Some([vec![7, 8, 9]].as_slice())
-        );
-        let work = kv_aware_ops(policy.as_ref())
-            .unwrap()
-            .estimate_prefill_work(workers[0].as_ref(), &[7, 8, 9], true);
-        assert_eq!(work.new_prefill_tokens, 3);
-        assert!(!work.placement_verified); // No event source: exact tokens, zero fabricated credit.
-        task.abort();
+            let work = kv_aware_ops(policy.as_ref())
+                .unwrap()
+                .estimate_prefill_work(&[(workers[0].as_ref(), &[vec![7, 8, 9]], true)])[0];
+            assert_eq!(work.new_prefill_tokens, 3);
+            assert!(!work.placement_verified); // No event source: exact tokens, zero fabricated credit.
+            task.abort();
+        }
     }
 
     #[tokio::test]
@@ -3932,7 +3954,11 @@ mod kv_input_tests {
                         .send_multipart([b"".as_slice(), seq.as_slice(), payload.as_slice()], 0)
                         .unwrap();
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    let work = ops.estimate_prefill_work(workers[0].as_ref(), &tokens, true);
+                    let work = ops.estimate_prefill_work(&[(
+                        workers[0].as_ref(),
+                        std::slice::from_ref(&tokens),
+                        true,
+                    )])[0];
                     if work.new_prefill_tokens == 1 {
                         break;
                     }

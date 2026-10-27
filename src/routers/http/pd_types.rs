@@ -194,7 +194,7 @@ impl PdLoadManager {
     /// The router supplies selection; this manager owns only admission and
     /// lifecycle state. No policy, worker registry, or connector lives here.
     pub(super) fn admit(
-        self: &Arc<Self>,
+        &self,
         select: impl FnOnce(&Loads) -> Option<PdSelection>,
     ) -> Option<(PdSelection, PdAttempt)> {
         let mut loads = self.loads.lock();

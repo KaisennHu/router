@@ -149,26 +149,6 @@ pub(crate) struct HttpTokenInput {
 }
 
 pub(crate) async fn prepare_http_token_inputs(
-    client: &reqwest::Client,
-    urls: Vec<String>,
-    body: &serde_json::Value,
-    route: &str,
-    headers: Option<&http::HeaderMap>,
-    api_key: Option<&str>,
-) -> std::collections::HashMap<String, Result<HttpTokenInput, &'static str>> {
-    prepare_http_token_inputs_with_budget(
-        client,
-        urls,
-        body,
-        route,
-        headers,
-        api_key,
-        Duration::from_secs(1),
-    )
-    .await
-}
-
-async fn prepare_http_token_inputs_with_budget(
     client: &Client,
     mut urls: Vec<String>,
     body: &serde_json::Value,
@@ -286,12 +266,10 @@ async fn http_input_json(
         .post(format!("{}{path}", base.trim_end_matches('/')))
         .timeout(std::time::Duration::from_secs(5))
         .json(body);
-    if let Some(value) = headers.and_then(|headers| headers.get("authorization")) {
-        request = request.header("authorization", value);
-    }
-    let env_key = std::env::var("OPENAI_API_KEY").ok();
-    if let Some(key) = api_key.or(env_key.as_deref()) {
+    if let Some(key) = api_key {
         request = request.bearer_auth(key);
+    } else if let Some(value) = headers.and_then(|headers| headers.get("authorization")) {
+        request = request.header("authorization", value);
     }
     let response = request
         .send()
@@ -409,14 +387,13 @@ pub(crate) async fn prepare_http_kv_inputs(
     route: &str,
     api_key: Option<&str>,
     budget: Duration,
-) -> Option<WorkerTokenInputs> {
+) -> WorkerTokenInputs {
     let urls = workers
         .iter()
         .map(|worker| worker.base_url().to_owned())
         .collect();
     let results =
-        prepare_http_token_inputs_with_budget(client, urls, body, route, headers, api_key, budget)
-            .await;
+        prepare_http_token_inputs(client, urls, body, route, headers, api_key, budget).await;
     let mut inputs = WorkerTokenInputs::new();
     for (url, result) in results {
         match result {
@@ -430,7 +407,7 @@ pub(crate) async fn prepare_http_kv_inputs(
             }
         }
     }
-    Some(inputs)
+    inputs
 }
 
 #[derive(Clone)]
@@ -933,6 +910,7 @@ mod tests {
             "/v1/chat/completions",
             None,
             None,
+            Duration::from_secs(1),
         )
         .await;
         assert_eq!(

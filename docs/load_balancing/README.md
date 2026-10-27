@@ -244,37 +244,18 @@ Trees are trimmed to `max_tree_size` during periodic eviction and may grow beyon
 
 ## KV Aware
 
-`kv_aware` balances requests using reusable KV blocks and current worker load. Use it for workloads with repeated prompt prefixes. It supports regular HTTP or [gRPC](../backend/grpc.md) worker pools and HTTP P/D disaggregation.
+`kv_aware` uses KV cache reuse and worker load to route requests. It suits workloads with repeated prompt prefixes and supports HTTP, [gRPC](../backend/grpc.md), and HTTP P/D disaggregation.
 
 ```bash
 vllm-router --policy kv_aware \
   --worker-urls grpc://worker1:8000 grpc://worker2:8000
 ```
 
-Workers must publish KV events. If discovery is unavailable, supply `--kv-event-source WORKER_URL=tcp://HOST:PORT` per worker, with matching `--kv-event-model` and `--kv-event-block-size`. HTTP text requests need a render endpoint or, for simple prompts, `/tokenize`. Without usable KV information, requests are routed by load.
+Enable KV events on the workers. HTTP text requests also need a render endpoint or, for simple prompts, `/tokenize`. Without usable KV information, routing falls back to load.
 
-`--router-temperature 0` selects the lowest-cost worker; positive values spread requests probabilistically.
+For regular pools without event discovery, configure `--kv-event-source WORKER_URL=tcp://HOST:PORT` per worker, plus matching `--kv-event-model` and `--kv-event-block-size`.
 
-### Session affinity
-
-Affinity is off by default. Add `--kv-aware-session-affinity-ttl-secs 1800` for a 30-minute idle timeout. Send the same `session_params.session_id` or `x-session-id` header on each request. Agent metadata (`vllm_xargs.agentic_context`, `agent_hint`) and framework session headers take precedence when present.
-
-### KV Aware with P/D Disaggregation
-
-P/D workers use HTTP(S) endpoints. The router keeps the existing connector dispatch and non-KV policy paths.
-
-P uses the remaining prompt work after KV credit plus admitted P token work. D uses active plus pending decode occupancy:
-
-```text
-prefill_score = new_prefill_tokens + active_prefill_tokens
-decode_score  = active_decode_requests + pending_decode_requests + 1
-```
-
-For dense single-prompt completions and plain-text chat, the router reads P's KV events and prepares effective tokens before admission. Completion token-ID arrays are consumed directly; text and chat use each P server's `/tokenize` endpoint. Tokenizer/template inputs are never shared across P servers. `--router-temperature` controls P's token-cost picker; D uses deterministic minimum occupancy.
-
-Missing placement information charges full prompt token work. Unsupported inputs skip metadata/tokenization requests and use P request occupancy. Unavailable tokenization also uses occupancy. Any unknown in-flight P work also triggers occupancy selection across the pool. Equal scores prefer lower occupancy, then stable endpoint order.
-
-Prefill and decode inherit the common policy. To use KV-aware prefill selection and optional decode soft affinity, set `--policy kv_aware` (or specify per-stage policies explicitly):
+### P/D disaggregation
 
 ```bash
 vllm-router --vllm-pd-disaggregation \
@@ -282,27 +263,21 @@ vllm-router --vllm-pd-disaggregation \
   --prefill-policy kv_aware --decode-policy kv_aware
 ```
 
-The router reserves P and pending D occupancy before dispatch. P occupancy is released after the prefill response body is consumed. D moves from pending to active at dispatch and remains active until its response body finishes or is cancelled/dropped. For non-streaming responses the body is buffered and D is released as soon as the backend has finished generating; a slow client does not extend decode occupancy. This prevents requests waiting for dispatch or streaming a response from appearing idle to later selections.
+Prefill selection considers reusable KV and current work. Decode selection favors the least busy worker. Both stages inherit `--policy` unless overridden.
 
-The P and D endpoints form a request-scoped compatible pair; workers do not have a permanent one-to-one pairing. Existing connector configuration and transfer behavior are unchanged.
+Configure the engines' P/D connector and enable prefix caching and KV events on prefill workers. For native Python vLLM metadata discovery, set `VLLM_SERVER_DEV_MODE=1`.
 
-P/D selection filters workers by the request's model only when they carry a `model_id` label; unlabeled workers remain eligible for every model.
+If event discovery is unavailable, add `--pd-kv-events http://prefill:8000=tcp://prefill:5557` for each prefill worker.
 
-Prefill engines must enable prefix caching and ZMQ KV events, and expose `/tokenize`, `/v1/models`, `/kv_event_sources`, and block-size metadata through `/get_server_info` or `/server_info?config_format=json` (native Python vLLM requires `VLLM_SERVER_DEV_MODE=1`). The router must reach the advertised event endpoints. Configure the P/D KV connector as required by the engine.
+### Session affinity
 
-Prefix credit supports dense text completions, token-ID prompts, and plain chat messages with matching engine templates. Unsupported input features, unavailable metadata/tokenization, or unverified placement use conservative full-work or occupancy fallback. Model labels must match the request model exactly; aliases must be registered consistently.
+Affinity is off by default. Add `--kv-aware-session-affinity-ttl-secs 1800` to retain bindings for 30 minutes of inactivity.
 
-Compare identical repeated-prefix workloads against `round_robin` or `cache_aware` with the same P/D pools. Observe TTFT/JCT, `vllm_router_pd_prefill_decisions_total`, `vllm_router_pd_credited_prefix_tokens_total`, and P/D load gauges. Credited tokens are a scheduling estimate; backend execution metrics establish actual prefill savings.
+Send the same `x-session-id` header or `session_params.session_id` on each turn; agent metadata and framework session headers take precedence.
 
-KV-aware session affinity is disabled by default. Set `--kv-aware-session-affinity-ttl-secs <seconds>` to enable it and expire idle bindings after the given TTL (1–31,536,000 seconds). For example, use `--kv-aware-session-affinity-ttl-secs 1800` for a 30-minute idle TTL. Omit the option to compare the original KV-aware routing behavior without affinity.
+In P/D mode, affinity applies only to decode. A busy decoder may be replaced by a less busy one; prefill is selected independently for each request.
 
-In P/D mode, setting this TTL enables **decode-only soft affinity** when D uses `kv_aware`. P always compares KV token costs plus admitted token work across its full eligible pool; neither session binding nor the affinity request-count limit applies to P, including occupancy fallback. D counts pending plus active requests. For each admission, let `limit = ceil((total_decode_requests + 1) / eligible_decode_workers)`. Keep a live D binding when its request count plus the incoming request is at most `limit`. Otherwise, choose a minimum-occupancy D within that limit and immediately replace the binding. The same limit applies to initial bindings. Selection and reservation share the P/D admission lock, including for fresh discovery workers.
-
-TTL is the only affinity setting: there is no spill margin or consecutive-overload threshold. An idle session keeps its decoder across sequential turns; concurrent requests can move the D binding as the pool fills. Existing requests retain their own binding references and finish normally after a replacement. Observe `vllm_router_pd_affinity_decisions_total{stage="decode",outcome="rebind"}` for overload-driven replacements. When TTL is omitted, D runs per-request selection without the affinity load limit. P uses the same scoring whether TTL is set or omitted.
-
-A retry excludes a worker that returned a retryable status, including 408/429, for that request's next selection when another candidate is available. This does not replace a healthy session binding: later requests retain their affinity. If every candidate has been excluded, selection allows them again.
-
-Affinity can improve multi-turn cache reuse but may increase waiting time on a busy worker. Unavailable workers trigger fresh selection. Bindings are local to each router, so multiple router replicas need ingress stickiness.
+Multiple router replicas need ingress stickiness to preserve affinity.
 
 ---
 

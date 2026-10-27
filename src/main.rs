@@ -517,9 +517,7 @@ impl CliArgs {
 
             // Log the discovery/configuration mode being used
             if use_k8s_discovery {
-                eprintln!(
-                    "鈩癸笍  INFO: Using K8s service discovery mode for vLLM PD disaggregation."
-                );
+                eprintln!("ℹ️  INFO: Using K8s service discovery mode for vLLM PD disaggregation.");
                 eprintln!("   Prefill selector: {:?}", self.prefill_selector);
                 eprintln!("   Decode selector: {:?}", self.decode_selector);
                 if use_static_urls {
@@ -529,16 +527,16 @@ impl CliArgs {
                     );
                 }
             } else if use_static_urls && use_vllm_discovery {
-                eprintln!("鈩癸笍  INFO: Using hybrid mode - static URLs as fallback, vLLM ZMQ discovery for dynamic workers.");
+                eprintln!("ℹ️  INFO: Using hybrid mode - static URLs as fallback, vLLM ZMQ discovery for dynamic workers.");
                 eprintln!("   Prefill URLs: {:?}", prefill_urls);
                 eprintln!("   Decode URLs: {:?}", final_decode_urls);
                 eprintln!("   Discovery address: {:?}", self.vllm_discovery_address);
             } else if use_static_urls {
-                eprintln!("鈩癸笍  INFO: Using static URL mode without service discovery.");
+                eprintln!("ℹ️  INFO: Using static URL mode without service discovery.");
                 eprintln!("   Prefill URLs: {:?}", prefill_urls);
                 eprintln!("   Decode URLs: {:?}", final_decode_urls);
             } else {
-                eprintln!("鈩癸笍  INFO: Using vLLM ZMQ service discovery mode.");
+                eprintln!("ℹ️  INFO: Using vLLM ZMQ service discovery mode.");
                 eprintln!("   Discovery address: {:?}", self.vllm_discovery_address);
             }
 

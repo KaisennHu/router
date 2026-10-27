@@ -739,8 +739,7 @@ pub(crate) fn worker_get(
     api_key: Option<&str>,
 ) -> reqwest::RequestBuilder {
     let request = client.get(url);
-    let env_key = std::env::var("OPENAI_API_KEY").ok();
-    match api_key.or(env_key.as_deref()) {
+    match api_key {
         Some(key) => request.bearer_auth(key),
         None => request,
     }
@@ -786,6 +785,26 @@ fn discovered_block_size(server_info: &ServerInfo) -> Option<u32> {
 #[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_auth_uses_only_the_configured_key() {
+        let client = reqwest::Client::new();
+        for (key, expected) in [
+            (None, None),
+            (Some("backend-key"), Some("Bearer backend-key")),
+        ] {
+            let request = worker_get(&client, "http://worker/v1/models", key)
+                .build()
+                .unwrap();
+            assert_eq!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .map(|value| value.to_str().unwrap()),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn resolve_endpoint_rewrites_bind_star() {
