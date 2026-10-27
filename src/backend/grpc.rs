@@ -102,6 +102,7 @@ pub struct GrpcEngineBackend {
     prefill_progress_capabilities: PrefillProgressCapabilityCache,
     connect_timeout: Duration,
     request_timeout: Duration,
+    pub(super) prefill_progress_stale_after: Option<Duration>,
 }
 
 impl std::fmt::Debug for GrpcEngineBackend {
@@ -133,6 +134,7 @@ impl GrpcEngineBackend {
             prefill_progress_capabilities: Arc::new(DashMap::new()),
             connect_timeout,
             request_timeout,
+            prefill_progress_stale_after: None,
         }
     }
 
@@ -203,7 +205,10 @@ impl GrpcEngineBackend {
             emit_token_ids,
         } = prepared;
         let request = request.as_ref();
-        let include_prefill_progress = on_prefill_progress.is_some();
+        let deadline =
+            tokio::time::Instant::now() + self.request_timeout.saturating_sub(t_req.elapsed());
+        let include_prefill_progress =
+            self.prefill_progress_stale_after.is_some() && on_prefill_progress.is_some();
         let n_prompt_tokens = tokenized.token_ids.len();
         let adapt_ms = tokenized.adapt_ms;
         let template_ms = tokenized.template_ms;
@@ -232,22 +237,41 @@ impl GrpcEngineBackend {
         };
 
         if include_prefill_progress {
-            let supported = self.supports_prefill_progress(worker_url).await;
+            let supported =
+                tokio::time::timeout_at(deadline, self.supports_prefill_progress(worker_url))
+                    .await
+                    .unwrap_or_else(
+                        |_| Err("prefill progress capability deadline exceeded".into()),
+                    );
             apply_prefill_progress_capability(&mut proto, supported, worker_url);
         }
 
+        let prefill_progress = PrefillProgressState::new(
+            request_id.clone(),
+            on_prefill_progress.filter(|_| proto.include_prefill_progress),
+            self.prefill_progress_stale_after,
+        );
+
         let t_connect = Instant::now();
-        let mut client = match self.client_for(worker_url).await {
-            Ok(c) => c,
-            Err(e) => {
+        let mut client = match tokio::time::timeout_at(deadline, self.client_for(worker_url)).await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
                 error!(error = %e, "grpc backend connect failed");
                 return (StatusCode::BAD_GATEWAY, e).into_response();
+            }
+            Err(_) => {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "gRPC request deadline exceeded",
+                )
+                    .into_response();
             }
         };
         let grpc_connect_ms = t_connect.elapsed().as_secs_f64() * 1000.0;
 
         let mut tonic_req = tonic::Request::new(proto);
-        tonic_req.set_timeout(self.request_timeout);
+        tonic_req.set_timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
         if let Some(rank) = parse_dp_rank(worker_url) {
             tonic_req
                 .metadata_mut()
@@ -256,9 +280,7 @@ impl GrpcEngineBackend {
 
         let t_invoke = Instant::now();
         let stream =
-            match tokio::time::timeout(self.request_timeout, client.generate_stream(tonic_req))
-                .await
-            {
+            match tokio::time::timeout_at(deadline, client.generate_stream(tonic_req)).await {
                 Ok(Ok(s)) => s.into_inner(),
                 Ok(Err(status)) => {
                     warn!(code = ?status.code(), msg = %status.message(), "GenerateStream failed");
@@ -309,11 +331,11 @@ impl GrpcEngineBackend {
                 .unwrap_or(false),
             shape,
             emit_token_ids,
-            request_timeout: self.request_timeout,
+            deadline,
             stages,
             t_req,
             on_first_output,
-            on_prefill_progress,
+            prefill_progress,
         };
         if request.stream {
             stream_openai(stream, reply, n_prompt_tokens).await
@@ -338,11 +360,107 @@ struct ChatReply {
     include_usage: bool,
     shape: ResponseShape,
     emit_token_ids: bool,
-    request_timeout: Duration,
+    deadline: tokio::time::Instant,
     stages: serde_json::Value,
     t_req: Instant,
     on_first_output: Option<FirstOutputCallback>,
-    on_prefill_progress: Option<PrefillProgressCallback>,
+    prefill_progress: PrefillProgressState,
+}
+
+struct PrefillProgressState {
+    request_id: String,
+    callback: Option<PrefillProgressCallback>,
+    stale_after: Option<Duration>,
+    last_received: tokio::time::Instant,
+    sequence: u64,
+    pending: bool,
+    stale: bool,
+}
+
+impl PrefillProgressState {
+    fn new(
+        request_id: String,
+        callback: Option<PrefillProgressCallback>,
+        stale_after: Option<Duration>,
+    ) -> Self {
+        Self {
+            request_id,
+            pending: callback.is_some(),
+            callback,
+            stale_after,
+            last_received: tokio::time::Instant::now(),
+            sequence: 0,
+            stale: false,
+        }
+    }
+
+    fn observe(&mut self, progress: &super::pb::PrefillProgress) {
+        let Some(callback) = &self.callback else {
+            return;
+        };
+        let outcome = if progress.request_id != self.request_id {
+            "ignored_identity"
+        } else if progress.sequence <= self.sequence {
+            "ignored_sequence"
+        } else {
+            "accepted"
+        };
+        metrics::counter!("vllm_router_prefill_progress_updates_total", "outcome" => outcome)
+            .increment(1);
+        if outcome != "accepted" {
+            return;
+        }
+        if self.sequence != 0 {
+            metrics::histogram!("vllm_router_prefill_progress_update_gap_seconds")
+                .record(self.last_received.elapsed().as_secs_f64());
+        }
+        self.sequence = progress.sequence;
+        self.last_received = tokio::time::Instant::now();
+        self.pending = progress.remaining_compute_tokens != 0;
+        self.stale = false;
+        callback(
+            progress.sequence,
+            u64::from(progress.remaining_compute_tokens),
+        );
+    }
+
+    fn next_deadline(&self, deadline: tokio::time::Instant) -> tokio::time::Instant {
+        if self.pending && !self.stale {
+            if let Some(stale_after) = self.stale_after {
+                return deadline.min(self.last_received + stale_after);
+            }
+        }
+        deadline
+    }
+
+    fn mark_stale(&mut self) {
+        self.stale = true;
+        metrics::counter!("vllm_router_prefill_progress_stale_total").increment(1);
+        warn!("prefill progress is stale; retaining last-known remaining work");
+    }
+}
+
+async fn next_response<S>(
+    stream: &mut S,
+    deadline: tokio::time::Instant,
+    progress: &mut PrefillProgressState,
+) -> Result<Option<Result<super::pb::GenerateResponse, tonic::Status>>, tokio::time::error::Elapsed>
+where
+    S: futures_util::Stream<Item = Result<super::pb::GenerateResponse, tonic::Status>> + Unpin,
+{
+    loop {
+        let next_deadline = progress.next_deadline(deadline);
+        match tokio::time::timeout_at(next_deadline, stream.next()).await {
+            Err(_) if next_deadline < deadline => progress.mark_stale(),
+            Ok(Some(Ok(message))) => {
+                if let Some(snapshot) = &message.prefill_progress {
+                    progress.observe(snapshot);
+                }
+                return Ok(Some(Ok(message)));
+            }
+            result => return result,
+        }
+    }
 }
 
 fn fill_engine_ms(stages: &mut serde_json::Value) {
@@ -382,11 +500,11 @@ async fn stream_openai(
         include_usage,
         shape,
         emit_token_ids,
-        request_timeout,
+        deadline,
         mut stages,
         t_req,
-        on_first_output: _,
-        on_prefill_progress,
+        on_first_output,
+        mut prefill_progress,
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
@@ -397,11 +515,12 @@ async fn stream_openai(
             .as_ref()
             .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
         let mut first = true;
+        let mut first_output_seen = false;
         let mut first_token_logged = false;
         let mut prompt_tokens = n_prompt_tokens as u32;
         let mut completion_tokens = 0u32;
         loop {
-            let item = match tokio::time::timeout(request_timeout, stream.next()).await {
+            let item = match next_response(&mut stream, deadline, &mut prefill_progress).await {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
                 Err(_) => {
@@ -424,14 +543,6 @@ async fn stream_openai(
                     if let Some(info) = &msg.prompt_info {
                         prompt_tokens = info.num_prompt_tokens;
                     }
-                    if let (Some(progress), Some(callback)) =
-                        (&msg.prefill_progress, on_prefill_progress.as_ref())
-                    {
-                        callback(
-                            progress.sequence,
-                            u64::from(progress.remaining_compute_tokens),
-                        );
-                    }
                     if let Some(outputs) = &msg.outputs {
                         completion_tokens = completion_tokens.saturating_add(outputs.num_tokens);
                     }
@@ -452,6 +563,14 @@ async fn stream_openai(
                             }
                         };
                     let generated_output = has_generated_output(&msg, &text);
+                    if prefill_progress.callback.is_some() {
+                        notify_first_output(
+                            &msg,
+                            &text,
+                            &mut first_output_seen,
+                            on_first_output.as_ref(),
+                        );
+                    }
                     if !first_token_logged && !text.is_empty() {
                         stages["first_token_ms"] =
                             serde_json::json!(t_req.elapsed().as_secs_f64() * 1000.0);
@@ -578,11 +697,11 @@ async fn collect_openai(
         include_usage: _,
         shape,
         emit_token_ids,
-        request_timeout,
+        deadline,
         mut stages,
         t_req,
         on_first_output,
-        on_prefill_progress,
+        mut prefill_progress,
     } = reply;
     let mut detok = tok
         .as_ref()
@@ -594,7 +713,7 @@ async fn collect_openai(
     let mut completion_tokens = 0u32;
     let mut first_output_seen = false;
     loop {
-        let item = match tokio::time::timeout(request_timeout, stream.next()).await {
+        let item = match next_response(&mut stream, deadline, &mut prefill_progress).await {
             Ok(Some(item)) => item,
             Ok(None) => break,
             Err(_) => {
@@ -613,14 +732,6 @@ async fn collect_openai(
                 }
                 if let Some(info) = &msg.prompt_info {
                     prompt_tokens = info.num_prompt_tokens;
-                }
-                if let (Some(progress), Some(callback)) =
-                    (&msg.prefill_progress, on_prefill_progress.as_ref())
-                {
-                    callback(
-                        progress.sequence,
-                        u64::from(progress.remaining_compute_tokens),
-                    );
                 }
                 let (delta, reason) =
                     match output_text_and_finish(&msg, &mut detok, prefer_worker_text) {
@@ -811,7 +922,204 @@ fn has_generated_output(msg: &super::pb::GenerateResponse, text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::backend::pb::{GenerateResponse, PromptInfo, SequenceOutput};
+    use crate::policies::{InMemorySlotManager, KvRequestSlot, LoadProvider, SlotManager};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn progress(sequence: u64, remaining: u32) -> GenerateResponse {
+        GenerateResponse {
+            prefill_progress: Some(super::super::pb::PrefillProgress {
+                request_id: "request".into(),
+                sequence,
+                prompt_tokens: 100,
+                remaining_compute_tokens: remaining,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn request_slot() -> (
+        Arc<InMemorySlotManager>,
+        KvRequestSlot,
+        crate::kv_index::RoutableTarget,
+    ) {
+        let manager = Arc::new(InMemorySlotManager::new());
+        let target = crate::kv_index::RoutableTarget {
+            instance_id: Arc::from("worker"),
+            dp_rank: 0,
+        };
+        manager.begin_prefill(&target, 100);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100);
+        (manager, slot, target)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_progress_retains_work_until_the_absolute_deadline() {
+        let (manager, slot, target) = request_slot();
+        let callback_slot = slot.clone();
+        let callback: PrefillProgressCallback = Arc::new(move |sequence, remaining| {
+            callback_slot.update_prefill_progress(sequence, remaining);
+        });
+        let mut state = PrefillProgressState::new(
+            "request".into(),
+            Some(callback),
+            Some(Duration::from_secs(2)),
+        );
+        let start = tokio::time::Instant::now();
+        let deadline = start + Duration::from_secs(5);
+        let (tx, rx) = mpsc::channel(2);
+        let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        tx.send(Ok(progress(2, 40))).await.unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let mut wrong_attempt = progress(3, 90);
+        wrong_attempt.prefill_progress.as_mut().unwrap().request_id = "other-request".into();
+        tx.send(Ok(wrong_attempt)).await.unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        assert_eq!(state.sequence, 2);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 40);
+        assert_eq!(
+            state.next_deadline(deadline),
+            start + Duration::from_secs(2)
+        );
+        assert!(next_response(&mut stream, deadline, &mut state)
+            .await
+            .is_err());
+        assert!(state.stale);
+        assert_eq!(tokio::time::Instant::now(), deadline);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 40);
+        slot.release();
+        assert_eq!(manager.sample(&target).active_requests, 0);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 0);
+    }
+
+    #[derive(Clone)]
+    struct ScriptedWorker {
+        frames: Vec<GenerateResponse>,
+    }
+
+    #[tonic::async_trait]
+    impl super::super::pb::inference_server::Inference for ScriptedWorker {
+        type GenerateStreamStream =
+            tokio_stream::Iter<std::vec::IntoIter<Result<GenerateResponse, tonic::Status>>>;
+
+        async fn generate(
+            &self,
+            _: tonic::Request<super::super::pb::GenerateRequest>,
+        ) -> Result<tonic::Response<GenerateResponse>, tonic::Status> {
+            Err(tonic::Status::unimplemented("streaming test worker"))
+        }
+
+        async fn generate_stream(
+            &self,
+            _: tonic::Request<super::super::pb::GenerateRequest>,
+        ) -> Result<tonic::Response<Self::GenerateStreamStream>, tonic::Status> {
+            Ok(tonic::Response::new(tokio_stream::iter(
+                self.frames.iter().cloned().map(Ok).collect::<Vec<_>>(),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn both_response_consumers_apply_reprefill_and_filter_progress_frames() {
+        for streaming in [false, true] {
+            let frames = vec![
+                progress(1, 60),
+                GenerateResponse {
+                    outputs: Some(SequenceOutput {
+                        text: "A".into(),
+                        num_tokens: 1,
+                        token_ids: vec![1],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                progress(2, 40),
+                GenerateResponse {
+                    outputs: Some(SequenceOutput {
+                        text: "B".into(),
+                        num_tokens: 1,
+                        token_ids: vec![2],
+                        finish_info: Some(super::super::pb::FinishInfo {
+                            finish_reason: super::super::pb::finish_info::FinishReason::Stop as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ];
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(super::super::pb::inference_server::InferenceServer::new(
+                        ScriptedWorker { frames },
+                    ))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+            );
+            let mut client = InferenceClient::connect(format!("http://{address}"))
+                .await
+                .unwrap();
+            let stream = client
+                .generate_stream(super::super::pb::GenerateRequest::default())
+                .await
+                .unwrap()
+                .into_inner();
+            let (manager, slot, target) = request_slot();
+            let output_slot = slot.clone();
+            let progress_slot = slot.clone();
+            let reply = ChatReply {
+                request_id: "request".into(),
+                model: "model".into(),
+                created: 0,
+                tok: None,
+                prompt_ids: Arc::from([1_u32; 100]),
+                skip_special: true,
+                prefer_worker_text: true,
+                include_usage: false,
+                shape: ResponseShape::Chat,
+                emit_token_ids: false,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                stages: serde_json::json!({}),
+                t_req: Instant::now(),
+                on_first_output: Some(Arc::new(move || output_slot.begin_decode())),
+                prefill_progress: PrefillProgressState::new(
+                    "request".into(),
+                    Some(Arc::new(move |sequence, remaining| {
+                        progress_slot.update_prefill_progress(sequence, remaining);
+                    })),
+                    Some(Duration::from_secs(2)),
+                ),
+            };
+            let response = if streaming {
+                stream_openai(stream, reply, 100).await
+            } else {
+                collect_openai(stream, reply).await
+            };
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            if streaming {
+                let text = std::str::from_utf8(&body).unwrap();
+                assert_eq!(text.matches("chat.completion.chunk").count(), 2);
+                assert!(text.contains("[DONE]"));
+            } else {
+                let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(value["choices"][0]["message"]["content"], "AB");
+            }
+            assert_eq!(manager.sample(&target).active_prefill_tokens, 40);
+            assert_eq!(manager.sample(&target).active_requests, 1);
+            slot.release();
+            assert_eq!(manager.sample(&target).active_prefill_tokens, 0);
+            assert_eq!(manager.sample(&target).active_requests, 0);
+            server.abort();
+        }
+    }
 
     #[test]
     fn unsupported_worker_keeps_the_admission_estimate_path() {

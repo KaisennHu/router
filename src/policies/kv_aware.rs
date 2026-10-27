@@ -189,7 +189,7 @@ impl KvRequestSlot {
     /// Replace this request's remaining prefill work with a newer worker snapshot.
     pub fn update_prefill_progress(&self, sequence: u64, remaining_tokens: u64) {
         let mut accounting = self.accounting.lock();
-        if accounting.state != 0 || sequence <= accounting.sequence {
+        if accounting.state == 2 || sequence <= accounting.sequence {
             return;
         }
         let previous = accounting.prefill_tokens;
@@ -197,26 +197,50 @@ impl KvRequestSlot {
         accounting.sequence = sequence;
         self.manager
             .adjust_prefill(&self.target, previous, remaining_tokens);
+        self.trace_ledger("progress", previous, remaining_tokens);
     }
 
     pub fn begin_decode(&self) {
         let mut accounting = self.accounting.lock();
         if accounting.state == 0 {
             accounting.state = 1;
+            let prefill_tokens = std::mem::take(&mut accounting.prefill_tokens);
             self.manager
-                .begin_decode(&self.target, &self.target, accounting.prefill_tokens);
+                .begin_decode(&self.target, &self.target, prefill_tokens);
+            self.trace_ledger("first_output", prefill_tokens, 0);
         }
     }
 
     pub fn release(&self) {
-        self.begin_decode();
         let mut accounting = self.accounting.lock();
-        if accounting.state == 1 {
+        if accounting.state != 2 {
             accounting.state = 2;
+            let prefill_tokens = std::mem::take(&mut accounting.prefill_tokens);
+            self.manager.adjust_prefill(&self.target, prefill_tokens, 0);
             self.manager.free(&self.target);
             if let Some(record) = &accounting.affinity {
                 record.release_ref();
             }
+            self.trace_ledger("release", prefill_tokens, 0);
+        }
+    }
+
+    /// Debug-only view of the per-target ledger after a transition. Disabled
+    /// by default; carries no request identity.
+    fn trace_ledger(&self, event: &'static str, old_tokens: u64, new_tokens: u64) {
+        if tracing::enabled!(target: "kv_ledger", tracing::Level::DEBUG) {
+            let sample = self.manager.sample(&self.target);
+            tracing::debug!(
+                target: "kv_ledger",
+                event,
+                instance = %self.target.instance_id,
+                dp_rank = self.target.dp_rank,
+                old_tokens,
+                new_tokens,
+                active_prefill_tokens = sample.active_prefill_tokens,
+                active_requests = sample.active_requests,
+                "kv slot ledger"
+            );
         }
     }
 }
@@ -1993,6 +2017,35 @@ mod tests {
         slots.free(&decode);
         slots.free(&decode); // duplicate cleanup saturates
         assert_eq!(slots.sample(&decode).active_requests, 0);
+    }
+
+    #[test]
+    fn request_slot_tracks_reprefill_after_first_output_until_release() {
+        let manager = Arc::new(InMemorySlotManager::new());
+        let target = target("worker", 0);
+        manager.begin_prefill(&target, 100);
+        manager.begin_prefill(&target, 50);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100);
+
+        slot.update_prefill_progress(1, 60);
+        slot.begin_decode();
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 50);
+
+        slot.update_prefill_progress(2, 40);
+        slot.begin_decode();
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 90);
+        assert_eq!(manager.sample(&target).active_requests, 2);
+
+        slot.release();
+        slot.update_prefill_progress(3, 80);
+        slot.release();
+        assert_eq!(
+            manager.sample(&target),
+            LoadSample {
+                active_prefill_tokens: 50,
+                active_requests: 1,
+            }
+        );
     }
 
     #[test]
