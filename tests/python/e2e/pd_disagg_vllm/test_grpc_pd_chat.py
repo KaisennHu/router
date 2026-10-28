@@ -113,6 +113,11 @@ def test_chat_accuracy(
                 failures.append(f"Request {i}: no message")
                 print_error(f"Request {i}: no message")
                 continue
+            finish = choices[0].get("finish_reason")
+            if finish not in ("stop", "length"):
+                failures.append(f"Request {i}: finish_reason={finish}")
+                print_error(f"Request {i}: finish_reason={finish}")
+                continue
             text = _generated_text(choices[0]["message"])
             prompt_tokens = (data.get("usage") or {}).get("prompt_tokens") or 0
             if not text:
@@ -155,32 +160,58 @@ def test_chat_streaming(
                 failures.append(f"Stream {i}: HTTP {response.status_code}")
                 print_error(f"Stream {i} HTTP {response.status_code}")
                 continue
-            parts = []
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                line_str = line.decode("utf-8")
-                if not line_str.startswith("data: "):
-                    continue
-                data_str = line_str[6:].strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                parts.append(_generated_text(delta))
-            text = "".join(parts).strip()
-            if not text:
-                failures.append(f"Stream {i}: empty generation")
-                print_error(f"Stream {i}: empty generation")
+            failure = _stream_failure(response.iter_lines())
+            if failure:
+                failures.append(f"Stream {i}: {failure}")
+                print_error(f"Stream {i}: {failure}")
                 continue
-            print_success(f"Stream {i}: {len(text)} chars")
+            print_success(f"Stream {i} finished")
     return _report("Streaming chat", num_requests, failures)
+
+
+def _stream_failure(lines) -> str | None:
+    """None when the stream ends on stop or length after some text.
+
+    An SSE error, ``finish_reason: abort``, or EOF before a normal finish
+    fails the request even if earlier frames already contained text.
+    """
+    parts = []
+    finished = False
+    for line in lines:
+        if not line:
+            continue
+        line_str = line.decode("utf-8")
+        if not line_str.startswith("data: "):
+            continue
+        data_str = line_str[6:].strip()
+        if data_str == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+        except json.JSONDecodeError as exc:
+            return f"invalid SSE JSON: {exc}"
+        if not isinstance(chunk, dict):
+            return "SSE payload is not an object"
+        if "error" in chunk:
+            return f"SSE error: {chunk['error']}"
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        finish = choice.get("finish_reason")
+        if finish == "abort":
+            return "finish_reason abort"
+        if finish not in (None, "stop", "length"):
+            return f"finish_reason={finish}"
+        if finish in ("stop", "length"):
+            finished = True
+        delta = choice.get("delta") or {}
+        parts.append(_generated_text(delta))
+    if not finished:
+        return "stream ended without a stop or length finish"
+    if not "".join(parts).strip():
+        return "empty generation"
+    return None
 
 
 def _report(name: str, total: int, failures: list[str]) -> bool:

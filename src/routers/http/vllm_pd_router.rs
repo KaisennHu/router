@@ -2420,6 +2420,12 @@ impl VllmPDRouter {
             };
 
             // Create underlying PD router with provided worker lists
+            let grpc_workers: Vec<String> = prefill_urls
+                .iter()
+                .map(|(url, _)| url.clone())
+                .chain(decode_urls.iter().cloned())
+                .filter(|url| crate::backend::is_grpc_url(url))
+                .collect();
             let pd_router = PdRouterBase::new(prefill_urls.clone(), decode_urls, ctx).await?;
 
             // No service discovery in direct URL mode
@@ -2484,6 +2490,11 @@ impl VllmPDRouter {
                     }
                 }
                 info!("Mooncake bootstrap query complete for all prefill nodes");
+            }
+
+            if !grpc_workers.is_empty() {
+                crate::backend::warn_old_grpc_pd_workers(grpc_workers.iter().map(String::as_str))
+                    .await;
             }
 
             Ok(Self {

@@ -210,7 +210,9 @@ legs concurrently once P's push identity is cached.
 
 **P/D workers must run vLLM ≥ 0.30.0.** v0.29.x passes integer connector
 fields such as ports to the engine as floats, so every decode finishes
-`abort` with no tokens. Colocated gRPC serving works on v0.29.
+`abort` with no tokens. Those workers still pass the gRPC health probe.
+At startup the router reads each gRPC P/D worker's `engine_version` and
+warns when it is older than 0.30.0. Colocated gRPC serving works on v0.29.
 
 A P or D leg that finishes `abort` fails the request. A streaming decode that
 fails after its stream opened still counts as a decode error. When a leg is

@@ -37,8 +37,8 @@ pub fn stages_enabled() -> bool {
 }
 
 pub use control::{
-    get_grpc_model_info, get_grpc_server_info, model_info_json, openai_models_json,
-    server_info_json,
+    get_grpc_model_info, get_grpc_server_info, grpc_engine_version_older_than_0_30,
+    model_info_json, openai_models_json, server_info_json, warn_old_grpc_pd_workers,
 };
 pub use convert::prepare_grpc_completion;
 pub use detect::{

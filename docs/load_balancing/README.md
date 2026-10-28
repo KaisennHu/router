@@ -319,6 +319,7 @@ This allows optimizing each stage independently:
 - **Prefill**: Use `consistent_hash` for cache locality
 - **Decode**: Use `round_robin` or `power_of_two` for load distribution
 
-`grpc://` prefill and decode workers must run vLLM ≥ 0.30.0, and
+`grpc://` prefill and decode workers must run vLLM ≥ 0.30.0. The router
+warns at startup when a worker reports an older `engine_version`, and
 `power_of_two` uses the router's local load counts for them. See
 [gRPC P/D disaggregation](../backend/grpc.md#pd-disaggregation).
