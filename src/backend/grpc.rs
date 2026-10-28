@@ -14,13 +14,16 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot, OnceCell};
+use tokio::sync::{mpsc, oneshot, watch, OnceCell};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::convert::{chat_to_generate_request_with_progress, requires_worker_output_text};
+use super::convert::{
+    chat_to_generate_request, chat_to_generate_request_with_progress, limit_to_prefill,
+    proto_struct_to_json, requires_worker_output_text, set_kv_transfer_params,
+};
 use super::detect::{grpc_connect_uri, parse_dp_rank};
 use super::frontend::{PreparedRequest, ResponseShape};
 use super::openai::{
@@ -28,22 +31,100 @@ use super::openai::{
     sse_usage_chunk, SSE_DONE,
 };
 use super::pb::control_client::ControlClient;
+use super::pb::finish_info::FinishReason;
 use super::pb::inference_client::InferenceClient;
+use super::pb::AbortRequest;
 use super::stream_output::{output_frame_tracking, OutputFrameConsumer, OutputFrameProducer};
 use super::vllm_frontend::{decode_stream, emit_detok, DynTokenizer, IncrementalDecoderTrait};
 use crate::protocols::spec::Usage;
 
 const DP_RANK_METADATA: &str = "x-data-parallel-rank";
 const STREAM_BUFFER_CAPACITY: usize = 32;
+const ENGINE_ABORT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 pub(crate) type PrefillProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync + 'static>;
 type PrefillProgressCapabilityCache = Arc<DashMap<String, Arc<OnceCell<Result<bool, String>>>>>;
 
+/// P/D fields layered on a prepared chat. Default is a colocated request.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KvHandoff {
+    /// Engine `GenerateRequest.request_id`; the OpenAI response id is separate.
+    pub engine_request_id: Option<String>,
+    pub kv_transfer_params: Option<serde_json::Value>,
+}
+
+/// Sends `Control.Abort` for a P/D engine request if dropped before
+/// [`disarm`](Self::disarm). A vLLM worker notices a cancelled RPC only at its
+/// next send, so one waiting on KV would otherwise keep the request running.
+///
+/// vLLM registers a request before it answers the RPC, and an Abort for an
+/// unregistered id is a no-op. A leg dropped before its answer may race its
+/// own registration, so it gets a second Abort after a short delay.
+struct EngineAbortGuard {
+    target: Option<(Channel, String)>,
+    timeout: Duration,
+    answered: bool,
+}
+
+impl EngineAbortGuard {
+    fn new(channel: &Channel, engine_request_id: Option<&str>, timeout: Duration) -> Self {
+        Self {
+            target: engine_request_id.map(|id| (channel.clone(), id.to_string())),
+            timeout,
+            answered: false,
+        }
+    }
+
+    fn answered(&mut self) {
+        self.answered = true;
+    }
+
+    fn disarm(mut self) {
+        self.target = None;
+    }
+}
+
+impl Drop for EngineAbortGuard {
+    fn drop(&mut self) {
+        let Some((channel, request_id)) = self.target.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let timeout = self.timeout;
+        let retry = !self.answered;
+        runtime.spawn(async move {
+            send_engine_abort(&channel, &request_id, timeout).await;
+            if retry {
+                tokio::time::sleep(ENGINE_ABORT_RETRY_DELAY).await;
+                send_engine_abort(&channel, &request_id, timeout).await;
+            }
+        });
+    }
+}
+
+async fn send_engine_abort(channel: &Channel, request_id: &str, timeout: Duration) {
+    let request = AbortRequest {
+        request_ids: vec![request_id.to_string()],
+    };
+    let result =
+        tokio::time::timeout(timeout, ControlClient::new(channel.clone()).abort(request)).await;
+    match result {
+        Ok(Ok(_)) => debug!(%request_id, "grpc Control.Abort sent"),
+        Ok(Err(status)) => {
+            debug!(%request_id, code = ?status.code(), msg = %status.message(), "grpc Control.Abort failed")
+        }
+        Err(_) => debug!(%request_id, "grpc Control.Abort timed out"),
+    }
+}
+
 #[derive(Clone)]
 pub struct GrpcStreamTask {
     handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     output_frame: Option<OutputFrameConsumer>,
+    failed: Option<watch::Receiver<bool>>,
 }
 
 impl GrpcStreamTask {
@@ -52,6 +133,7 @@ impl GrpcStreamTask {
         Self {
             handle: Arc::new(std::sync::Mutex::new(Some(handle))),
             output_frame: None,
+            failed: None,
         }
     }
 
@@ -62,6 +144,35 @@ impl GrpcStreamTask {
         Self {
             handle: Arc::new(std::sync::Mutex::new(Some(handle))),
             output_frame: Some(output_frame),
+            failed: None,
+        }
+    }
+
+    fn with_failure(mut self, failed: watch::Receiver<bool>) -> Self {
+        self.failed = Some(failed);
+        self
+    }
+
+    /// Resolves once the producer has queued an error frame and stopped.
+    /// Stays pending for a stream that finishes cleanly.
+    pub(crate) fn failure(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let outcome = self.outcome();
+        async move {
+            if !outcome.await {
+                std::future::pending::<()>().await
+            }
+        }
+    }
+
+    /// Resolves once the producer stops: `true` if it queued an error frame,
+    /// `false` if it finished cleanly or was dropped.
+    pub(crate) fn outcome(&self) -> impl std::future::Future<Output = bool> + Send + 'static {
+        let failed = self.failed.clone();
+        async move {
+            match failed {
+                Some(mut failed) => failed.wait_for(|failed| *failed).await.is_ok(),
+                None => false,
+            }
         }
     }
 
@@ -99,7 +210,7 @@ fn grpc_status_code(status: &tonic::Status) -> StatusCode {
 
 #[derive(Clone)]
 pub struct GrpcEngineBackend {
-    clients: Arc<DashMap<String, InferenceClient<Channel>>>,
+    clients: Arc<DashMap<String, Channel>>,
     prefill_progress_capabilities: PrefillProgressCapabilityCache,
     connect_timeout: Duration,
     request_timeout: Duration,
@@ -139,7 +250,7 @@ impl GrpcEngineBackend {
         }
     }
 
-    async fn client_for(&self, worker_url: &str) -> Result<InferenceClient<Channel>, String> {
+    async fn channel_for(&self, worker_url: &str) -> Result<Channel, String> {
         let uri = grpc_connect_uri(worker_url)?;
         if let Some(hit) = self.clients.get(&uri) {
             return Ok(hit.clone());
@@ -150,9 +261,8 @@ impl GrpcEngineBackend {
             .connect()
             .await
             .map_err(|e| format!("grpc connect {uri}: {e}"))?;
-        let client = InferenceClient::new(channel);
-        self.clients.insert(uri, client.clone());
-        Ok(client)
+        self.clients.insert(uri, channel.clone());
+        Ok(channel)
     }
 
     async fn supports_prefill_progress(&self, worker_url: &str) -> Result<bool, String> {
@@ -189,12 +299,82 @@ impl GrpcEngineBackend {
         }
     }
 
+    /// P/D prefill leg as unary `Generate`. Returns the engine's
+    /// `FinishInfo.kv_transfer_params`, which the decode leg consumes.
+    pub(crate) async fn prefill_prepared(
+        &self,
+        worker_url: &str,
+        prepared: &PreparedRequest,
+        engine_request_id: String,
+        kv_transfer_params: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, Response> {
+        let mut proto = chat_to_generate_request(
+            prepared.request.as_ref(),
+            prepared.tokenized.token_ids.as_ref().to_vec(),
+            engine_request_id.clone(),
+        )
+        .map_err(|error| (StatusCode::BAD_REQUEST, error).into_response())?;
+        limit_to_prefill(&mut proto);
+        set_kv_transfer_params(&mut proto, kv_transfer_params)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())?;
+
+        let channel = self.channel_for(worker_url).await.map_err(|error| {
+            error!(error = %error, "grpc prefill connect failed");
+            (StatusCode::BAD_GATEWAY, error).into_response()
+        })?;
+        let abort = EngineAbortGuard::new(&channel, Some(&engine_request_id), self.connect_timeout);
+        let mut client = InferenceClient::new(channel);
+        let mut tonic_req = tonic::Request::new(proto);
+        tonic_req.set_timeout(self.request_timeout);
+        if let Some(rank) = parse_dp_rank(worker_url) {
+            tonic_req
+                .metadata_mut()
+                .insert(DP_RANK_METADATA, rank.to_string().parse().unwrap());
+        }
+        let response = match tokio::time::timeout(self.request_timeout, client.generate(tonic_req))
+            .await
+        {
+            Ok(Ok(response)) => {
+                abort.disarm();
+                response.into_inner()
+            }
+            Ok(Err(status)) => {
+                abort.disarm();
+                warn!(code = ?status.code(), msg = %status.message(), "prefill Generate failed");
+                return Err((
+                    grpc_status_code(&status),
+                    format!("grpc Generate: {}", status.message()),
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "grpc Generate exceeded request timeout",
+                )
+                    .into_response());
+            }
+        };
+        let finish = response.outputs.and_then(|outputs| outputs.finish_info);
+        if finish
+            .as_ref()
+            .is_some_and(|finish| finish.finish_reason == FinishReason::Aborted as i32)
+        {
+            warn!(%engine_request_id, "prefill Generate finished aborted");
+            return Err((StatusCode::BAD_GATEWAY, "grpc Generate: prefill aborted").into_response());
+        }
+        Ok(finish
+            .and_then(|finish| finish.kv_transfer_params)
+            .map(|params| proto_struct_to_json(&params)))
+    }
+
     pub(crate) async fn dispatch_prepared(
         &self,
         worker_url: &str,
         prepared: PreparedRequest,
         on_first_output: Option<FirstOutputCallback>,
         on_prefill_progress: Option<PrefillProgressCallback>,
+        handoff: KvHandoff,
     ) -> Response {
         let PreparedRequest {
             request,
@@ -227,15 +407,26 @@ impl GrpcEngineBackend {
         let skip_special = request.skip_special_tokens;
         let detok_tokenizer = handle.tokenizer();
         let detok_prompt_ids = tokenized.token_ids.clone();
+        let abort_request_id = handoff.engine_request_id.clone();
+        // Progress snapshots echo the engine request id, which a P/D leg sets
+        // apart from the OpenAI response id.
+        let engine_request_id = handoff
+            .engine_request_id
+            .unwrap_or_else(|| request_id.clone());
         let mut proto = match chat_to_generate_request_with_progress(
             request,
             tokenized.token_ids.as_ref().to_vec(),
-            request_id.clone(),
+            engine_request_id.clone(),
             include_prefill_progress,
         ) {
             Ok(proto) => proto,
             Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
         };
+        if let Some(params) = &handoff.kv_transfer_params {
+            if let Err(error) = set_kv_transfer_params(&mut proto, params) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+            }
+        }
 
         if include_prefill_progress {
             let supported =
@@ -248,14 +439,13 @@ impl GrpcEngineBackend {
         }
 
         let prefill_progress = PrefillProgressState::new(
-            request_id.clone(),
+            engine_request_id,
             on_prefill_progress.filter(|_| proto.include_prefill_progress),
             self.prefill_progress_stale_after,
         );
 
         let t_connect = Instant::now();
-        let mut client = match tokio::time::timeout_at(deadline, self.client_for(worker_url)).await
-        {
+        let channel = match tokio::time::timeout_at(deadline, self.channel_for(worker_url)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 error!(error = %e, "grpc backend connect failed");
@@ -269,6 +459,9 @@ impl GrpcEngineBackend {
                     .into_response();
             }
         };
+        let mut abort =
+            EngineAbortGuard::new(&channel, abort_request_id.as_deref(), self.connect_timeout);
+        let mut client = InferenceClient::new(channel);
         let grpc_connect_ms = t_connect.elapsed().as_secs_f64() * 1000.0;
 
         let mut tonic_req = tonic::Request::new(proto);
@@ -282,8 +475,12 @@ impl GrpcEngineBackend {
         let t_invoke = Instant::now();
         let stream =
             match tokio::time::timeout_at(deadline, client.generate_stream(tonic_req)).await {
-                Ok(Ok(s)) => s.into_inner(),
+                Ok(Ok(s)) => {
+                    abort.answered();
+                    s.into_inner()
+                }
                 Ok(Err(status)) => {
+                    abort.disarm();
                     warn!(code = ?status.code(), msg = %status.message(), "GenerateStream failed");
                     return (
                         grpc_status_code(&status),
@@ -337,6 +534,8 @@ impl GrpcEngineBackend {
             t_req,
             on_first_output,
             prefill_progress,
+            fail_on_abort: abort_request_id.is_some(),
+            abort,
         };
         if request.stream {
             stream_openai(stream, reply, n_prompt_tokens).await
@@ -366,6 +565,10 @@ struct ChatReply {
     t_req: Instant,
     on_first_output: Option<FirstOutputCallback>,
     prefill_progress: PrefillProgressState,
+    /// A P/D decode leg reports an `abort` finish as an error, so the push
+    /// path can cancel P instead of returning an aborted reply as success.
+    fail_on_abort: bool,
+    abort: EngineAbortGuard,
 }
 
 struct PrefillProgressState {
@@ -506,12 +709,15 @@ async fn stream_openai(
         t_req,
         on_first_output,
         mut prefill_progress,
+        fail_on_abort: _,
+        abort,
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(STREAM_BUFFER_CAPACITY);
     let (failure_tx, failure_rx) = oneshot::channel();
     let (mut producer_output_frame, output_frame) = output_frame_tracking();
+    let (failed_tx, failed_rx) = watch::channel(false);
     let emit = async move {
         let mut detok = tok
             .as_ref()
@@ -534,7 +740,7 @@ async fn stream_openai(
                         false,
                     )
                     .await;
-                    return;
+                    return false;
                 }
             };
             match item {
@@ -563,7 +769,7 @@ async fn stream_openai(
                                     false,
                                 )
                                 .await;
-                                return;
+                                return false;
                             }
                         };
                     let generated_output = has_generated_output(&msg, &text);
@@ -649,7 +855,7 @@ async fn stream_openai(
                             false,
                         )
                         .await;
-                        return;
+                        return finish.as_deref() != Some("abort");
                     }
                 }
                 Err(status) => {
@@ -663,7 +869,7 @@ async fn stream_openai(
                         false,
                     )
                     .await;
-                    return;
+                    return false;
                 }
             }
         }
@@ -674,13 +880,23 @@ async fn stream_openai(
             false,
         )
         .await;
+        false
     };
     let producer = tokio::spawn(async move {
-        if tokio::time::timeout_at(deadline, emit).await.is_err() {
-            let _ = failure_tx.send(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "gRPC response delivery exceeded request deadline",
-            ));
+        let finished = match tokio::time::timeout_at(deadline, emit).await {
+            Ok(finished) => finished,
+            Err(_) => {
+                let _ = failure_tx.send(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "gRPC response delivery exceeded request deadline",
+                ));
+                false
+            }
+        };
+        if finished {
+            abort.disarm();
+        } else {
+            failed_tx.send_replace(true);
         }
     });
 
@@ -701,7 +917,7 @@ async fn stream_openai(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     response
         .extensions_mut()
-        .insert(GrpcStreamTask::with_output_frame(producer, output_frame));
+        .insert(GrpcStreamTask::with_output_frame(producer, output_frame).with_failure(failed_rx));
     response
 }
 
@@ -725,6 +941,8 @@ async fn collect_openai(
         t_req,
         on_first_output,
         mut prefill_progress,
+        fail_on_abort,
+        abort,
     } = reply;
     let mut detok = tok
         .as_ref()
@@ -801,6 +1019,11 @@ async fn collect_openai(
             "gRPC stream closed before finish_info",
         )
             .into_response();
+    }
+    abort.disarm();
+    if fail_on_abort && finish.as_deref() == Some("abort") {
+        warn!(%request_id, "gRPC decode finished aborted");
+        return (StatusCode::BAD_GATEWAY, "gRPC decode finished aborted").into_response();
     }
     let mut resp = match shape {
         ResponseShape::Chat => axum::Json(final_response(
@@ -1139,6 +1362,12 @@ mod tests {
                     })),
                     Some(Duration::from_secs(2)),
                 ),
+                fail_on_abort: false,
+                abort: EngineAbortGuard {
+                    target: None,
+                    timeout: Duration::ZERO,
+                    answered: false,
+                },
             };
             let response = if streaming {
                 stream_openai(stream, reply, 100).await
