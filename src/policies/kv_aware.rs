@@ -2353,7 +2353,7 @@ mod tests {
         let target = target("worker", 0);
         manager.begin_prefill(&target, 100);
         manager.begin_prefill(&target, 50);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
 
         slot.update_prefill_progress(1, 60);
         slot.begin_decode();
@@ -2381,7 +2381,7 @@ mod tests {
         let manager = Arc::new(InMemorySlotManager::new());
         let target = target("worker", 0);
         manager.begin_prefill(&target, 100);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
 
         slot.update_prefill_progress(2, 60);
         slot.update_prefill_progress(1, 90);

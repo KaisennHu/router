@@ -17,6 +17,18 @@ text prompts or richer payloads.
 
 ## Prefill progress
 
+The gRPC-to-SSE queue holds at most 32 frames per request. A slow HTTP consumer
+backpressures only that request's producer; tokens, usage, and terminal frames
+keep their order. The absolute request deadline also bounds waits for queue
+capacity. On timeout, accepted frames drain before the body reports a transport
+error; no extra SSE queue slot is needed for that error. Dropping the body
+cancels the producer through the existing request cleanup path.
+
+Progress-only responses update accounting directly and never enter the SSE
+queue. Worker-side coalescing keeps only the latest pending pure-progress
+snapshot. Backpressure can delay receipt and stale detection, so receipt age
+alone is not an end-to-end freshness guarantee.
+
 For a regular `kv_aware` gRPC pool, `--prefill-progress-stale-after-secs 5`
 opts in to worker progress; omitting the option preserves static admission
 accounting. Unsupported workers retain that fallback. The threshold must be
