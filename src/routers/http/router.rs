@@ -147,12 +147,6 @@ impl RequestLoadGuard {
         }
     }
 
-    fn update_prefill_progress(&self, sequence: u64, remaining_tokens: u64) {
-        if let Some(slot) = &self.state.kv_slot {
-            slot.update_prefill_progress(sequence, remaining_tokens);
-        }
-    }
-
     fn release(&self) {
         if self.state.released.swap(true, Ordering::AcqRel) {
             return;
@@ -1763,20 +1757,16 @@ impl Router {
                 )
                     .into_response();
             };
-            let on_first_output = {
-                let load = load.clone();
-                Some(Arc::new(move || load.begin_decode())
-                    as crate::backend::grpc::FirstOutputCallback)
-            };
-            let on_prefill_progress = if load.state.kv_slot.is_some() {
-                let load = load.clone();
-                Some(Arc::new(move |sequence, remaining| {
-                    load.update_prefill_progress(sequence, remaining)
-                })
-                    as crate::backend::grpc::PrefillProgressCallback)
-            } else {
-                None
-            };
+            // Callbacks update accounting but do not own attempt cleanup:
+            // capability fallback may drop them before inference starts.
+            let on_first_output = load.state.kv_slot.clone().map(|slot| {
+                Arc::new(move || slot.begin_decode()) as crate::backend::grpc::FirstOutputCallback
+            });
+            let on_prefill_progress = load.state.kv_slot.clone().map(|slot| {
+                Arc::new(move |sequence, remaining| {
+                    slot.update_prefill_progress(sequence, remaining)
+                }) as crate::backend::grpc::PrefillProgressCallback
+            });
             let mut response = self
                 .frontend
                 .dispatch_with_first_output(
@@ -4528,10 +4518,10 @@ mod tests {
         worker.increment_load();
         for cancel in [false, true] {
             let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
-            load.update_prefill_progress(1, 40);
-            load.begin_decode();
-            load.update_prefill_progress(2, 32);
             let slot = load.state.kv_slot.as_ref().unwrap().clone();
+            slot.update_prefill_progress(1, 40);
+            load.begin_decode();
+            slot.update_prefill_progress(2, 32);
             assert_eq!(
                 crate::policies::LoadProvider::sample(manager.as_ref(), &target)
                     .active_prefill_tokens,
