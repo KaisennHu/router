@@ -878,6 +878,7 @@ mod tests {
                 kv_penalty_host: 0.8,
                 kv_penalty_external: 0.6,
                 kv_penalty_disk: 0.3,
+                static_kv_event_sources: Default::default(),
             },
         )
     }

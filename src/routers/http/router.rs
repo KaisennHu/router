@@ -4416,28 +4416,38 @@ mod tests {
         let (mut producer_output_frame, output_frame) =
             crate::backend::stream_output::output_frame_tracking();
         let (body_tx, body_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Result<bytes::Bytes, std::io::Error>>();
+            tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(2);
         let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
-            assert!(producer_output_frame.send(
-                &body_tx,
-                bytes::Bytes::from_static(b"data: prompt_info_only\n\n"),
-                false,
-            ));
+            assert!(
+                producer_output_frame
+                    .send(
+                        &body_tx,
+                        bytes::Bytes::from_static(b"data: prompt_info_only\n\n"),
+                        false,
+                    )
+                    .await
+            );
             // Model the gRPC producer getting ahead of the client: by the
             // time the first body frame is polled, it has already queued the
             // generated-output frame too.
-            assert!(producer_output_frame.send(
-                &body_tx,
-                bytes::Bytes::from_static(b"data: generated_token\n\n"),
-                true,
-            ));
+            assert!(
+                producer_output_frame
+                    .send(
+                        &body_tx,
+                        bytes::Bytes::from_static(b"data: generated_token\n\n"),
+                        true,
+                    )
+                    .await
+            );
             queued_tx.send(()).unwrap();
             let _ = finish_rx.await;
         });
         queued_rx.await.unwrap();
-        let mut response = Response::new(Body::from_stream(UnboundedReceiverStream::new(body_rx)));
+        let mut response = Response::new(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(body_rx),
+        ));
         response
             .extensions_mut()
             .insert(crate::backend::grpc::GrpcStreamTask::with_output_frame(

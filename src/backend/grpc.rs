@@ -14,8 +14,8 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, OnceCell};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio::sync::{mpsc, oneshot, OnceCell};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -34,6 +34,7 @@ use super::vllm_frontend::{decode_stream, emit_detok, DynTokenizer, IncrementalD
 use crate::protocols::spec::Usage;
 
 const DP_RANK_METADATA: &str = "x-data-parallel-rank";
+const STREAM_BUFFER_CAPACITY: usize = 32;
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 pub(crate) type PrefillProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync + 'static>;
@@ -73,13 +74,13 @@ impl GrpcStreamTask {
     }
 }
 
-fn send_stream_chunk(
-    tx: &mpsc::UnboundedSender<Result<String, std::io::Error>>,
+async fn send_stream_chunk(
+    tx: &mpsc::Sender<Result<String, std::io::Error>>,
     output: &mut OutputFrameProducer,
     chunk: String,
     has_generated_output: bool,
 ) -> bool {
-    output.send(tx, chunk, has_generated_output)
+    output.send(tx, chunk, has_generated_output).await
 }
 
 fn grpc_status_code(status: &tonic::Status) -> StatusCode {
@@ -508,9 +509,10 @@ async fn stream_openai(
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
-    let (tx, rx) = mpsc::unbounded_channel::<Result<String, std::io::Error>>();
+    let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(STREAM_BUFFER_CAPACITY);
+    let (failure_tx, failure_rx) = oneshot::channel();
     let (mut producer_output_frame, output_frame) = output_frame_tracking();
-    let producer = tokio::spawn(async move {
+    let emit = async move {
         let mut detok = tok
             .as_ref()
             .map(|t| decode_stream(&**t, prompt_ids.as_ref(), skip_special));
@@ -530,7 +532,8 @@ async fn stream_openai(
                         "data: {\"error\":\"gRPC stream exceeded request timeout\"}\n\n"
                             .to_string(),
                         false,
-                    );
+                    )
+                    .await;
                     return;
                 }
             };
@@ -558,7 +561,8 @@ async fn stream_openai(
                                         serde_json::to_string(&error).unwrap_or_default()
                                     ),
                                     false,
-                                );
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -583,7 +587,8 @@ async fn stream_openai(
                                 &mut producer_output_frame,
                                 format!(": router-stages {stages}\n\n"),
                                 false,
-                            );
+                            )
+                            .await;
                         }
                         first_token_logged = true;
                     }
@@ -618,7 +623,9 @@ async fn stream_openai(
                             &mut producer_output_frame,
                             line,
                             generated_output,
-                        ) {
+                        )
+                        .await
+                        {
                             break;
                         }
                         first = false;
@@ -632,14 +639,16 @@ async fn stream_openai(
                                 completion_tokens_details: None,
                             };
                             let line = sse_usage_chunk(shape, &request_id, &model, created, usage);
-                            let _ = send_stream_chunk(&tx, &mut producer_output_frame, line, false);
+                            let _ = send_stream_chunk(&tx, &mut producer_output_frame, line, false)
+                                .await;
                         }
                         let _ = send_stream_chunk(
                             &tx,
                             &mut producer_output_frame,
                             SSE_DONE.to_string(),
                             false,
-                        );
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -652,7 +661,8 @@ async fn stream_openai(
                             serde_json::to_string(status.message()).unwrap_or_default()
                         ),
                         false,
-                    );
+                    )
+                    .await;
                     return;
                 }
             }
@@ -662,10 +672,23 @@ async fn stream_openai(
             &mut producer_output_frame,
             "data: {\"error\":\"gRPC stream closed before finish_info\"}\n\n".to_string(),
             false,
-        );
+        )
+        .await;
+    };
+    let producer = tokio::spawn(async move {
+        if tokio::time::timeout_at(deadline, emit).await.is_err() {
+            let _ = failure_tx.send(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "gRPC response delivery exceeded request deadline",
+            ));
+        }
     });
 
-    let body = Body::from_stream(UnboundedReceiverStream::new(rx));
+    // Drain already accepted tokens first, then surface a blocked producer's
+    // timeout without needing another slot in the full SSE queue.
+    let tail = futures_util::stream::once(async move { failure_rx.await.ok().map(Err) })
+        .filter_map(std::future::ready);
+    let body = Body::from_stream(ReceiverStream::new(rx).chain(tail));
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
@@ -949,7 +972,7 @@ mod tests {
             dp_rank: 0,
         };
         manager.begin_prefill(&target, 100);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
         (manager, slot, target)
     }
 
@@ -1026,8 +1049,10 @@ mod tests {
 
     #[tokio::test]
     async fn both_response_consumers_apply_reprefill_and_filter_progress_frames() {
-        for streaming in [false, true] {
-            let frames = vec![
+        for mode in 0..3 {
+            let streaming = mode != 0;
+            let queue_full = Arc::new(tokio::sync::Notify::new());
+            let mut frames = vec![
                 progress(1, 60),
                 GenerateResponse {
                     outputs: Some(SequenceOutput {
@@ -1038,7 +1063,7 @@ mod tests {
                     }),
                     ..Default::default()
                 },
-                progress(2, 40),
+                progress(3, 40),
                 GenerateResponse {
                     outputs: Some(SequenceOutput {
                         text: "B".into(),
@@ -1053,6 +1078,21 @@ mod tests {
                     ..Default::default()
                 },
             ];
+            for _ in 0..STREAM_BUFFER_CAPACITY * 2 {
+                frames.insert(
+                    2,
+                    GenerateResponse {
+                        outputs: Some(SequenceOutput {
+                            text: "A".into(),
+                            num_tokens: 1,
+                            token_ids: vec![1],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                );
+            }
+            frames.insert(STREAM_BUFFER_CAPACITY + 1, progress(2, 70));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(
@@ -1073,6 +1113,7 @@ mod tests {
             let (manager, slot, target) = request_slot();
             let output_slot = slot.clone();
             let progress_slot = slot.clone();
+            let progress_queue_full = queue_full.clone();
             let reply = ChatReply {
                 request_id: "request".into(),
                 model: "model".into(),
@@ -1092,6 +1133,9 @@ mod tests {
                     "request".into(),
                     Some(Arc::new(move |sequence, remaining| {
                         progress_slot.update_prefill_progress(sequence, remaining);
+                        if sequence == 2 {
+                            progress_queue_full.notify_one();
+                        }
                     })),
                     Some(Duration::from_secs(2)),
                 ),
@@ -1101,16 +1145,51 @@ mod tests {
             } else {
                 collect_openai(stream, reply).await
             };
+            if mode == 2 {
+                queue_full.notified().await;
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(6)).await;
+                let task = response
+                    .extensions()
+                    .get::<GrpcStreamTask>()
+                    .unwrap()
+                    .handle
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap();
+                task.await.unwrap();
+                let mut chunks = response.into_body().into_data_stream();
+                let mut accepted = 0;
+                while chunks.next().await.unwrap().is_ok() {
+                    accepted += 1;
+                }
+                assert_eq!(accepted, STREAM_BUFFER_CAPACITY);
+                assert!(chunks.next().await.is_none());
+                assert_eq!(manager.sample(&target).active_prefill_tokens, 70);
+                slot.release();
+                assert_eq!(manager.sample(&target).active_requests, 0);
+                assert_eq!(manager.sample(&target).active_prefill_tokens, 0);
+                server.abort();
+                tokio::time::resume();
+                continue;
+            }
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
             if streaming {
                 let text = std::str::from_utf8(&body).unwrap();
-                assert_eq!(text.matches("chat.completion.chunk").count(), 2);
+                assert_eq!(
+                    text.matches("chat.completion.chunk").count(),
+                    STREAM_BUFFER_CAPACITY * 2 + 2
+                );
                 assert!(text.contains("[DONE]"));
             } else {
                 let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(value["choices"][0]["message"]["content"], "AB");
+                assert_eq!(
+                    value["choices"][0]["message"]["content"],
+                    format!("{}B", "A".repeat(STREAM_BUFFER_CAPACITY * 2 + 1))
+                );
             }
             assert_eq!(manager.sample(&target).active_prefill_tokens, 40);
             assert_eq!(manager.sample(&target).active_requests, 1);
@@ -1222,33 +1301,29 @@ mod tests {
         assert_eq!(decode_started.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn output_frame_latches_to_the_first_generated_response() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+    #[tokio::test]
+    async fn output_frame_latches_to_the_first_generated_response() {
+        let (tx, mut rx) = mpsc::channel(1);
         let (mut producer, mut consumer) = output_frame_tracking();
 
-        assert!(send_stream_chunk(
-            &tx,
-            &mut producer,
-            "prompt info".into(),
-            false,
-        ));
-        assert!(!consumer.on_frame());
-
-        assert!(send_stream_chunk(
+        assert!(send_stream_chunk(&tx, &mut producer, "prompt info".into(), false,).await);
+        let mut blocked = Box::pin(send_stream_chunk(
             &tx,
             &mut producer,
             "first token".into(),
             true,
         ));
+        assert!(futures_util::poll!(blocked.as_mut()).is_pending());
+        assert_eq!(rx.recv().await.unwrap().unwrap(), "prompt info");
+        assert!(!consumer.on_frame());
+        assert!(blocked.await);
+        assert_eq!(rx.recv().await.unwrap().unwrap(), "first token");
         assert!(consumer.on_frame());
 
-        assert!(send_stream_chunk(
-            &tx,
-            &mut producer,
-            "second token".into(),
-            true,
-        ));
+        assert!(send_stream_chunk(&tx, &mut producer, "second token".into(), true,).await);
+        assert_eq!(rx.recv().await.unwrap().unwrap(), "second token");
         assert!(consumer.on_frame());
+        drop(rx);
+        assert!(!send_stream_chunk(&tx, &mut producer, "cancelled".into(), true).await);
     }
 }
