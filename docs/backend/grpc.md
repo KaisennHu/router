@@ -17,34 +17,17 @@ text prompts or richer payloads.
 
 ## Prefill progress
 
-The gRPC-to-SSE queue holds at most 32 frames per request. A slow HTTP consumer
-backpressures only that request's producer; tokens, usage, and terminal frames
-keep their order. The absolute request deadline also bounds waits for queue
-capacity. On timeout, accepted frames drain before the body reports a transport
-error; no extra SSE queue slot is needed for that error. Dropping the body
-cancels the producer through the existing request cleanup path.
+Enable worker-reported prefill progress for more accurate `kv_aware` load estimates:
 
-Progress-only responses update accounting directly and never enter the SSE
-queue. Worker-side coalescing keeps only the latest pending pure-progress
-snapshot. Backpressure can delay receipt and stale detection, so receipt age
-alone is not an end-to-end freshness guarantee.
+```bash
+vllm-router --worker-urls grpc://worker:50051 \
+  --policy kv_aware --prefill-progress-stale-after-secs 5
+```
 
-For a regular `kv_aware` gRPC pool, `--prefill-progress-stale-after-secs 5`
-opts in to worker progress; omitting the option preserves static admission
-accounting. Unsupported workers retain that fallback. The threshold must be
-at least 2 seconds and less than `--request-timeout-secs`.
-
-Only newer snapshots for the current request update the reservation or its
-receipt time. Stale progress increments
-`vllm_router_prefill_progress_stale_total` and retains the last-known balance;
-`vllm_router_prefill_progress_update_gap_seconds` records gaps between valid
-snapshots, and `vllm_router_prefill_progress_updates_total{outcome}` counts
-accepted snapshots and those ignored for a different request identity or a
-non-increasing sequence. With `RUST_LOG=kv_ledger=debug`, each reservation
-transition logs the resulting per-target ledger. Receipt age is not sample age. Prefill can resume after first
-output, and completion, errors and cancellation release the current balance
-exactly once. The overall gRPC request deadline is independent of progress;
-incoming progress frames do not reset it.
+- Supported for regular gRPC pools; P/D mode is not supported.
+- Disabled by default. Workers without progress support continue using estimated load.
+- Set the stale threshold to at least 2 seconds and below `--request-timeout-secs`.
+  This is a freshness threshold, not the worker's reporting interval.
 
 ## API Compatibility
 

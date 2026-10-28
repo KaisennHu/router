@@ -255,6 +255,12 @@ Enable KV events on the workers. HTTP text requests also need a render endpoint 
 
 For regular pools without event discovery, configure `--kv-event-source WORKER_URL=tcp://HOST:PORT` per worker, plus matching `--kv-event-model` and `--kv-event-block-size`.
 
+### Prefill progress
+
+For regular `kv_aware` gRPC pools, add `--prefill-progress-stale-after-secs 5`
+to enable worker-reported progress. Disabled by default.
+See [configuration and requirements](../backend/grpc.md#prefill-progress).
+
 ### P/D disaggregation
 
 ```bash
@@ -278,8 +284,6 @@ Send the same `x-session-id` header or `session_params.session_id` on each turn;
 In P/D mode, affinity applies only to decode. A busy decoder may be replaced by a less busy one; prefill is selected independently for each request.
 
 Multiple router replicas need ingress stickiness to preserve affinity.
-
-Worker-reported prefill progress is opt-in and disabled by default. To enable it for `kv_aware` gRPC workers, set `--prefill-progress-stale-after-secs <seconds>`. The value is Router's receipt-age threshold: after that much time without a newer valid snapshot, Router marks the last-known reservation stale and keeps it (it does not assume the request completed). The value must be at least 2 seconds and less than `--request-timeout-secs`. Worker capability is checked before Router requests progress; unsupported workers continue with the admission estimate. This setting does not create a worker refresh interval, so it does not guarantee updates at a fixed cadence.
 
 ---
 
