@@ -29,6 +29,8 @@ use vllm_router_rs::backend::pb::{
 
 #[derive(Clone, Default)]
 pub struct CapturedGrpcGenerate {
+    pub request_id: String,
+    pub include_prefill_progress: bool,
     pub token_ids: Vec<u32>,
     pub had_text_prompt: bool,
     pub model: String,
@@ -54,60 +56,10 @@ pub struct MockVllmRs {
     pub frames: Option<Vec<(String, Vec<u32>)>>,
     pub capture_limit: usize,
     pub failures_remaining: Arc<AtomicUsize>,
-    /// Returned in `FinishInfo.kv_transfer_params`, as a P/D prefill engine does.
-    pub finish_kv_transfer_params: Option<serde_json::Value>,
-    /// Wait before sending any output, as a long prefill would.
-    pub reply_delay: Duration,
-    /// Streams the client cancelled before their first output.
-    pub cancelled: Arc<AtomicUsize>,
-    /// Streams to fail with a gRPC error after their prompt info, i.e.
-    /// after the stream has opened.
-    pub stream_failures_remaining: Arc<AtomicUsize>,
-    /// Requests to finish with `FinishReason::Aborted` instead of `Stop`.
-    pub aborted_finishes_remaining: Arc<AtomicUsize>,
-    /// Request ids received by `Control.Abort`.
-    pub aborts: Arc<Mutex<Vec<String>>>,
-    /// After `hold_after` recorded requests, wait until [`HoldGate::release`].
-    pub hold: Option<HoldGate>,
-}
-
-/// Blocks requests after the first `hold_after` ones until [`HoldGate::release`].
-///
-/// The request is recorded before the wait, so a test can see the admission
-/// while the worker is still occupied.
-#[derive(Clone)]
-pub struct HoldGate {
-    hold_after: usize,
-    seen: Arc<AtomicUsize>,
-    released: Arc<watch::Sender<bool>>,
-}
-
-impl HoldGate {
-    pub fn new(hold_after: usize) -> Self {
-        let (released, _) = watch::channel(false);
-        Self {
-            hold_after,
-            seen: Arc::new(AtomicUsize::new(0)),
-            released: Arc::new(released),
-        }
-    }
-
-    pub fn release(&self) {
-        let _ = self.released.send(true);
-    }
-
-    pub async fn wait(&self) {
-        let seen = self.seen.fetch_add(1, Ordering::SeqCst);
-        if self.hold_after == 0 || seen < self.hold_after {
-            return;
-        }
-        let mut released = self.released.subscribe();
-        while !*released.borrow() {
-            if released.changed().await.is_err() {
-                return;
-            }
-        }
-    }
+    /// `None` models a worker without capability discovery.
+    pub prefill_progress_supported: Option<bool>,
+    /// Optional externally driven stream for lifecycle and progress tests.
+    pub scripted_stream: Arc<Mutex<Option<ResponseStream>>>,
 }
 
 impl Default for MockVllmRs {
@@ -118,13 +70,8 @@ impl Default for MockVllmRs {
             frames: None,
             capture_limit: usize::MAX,
             failures_remaining: Arc::new(AtomicUsize::new(0)),
-            finish_kv_transfer_params: None,
-            reply_delay: Duration::ZERO,
-            cancelled: Arc::new(AtomicUsize::new(0)),
-            stream_failures_remaining: Arc::new(AtomicUsize::new(0)),
-            aborted_finishes_remaining: Arc::new(AtomicUsize::new(0)),
-            aborts: Arc::new(Mutex::new(Vec::new())),
-            hold: None,
+            prefill_progress_supported: None,
+            scripted_stream: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -180,7 +127,7 @@ impl MockVllmRsServer {
     }
 }
 
-type ResponseStream = Pin<Box<dyn Stream<Item = Result<GenerateResponse, Status>> + Send>>;
+pub type ResponseStream = Pin<Box<dyn Stream<Item = Result<GenerateResponse, Status>> + Send>>;
 
 #[tonic::async_trait]
 impl Inference for MockVllmRs {
@@ -243,6 +190,8 @@ impl Inference for MockVllmRs {
             if captured.len() < self.capture_limit {
                 let stopping = req.stopping.unwrap_or_default();
                 captured.push(CapturedGrpcGenerate {
+                    request_id: req.request_id,
+                    include_prefill_progress: req.include_prefill_progress,
                     token_ids: token_ids.clone(),
                     had_text_prompt,
                     model: req.model,
@@ -274,6 +223,10 @@ impl Inference for MockVllmRs {
         }
         if let Some(hold) = &self.hold {
             hold.wait().await;
+        }
+
+        if let Some(stream) = self.scripted_stream.lock().unwrap().take() {
+            return Ok(Response::new(stream));
         }
 
         let (tx, rx) = mpsc::channel(4);
@@ -358,38 +311,16 @@ impl Inference for MockVllmRs {
 
 macro_rules! mock_control {
     ($($method:ident($request:ident) -> $response:ident;)*) => {
-        /// Records `Abort` and serves model and server info; every other
-        /// Control RPC is unimplemented.
         #[tonic::async_trait]
         impl Control for MockVllmRs {
-            async fn abort(
-                &self,
-                request: Request<pb::AbortRequest>,
-            ) -> Result<Response<pb::AbortResponse>, Status> {
-                self.aborts
-                    .lock()
-                    .unwrap()
-                    .extend(request.into_inner().request_ids);
-                Ok(Response::new(pb::AbortResponse {}))
-            }
-
-            async fn get_model_info(
-                &self,
-                _request: Request<pb::GetModelInfoRequest>,
-            ) -> Result<Response<pb::ModelInfo>, Status> {
-                Ok(Response::new(pb::ModelInfo {
-                    model_id: "mock-model".into(),
-                    supports_token_ids_input: true,
-                    ..Default::default()
-                }))
-            }
-
             async fn get_server_info(
                 &self,
                 _request: Request<pb::GetServerInfoRequest>,
             ) -> Result<Response<pb::ServerInfo>, Status> {
+                let supported = self.prefill_progress_supported
+                    .ok_or_else(|| Status::unimplemented("GetServerInfo"))?;
                 Ok(Response::new(pb::ServerInfo {
-                    engine_version: "mock".into(),
+                    supports_prefill_progress: supported,
                     ..Default::default()
                 }))
             }
@@ -407,6 +338,9 @@ macro_rules! mock_control {
 }
 
 mock_control! {
+    get_model_info(GetModelInfoRequest) -> ModelInfo;
+    shutdown(ShutdownRequest) -> ShutdownResponse;
+    abort(AbortRequest) -> AbortResponse;
     load_lora(LoadLoraRequest) -> LoadLoraResponse;
     unload_lora(UnloadLoraRequest) -> UnloadLoraResponse;
     list_loras(ListLorasRequest) -> ListLorasResponse;
