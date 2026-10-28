@@ -1234,8 +1234,8 @@ impl KvAwarePolicy {
                 "sticky_hit"
             } else if !plan.has_tokens {
                 "missing_tokens"
-            } else if cache_salt.is_some_and(|salt| !salt.is_empty()) {
-                "cache_salt"
+            } else if let Some(reason) = Self::credit_fallback(cache_salt, true) {
+                reason
             } else if plan.bindings[position].cache_key.is_none() {
                 "unverified_identity"
             } else {
@@ -1310,6 +1310,20 @@ impl KvAwarePolicy {
         Some((healthy, bindings))
     }
 
+    /// Event identities do not include cache salts; unverified models receive no credit.
+    pub(crate) fn credit_fallback(
+        cache_salt: Option<&str>,
+        model_verified: bool,
+    ) -> Option<&'static str> {
+        if cache_salt.is_some_and(|salt| !salt.is_empty()) {
+            Some("cache_salt")
+        } else if !model_verified {
+            Some("unverified_model")
+        } else {
+            None
+        }
+    }
+
     /// Healthy workers, their target bindings, and per-candidate KV matches.
     /// All provider queries happen here, outside every lock.
     fn prepare_selection(
@@ -1327,7 +1341,7 @@ impl KvAwarePolicy {
         // KV events carry lora_name but not cache_salt. Hash LoRA requests the
         // same way as ingestion; for salted requests, skip placement credit
         // instead of claiming an incompatible unsalted cache entry.
-        let placement_enabled = cache_salt.is_none_or(|salt| salt.is_empty());
+        let credit_fallback = Self::credit_fallback(cache_salt, true);
         let prompts: Vec<_> = healthy
             .iter()
             .map(|&index| tokens.prompts_for(workers[index].as_ref()))
@@ -1356,10 +1370,8 @@ impl KvAwarePolicy {
                     let hits = query_cache
                         .entry((binding.cache_key.clone(), ids))
                         .or_insert_with(|| {
-                            if !placement_enabled {
-                                crate::metrics::RouterMetrics::record_kv_placement_lookup(
-                                    "cache_salt",
-                                );
+                            if let Some(reason) = credit_fallback {
+                                crate::metrics::RouterMetrics::record_kv_placement_lookup(reason);
                                 return Vec::new();
                             }
                             let local_hashes =
@@ -2452,6 +2464,15 @@ mod tests {
 
     #[test]
     fn cache_salt_disables_incompatible_placement_credit() {
+        for (salt, verified, expected) in [
+            (None, true, None),
+            (Some(""), true, None),
+            (None, false, Some("unverified_model")),
+            (Some("tenant-salt"), true, Some("cache_salt")),
+            (Some("tenant-salt"), false, Some("cache_salt")),
+        ] {
+            assert_eq!(KvAwarePolicy::credit_fallback(salt, verified), expected);
+        }
         let index = Arc::new(crate::kv_index::KvBlockIndexer::new());
         let policy = policy_with_index(
             index.clone(),

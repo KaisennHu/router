@@ -14,7 +14,9 @@ use crate::core::{
 use crate::kv_index::discovery::{worker_get, WorkerDiscovery};
 use crate::kv_index::{HashMode, KvIndexSupervisor, WorkerKvInfo};
 use crate::policies::WorkerTokenInputs;
-use crate::policies::{kv_aware_ops, KvAwareOps, LoadBalancingPolicy, PolicyRegistry};
+use crate::policies::{
+    kv_aware_ops, KvAwareOps, KvAwarePolicy, LoadBalancingPolicy, PolicyRegistry,
+};
 use crate::routers::header_utils;
 use async_trait::async_trait;
 use axum::{
@@ -806,23 +808,18 @@ impl PdKvState {
         .await;
         let mut prepared = HashMap::new();
         for (base, result) in results {
-            let salted = request
-                .get("cache_salt")
-                .and_then(Value::as_str)
-                .is_some_and(|salt| !salt.is_empty());
-            let credit = !salted && allow_credit.get(&base).copied().unwrap_or(false);
+            let fallback = KvAwarePolicy::credit_fallback(
+                request.get("cache_salt").and_then(Value::as_str),
+                allow_credit.get(&base).copied().unwrap_or(false),
+            );
             let input = match result {
                 Ok(input) => {
                     crate::metrics::RouterMetrics::record_kv_routing_input("pd", input.source);
                     PdPrefillInput {
                         prompts: Some(input.prompts),
                         work_by_rank: HashMap::new(),
-                        allow_credit: credit,
-                        fallback_reason: if salted {
-                            Some("cache_salt")
-                        } else {
-                            (!credit).then_some("unverified_model")
-                        },
+                        allow_credit: fallback.is_none(),
+                        fallback_reason: fallback,
                     }
                 }
                 Err(reason) => {
