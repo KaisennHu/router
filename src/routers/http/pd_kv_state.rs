@@ -258,14 +258,17 @@ impl PdKvState {
             .collect()
             .await;
         for (base, discovery) in probes {
-            let signature = discovery
-                .as_ref()
-                .map(|snapshot| snapshot.signature.clone());
             let existing = {
                 let bindings = self.bindings.lock().await;
                 bindings.get(&base).cloned()
             };
-            match probe_outcome(existing.as_ref(), signature.as_deref()) {
+            let outcome = probe_outcome(
+                existing.as_ref(),
+                discovery
+                    .as_ref()
+                    .map(|snapshot| snapshot.signature.as_str()),
+            );
+            match outcome {
                 ProbeOutcome::Unchanged => {
                     let mut bindings = self.bindings.lock().await;
                     if let Some(binding) = bindings.get_mut(&base) {
@@ -276,10 +279,13 @@ impl PdKvState {
                             .unwrap_or_default();
                     }
                 }
-                ProbeOutcome::Keep => {
+                ProbeOutcome::Keep | ProbeOutcome::Evict => {
                     let mut bindings = self.bindings.lock().await;
+                    if outcome == ProbeOutcome::Evict {
+                        bindings.remove(&base);
+                    }
                     bindings
-                        .entry(base)
+                        .entry(base.clone())
                         .and_modify(|binding| {
                             binding.checked = Instant::now();
                             binding.probe_failures = binding.probe_failures.saturating_add(1);
@@ -291,6 +297,10 @@ impl PdKvState {
                             base_models: HashSet::new(),
                             probe_failures: 0,
                         });
+                    drop(bindings);
+                    if outcome == ProbeOutcome::Evict {
+                        self.supervisor.on_worker_removed(&base);
+                    }
                 }
                 ProbeOutcome::Rebuild => {
                     {
@@ -311,35 +321,13 @@ impl PdKvState {
                     bindings.insert(
                         base,
                         Binding {
-                            signature: signature.unwrap_or_default(),
+                            signature: snapshot.signature,
                             checked: Instant::now(),
                             info,
                             base_models: snapshot.base_models,
                             probe_failures: 0,
                         },
                     );
-                }
-                ProbeOutcome::Evict => {
-                    {
-                        let mut bindings = self.bindings.lock().await;
-                        // Replace with an empty binding so the short
-                        // CONTROL_TIMEOUT retry cadence keeps throttling
-                        // probes against the dead engine.
-                        bindings.insert(
-                            base.clone(),
-                            Binding {
-                                signature: String::new(),
-                                checked: Instant::now(),
-                                info: None,
-                                base_models: HashSet::new(),
-                                probe_failures: 0,
-                            },
-                        );
-                    }
-                    // Unreachable for several consecutive refresh intervals:
-                    // treat the engine as gone rather than trusting a possibly
-                    // restarted incarnation behind a stale signature.
-                    self.supervisor.on_worker_removed(&base);
                 }
             }
         }
@@ -458,25 +446,16 @@ impl PdKvState {
                 request.get("cache_salt").and_then(Value::as_str),
                 allow_credit.get(&base).copied().unwrap_or(false),
             );
-            let input = match result {
-                Ok(input) => {
-                    crate::metrics::RouterMetrics::record_kv_routing_input("pd", input.source);
-                    PdPrefillInput {
-                        prompts: Some(input.prompts),
-                        work_by_rank: HashMap::new(),
-                        allow_credit: fallback.is_none(),
-                        fallback_reason: fallback,
-                    }
-                }
-                Err(reason) => {
-                    crate::metrics::RouterMetrics::record_kv_routing_input("pd", reason);
-                    PdPrefillInput {
-                        prompts: None,
-                        work_by_rank: HashMap::new(),
-                        allow_credit: false,
-                        fallback_reason: Some(reason),
-                    }
-                }
+            let (prompts, fallback_reason, source) = match result {
+                Ok(input) => (Some(input.prompts), fallback, input.source),
+                Err(reason) => (None, Some(reason), reason),
+            };
+            crate::metrics::RouterMetrics::record_kv_routing_input("pd", source);
+            let input = PdPrefillInput {
+                prompts,
+                work_by_rank: HashMap::new(),
+                allow_credit: fallback_reason.is_none(),
+                fallback_reason,
             };
             metrics::gauge!("vllm_router_pd_identity_verified", "worker" => base.clone())
                 .set(if input.allow_credit { 1.0 } else { 0.0 });
@@ -794,48 +773,28 @@ mod kv_input_tests {
     }
 
     #[test]
-    fn probe_outcome_same_healthy_incarnation_is_unchanged() {
-        let binding = healthy_binding("sig", 2);
-        assert_eq!(
-            probe_outcome(Some(&binding), Some("sig")),
-            ProbeOutcome::Unchanged
-        );
-        // A changed signature rebuilds even when healthy.
-        assert_eq!(
-            probe_outcome(Some(&binding), Some("other")),
-            ProbeOutcome::Rebuild
-        );
-        // A binding that never produced info rebuilds on any success.
-        let mut never = healthy_binding("sig", 0);
-        never.info = None;
-        assert_eq!(
-            probe_outcome(Some(&never), Some("sig")),
-            ProbeOutcome::Rebuild
-        );
-    }
-
-    #[test]
-    fn probe_outcome_transient_failures_keep_healthy_binding_until_limit() {
+    fn probe_outcomes_cover_identity_changes_and_failure_threshold() {
+        let healthy = healthy_binding("sig", 0);
+        let failing = healthy_binding("sig", MAX_PROBE_FAILURES - 1);
+        let unverified = Binding {
+            info: None,
+            ..failing.clone()
+        };
+        for (binding, signature, expected) in [
+            (Some(&healthy), Some("sig"), ProbeOutcome::Unchanged),
+            (Some(&healthy), Some("other"), ProbeOutcome::Rebuild),
+            (Some(&unverified), Some("sig"), ProbeOutcome::Rebuild),
+            (Some(&failing), None, ProbeOutcome::Evict),
+            (Some(&unverified), None, ProbeOutcome::Keep),
+            (None, Some("sig"), ProbeOutcome::Rebuild),
+            (None, None, ProbeOutcome::Keep),
+        ] {
+            assert_eq!(probe_outcome(binding, signature), expected);
+        }
         for failures in 0..MAX_PROBE_FAILURES - 1 {
             let binding = healthy_binding("sig", failures);
-            assert_eq!(
-                probe_outcome(Some(&binding), None),
-                ProbeOutcome::Keep,
-                "failures={failures}"
-            );
+            assert_eq!(probe_outcome(Some(&binding), None), ProbeOutcome::Keep);
         }
-        let binding = healthy_binding("sig", MAX_PROBE_FAILURES - 1);
-        assert_eq!(probe_outcome(Some(&binding), None), ProbeOutcome::Evict);
-        // Bindings without info never evict — there is nothing to lose.
-        let mut never = healthy_binding("sig", MAX_PROBE_FAILURES - 1);
-        never.info = None;
-        assert_eq!(probe_outcome(Some(&never), None), ProbeOutcome::Keep);
-    }
-
-    #[test]
-    fn probe_outcome_untracked_bases() {
-        assert_eq!(probe_outcome(None, Some("sig")), ProbeOutcome::Rebuild);
-        assert_eq!(probe_outcome(None, None), ProbeOutcome::Keep);
     }
 
     #[tokio::test]

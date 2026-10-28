@@ -107,57 +107,40 @@ fn discovery_is_ready(prefill_count: usize, decode_count: usize) -> bool {
 const PD_BUFFERED_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JSON_REWRITE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Read a full response body up to [`PD_BUFFERED_BODY_LIMIT_BYTES`]. Oversized
-/// bodies fail the request (with a metric) instead of buffering unbounded.
-async fn read_body_limited(
-    response: reqwest::Response,
-    url: &str,
-    stage: &'static str,
-) -> Result<Bytes, PDRouterError> {
-    let limit = PD_BUFFERED_BODY_LIMIT_BYTES;
-    let over_limit = || {
-        RouterMetrics::record_pd_body_over_limit(stage);
-        PDRouterError::NetworkError {
-            message: format!(
-                "Response body from {url} exceeds the {} MiB router buffer limit",
-                limit / (1024 * 1024)
-            ),
-        }
-    };
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(over_limit());
-    }
-    let mut body = Vec::with_capacity(256);
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| PDRouterError::NetworkError {
+/// Prefill control metadata must fit in the buffer; Decode may stream the rest.
+async fn read_prefill_body(response: reqwest::Response, url: &str) -> Result<Bytes, PDRouterError> {
+    match read_response_body(response, PD_BUFFERED_BODY_LIMIT_BYTES)
+        .await
+        .map_err(|error| PDRouterError::NetworkError {
             message: format!("Failed to read response body from {url}: {error}"),
-        })?;
-        if body.len() + chunk.len() > limit {
-            return Err(over_limit());
+        })? {
+        ResponseBody::Buffered(body) => Ok(body),
+        ResponseBody::Passthrough(_) => {
+            RouterMetrics::record_pd_body_over_limit("prefill");
+            Err(PDRouterError::NetworkError {
+                message: format!(
+                    "Response body from {url} exceeds the {} MiB router buffer limit",
+                    PD_BUFFERED_BODY_LIMIT_BYTES / (1024 * 1024)
+                ),
+            })
         }
-        body.extend_from_slice(&chunk);
     }
-    Ok(Bytes::from(body))
 }
 
-enum DecodeBody {
+enum ResponseBody {
     Buffered(Bytes),
     Passthrough(Body),
 }
 
-async fn read_decode_body(
+async fn read_response_body(
     response: reqwest::Response,
     limit: usize,
-) -> Result<DecodeBody, reqwest::Error> {
+) -> Result<ResponseBody, reqwest::Error> {
     if response
         .content_length()
         .is_some_and(|length| length > limit as u64)
     {
-        return Ok(DecodeBody::Passthrough(Body::from_stream(
+        return Ok(ResponseBody::Passthrough(Body::from_stream(
             response.bytes_stream(),
         )));
     }
@@ -170,13 +153,13 @@ async fn read_decode_body(
                 Ok::<_, reqwest::Error>(Bytes::from(buffered)),
                 Ok(chunk),
             ]);
-            return Ok(DecodeBody::Passthrough(Body::from_stream(
+            return Ok(ResponseBody::Passthrough(Body::from_stream(
                 prefix.chain(source),
             )));
         }
         buffered.extend_from_slice(&chunk);
     }
-    Ok(DecodeBody::Buffered(Bytes::from(buffered)))
+    Ok(ResponseBody::Buffered(Bytes::from(buffered)))
 }
 
 fn response_with_body(
@@ -1042,7 +1025,7 @@ impl VllmPDRouter {
             })?;
             let status = response.status();
             let content_type = response.headers().get(http::header::CONTENT_TYPE).cloned();
-            let bytes = read_body_limited(response, base, "prefill").await?;
+            let bytes = read_prefill_body(response, base).await?;
             Ok((status, content_type, bytes))
         }
         .await;
@@ -1092,12 +1075,12 @@ impl VllmPDRouter {
         } else {
             let status = decode_response.status();
             let headers = decode_response.headers().clone();
-            match read_decode_body(decode_response, PD_BUFFERED_BODY_LIMIT_BYTES)
+            match read_response_body(decode_response, PD_BUFFERED_BODY_LIMIT_BYTES)
                 .await
                 .map_err(|error| {
                     format!("Failed to read response body from {decode_base_url}: {error}")
                 })? {
-                DecodeBody::Buffered(bytes) => {
+                ResponseBody::Buffered(bytes) => {
                     attempt.finish_decode();
                     finalize_decode_body(
                         status,
@@ -1108,7 +1091,7 @@ impl VllmPDRouter {
                         needs_logprobs,
                     )
                 }
-                DecodeBody::Passthrough(body) => {
+                ResponseBody::Passthrough(body) => {
                     let mut headers = header_utils::preserve_response_headers(&headers);
                     headers.remove(http::header::CONTENT_LENGTH);
                     response_with_body(status, &headers, body)
@@ -2260,14 +2243,14 @@ mod tests {
         } else {
             let status = response.status();
             let headers = response.headers().clone();
-            match read_decode_body(response, PD_BUFFERED_BODY_LIMIT_BYTES)
+            match read_response_body(response, PD_BUFFERED_BODY_LIMIT_BYTES)
                 .await
                 .map_err(|error| format!("Failed to read response body: {error}"))?
             {
-                DecodeBody::Buffered(bytes) => {
+                ResponseBody::Buffered(bytes) => {
                     finalize_decode_body(status, headers, bytes, prefill, path, logprobs)
                 }
-                DecodeBody::Passthrough(body) => {
+                ResponseBody::Passthrough(body) => {
                     let mut headers = header_utils::preserve_response_headers(&headers);
                     headers.remove(http::header::CONTENT_LENGTH);
                     response_with_body(status, &headers, body)
@@ -2315,9 +2298,7 @@ mod tests {
         .await;
         let client = reqwest::Client::new();
         let response = client.get(&url).send().await.unwrap();
-        let error = read_body_limited(response, &url, "prefill")
-            .await
-            .unwrap_err();
+        let error = read_prefill_body(response, &url).await.unwrap_err();
         assert!(error.to_string().contains("exceeds"));
     }
 
@@ -2342,12 +2323,12 @@ mod tests {
                 http::Response::new(reqwest::Body::wrap_stream(prefix.chain(tail))).into();
             let body = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                read_decode_body(response, 6),
+                read_response_body(response, 6),
             )
             .await
             .expect("overflow must return before the tail finishes")
             .unwrap();
-            let DecodeBody::Passthrough(body) = body else {
+            let ResponseBody::Passthrough(body) = body else {
                 panic!("body must stream above the budget");
             };
             let mut body = body.into_data_stream();
