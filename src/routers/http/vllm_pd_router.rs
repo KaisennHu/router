@@ -1174,7 +1174,9 @@ impl VllmPDRouter {
         if crate::backend::is_grpc_url(prefill_worker.url()) {
             return Ok((
                 StatusCode::BAD_REQUEST,
-                format!("gRPC P/D workers currently support /v1/chat/completions, not {path}"),
+                format!(
+                    "gRPC P/D workers support /v1/chat/completions and /v1/completions, not {path}"
+                ),
             )
                 .into_response());
         }
@@ -1539,7 +1541,52 @@ impl VllmPDRouter {
         body: &crate::protocols::spec::ChatCompletionRequest,
         request_json: Value,
     ) -> Response {
-        let path = "/v1/chat/completions";
+        // Tokenize before admission: kv_aware scores P by these tokens, and
+        // both legs reuse them.
+        let prepared = match self.grpc_frontend.prepare(body.clone()).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return (prepare_error_status(&error), error.to_string()).into_response();
+            }
+        };
+        self.route_grpc_prepared(headers, request_json, "/v1/chat/completions", prepared)
+            .await
+    }
+
+    /// `/v1/completions` on static `grpc://` pools. Clients send token ids, so
+    /// there is no router-side tokenize; admission scores P by those same ids.
+    async fn route_grpc_completion(
+        &self,
+        headers: Option<&HeaderMap>,
+        body: &crate::protocols::spec::CompletionRequest,
+        request_json: Value,
+    ) -> Response {
+        let lowered = match crate::backend::prepare_grpc_completion(body) {
+            Ok(lowered) => lowered,
+            Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+        };
+        let prepared = match self
+            .grpc_frontend
+            .prepare_token_ids(lowered.chat, lowered.token_ids, lowered.emit_token_ids)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return (prepare_error_status(&error), error.to_string()).into_response();
+            }
+        };
+        self.route_grpc_prepared(headers, request_json, "/v1/completions", prepared)
+            .await
+    }
+
+    /// Shared gRPC P/D admission and dispatch for an already prepared request.
+    async fn route_grpc_prepared(
+        &self,
+        headers: Option<&HeaderMap>,
+        request_json: Value,
+        path: &str,
+        prepared: crate::backend::PreparedRequest,
+    ) -> Response {
         let available = |workers: Vec<Arc<dyn Worker>>| -> Vec<Arc<dyn Worker>> {
             workers.into_iter().filter(|w| w.is_available()).collect()
         };
@@ -1557,14 +1604,6 @@ impl VllmPDRouter {
             )
                 .into_response();
         }
-        // Tokenize before admission: kv_aware scores P by these tokens, and
-        // both legs reuse them.
-        let prepared = match self.grpc_frontend.prepare(body.clone()).await {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return (prepare_error_status(&error), error.to_string()).into_response();
-            }
-        };
         let Some((selection, attempt)) = self
             .admit_pair(
                 &prefill_workers,
@@ -1584,23 +1623,25 @@ impl VllmPDRouter {
             prepared,
             prefill_workers[selection.prefill.worker_index].clone(),
             decode_workers[selection.decode.worker_index].clone(),
+            path,
             attempt,
         )
         .await
     }
 
-    /// P/D chat on `grpc://` pools. The connector JSON is the same as on the
+    /// P/D on `grpc://` pools. The connector JSON is the same as on the
     /// HTTP path; it travels in `GenerateRequest.kv.kv_transfer_params` and
     /// comes back in `FinishInfo.kv_transfer_params`. P finishes before D
     /// starts, except in NIXL push mode once P's push identity is cached.
+    #[allow(clippy::too_many_arguments)]
     async fn process_grpc_two_stage_chat(
         &self,
         prepared: crate::backend::PreparedRequest,
         prefill_worker: Arc<dyn Worker>,
         decode_worker: Arc<dyn Worker>,
+        path: &str,
         attempt: PdAttempt,
     ) -> Response {
-        let path = "/v1/chat/completions";
         let start_time = Instant::now();
 
         let prefill_base_url = prefill_worker.base_url().to_string();
@@ -1634,6 +1675,7 @@ impl VllmPDRouter {
                         prefill_params,
                         decode_params,
                         start_time,
+                        path,
                         attempt,
                     )
                     .await;
@@ -1716,9 +1758,9 @@ impl VllmPDRouter {
         prefill_params: Value,
         decode_params: Value,
         start_time: Instant,
+        path: &str,
         attempt: PdAttempt,
     ) -> Response {
-        let path = "/v1/chat/completions";
         let prefill_base_url = prefill_worker.base_url().to_string();
         let decode_base_url = decode_worker.base_url().to_string();
         // On either failure P is done or cancelled: its future drops here.
@@ -2424,6 +2466,10 @@ impl RouterTrait for VllmPDRouter {
         _model_id: Option<&str>,
     ) -> Response {
         match serde_json::to_value(body) {
+            Ok(request_json) if !self.use_discovery && self.has_grpc_pools() => {
+                self.route_grpc_completion(headers, body, request_json)
+                    .await
+            }
             Ok(body) => {
                 self.route_transparent(headers, "/v1/completions", &Method::POST, body)
                     .await

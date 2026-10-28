@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use vllm_router_rs::backend::EngineFrontend;
 use vllm_router_rs::config::{KvConnector, PolicyConfig, RouterConfig, RoutingMode};
 use vllm_router_rs::policies::PolicyFactory;
-use vllm_router_rs::protocols::spec::ChatCompletionRequest;
+use vllm_router_rs::protocols::spec::{ChatCompletionRequest, CompletionRequest};
 use vllm_router_rs::routers::http::vllm_pd_router::VllmPDRouter;
 use vllm_router_rs::routers::RouterTrait;
 
@@ -161,6 +161,64 @@ fn chat(stream: bool) -> ChatCompletionRequest {
         "stream": stream,
     }))
     .unwrap()
+}
+
+fn completion(prompt: Value, stream: bool) -> CompletionRequest {
+    serde_json::from_value(json!({
+        "model": "test-model",
+        "prompt": prompt,
+        "max_tokens": 8,
+        "stream": stream,
+    }))
+    .unwrap()
+}
+
+/// AgentX-style replay sends token ids, so the router must accept them
+/// without a tokenizer round trip on either leg.
+#[tokio::test]
+async fn grpc_pd_completion_passes_client_token_ids_to_both_legs() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+    router.pin_test_token_ids(vec![9]); // must not be used: ids come from the client
+
+    let response = router
+        .route_completion(None, &completion(json!([11, 12, 13, 14]), false), None)
+        .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["object"], "text_completion", "{json}");
+    assert!(json["choices"][0].get("message").is_none(), "{json}");
+    assert!(json["id"].as_str().unwrap_or_default().starts_with("cmpl-"));
+
+    assert_eq!(prefill.captured()[0].token_ids, vec![11, 12, 13, 14]);
+    assert_eq!(decode.captured()[0].token_ids, vec![11, 12, 13, 14]);
+}
+
+/// A prompt the gRPC wire cannot carry is rejected before any worker is used.
+#[tokio::test]
+async fn grpc_pd_completion_rejects_text_prompts() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+
+    let response = router
+        .route_completion(None, &completion(json!("hello"), false), None)
+        .await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(prefill.captured().is_empty());
+    assert!(decode.captured().is_empty());
 }
 
 #[tokio::test]
