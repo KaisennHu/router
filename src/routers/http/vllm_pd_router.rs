@@ -102,10 +102,8 @@ fn discovery_is_ready(prefill_count: usize, decode_count: usize) -> bool {
     prefill_count > 0 && decode_count > 0
 }
 
-/// Cap for router-buffered stage bodies. Non-streaming PD responses are
-/// buffered so stage occupancy is released as soon as the backend finishes;
-/// the cap keeps a runaway backend response from ballooning router memory.
-/// 64 MiB is far above any legitimate LLM response.
+/// Buffer budget for stage responses. Oversized Decode bodies are streamed;
+/// Prefill control responses must fit in memory to extract transfer metadata.
 const PD_BUFFERED_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JSON_REWRITE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -144,6 +142,41 @@ async fn read_body_limited(
         body.extend_from_slice(&chunk);
     }
     Ok(Bytes::from(body))
+}
+
+enum DecodeBody {
+    Buffered(Bytes),
+    Passthrough(Body),
+}
+
+async fn read_decode_body(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<DecodeBody, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Ok(DecodeBody::Passthrough(Body::from_stream(
+            response.bytes_stream(),
+        )));
+    }
+    let mut buffered = Vec::new();
+    let mut source = response.bytes_stream();
+    while let Some(chunk) = source.next().await {
+        let chunk = chunk?;
+        if chunk.len() > limit - buffered.len() {
+            let prefix = futures_util::stream::iter([
+                Ok::<_, reqwest::Error>(Bytes::from(buffered)),
+                Ok(chunk),
+            ]);
+            return Ok(DecodeBody::Passthrough(Body::from_stream(
+                prefix.chain(source),
+            )));
+        }
+        buffered.extend_from_slice(&chunk);
+    }
+    Ok(DecodeBody::Buffered(Bytes::from(buffered)))
 }
 
 fn response_with_body(
@@ -1059,18 +1092,28 @@ impl VllmPDRouter {
         } else {
             let status = decode_response.status();
             let headers = decode_response.headers().clone();
-            let bytes = read_body_limited(decode_response, decode_base_url, "decode")
+            match read_decode_body(decode_response, PD_BUFFERED_BODY_LIMIT_BYTES)
                 .await
-                .map_err(|error| error.to_string())?;
-            attempt.finish_decode();
-            finalize_decode_body(
-                status,
-                headers,
-                bytes,
-                prefill_response_json,
-                path,
-                needs_logprobs,
-            )
+                .map_err(|error| {
+                    format!("Failed to read response body from {decode_base_url}: {error}")
+                })? {
+                DecodeBody::Buffered(bytes) => {
+                    attempt.finish_decode();
+                    finalize_decode_body(
+                        status,
+                        headers,
+                        bytes,
+                        prefill_response_json,
+                        path,
+                        needs_logprobs,
+                    )
+                }
+                DecodeBody::Passthrough(body) => {
+                    let mut headers = header_utils::preserve_response_headers(&headers);
+                    headers.remove(http::header::CONTENT_LENGTH);
+                    response_with_body(status, &headers, body)
+                }
+            }
         }
     }
 
@@ -2217,10 +2260,19 @@ mod tests {
         } else {
             let status = response.status();
             let headers = response.headers().clone();
-            let bytes = read_body_limited(response, "http://decode", "decode")
+            match read_decode_body(response, PD_BUFFERED_BODY_LIMIT_BYTES)
                 .await
-                .map_err(|error| error.to_string())?;
-            finalize_decode_body(status, headers, bytes, prefill, path, logprobs)
+                .map_err(|error| format!("Failed to read response body: {error}"))?
+            {
+                DecodeBody::Buffered(bytes) => {
+                    finalize_decode_body(status, headers, bytes, prefill, path, logprobs)
+                }
+                DecodeBody::Passthrough(body) => {
+                    let mut headers = header_utils::preserve_response_headers(&headers);
+                    headers.remove(http::header::CONTENT_LENGTH);
+                    response_with_body(status, &headers, body)
+                }
+            }
         }
     }
 
@@ -2248,7 +2300,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn stage_body_limit_rejects_oversized_responses() {
+    async fn prefill_body_limit_rejects_oversized_responses() {
         let url = spawn_test_server(axum::Router::new().fallback(|| async {
             Response::builder()
                 .header(
@@ -2262,10 +2314,128 @@ mod tests {
         }))
         .await;
         let client = reqwest::Client::new();
-        for stage in ["prefill", "decode"] {
-            let response = client.get(&url).send().await.unwrap();
-            let error = read_body_limited(response, &url, stage).await.unwrap_err();
-            assert!(error.to_string().contains("exceeds"));
+        let response = client.get(&url).send().await.unwrap();
+        let error = read_body_limited(response, &url, "prefill")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[tokio::test]
+    async fn decode_body_overflow_preserves_prefix_and_tail_errors() {
+        use futures_util::stream;
+        for fail in [false, true] {
+            let (finish, ready) = tokio::sync::oneshot::channel();
+            let prefix = stream::iter([
+                Ok::<_, std::io::Error>(Bytes::from_static(b"pref")),
+                Ok(Bytes::from_static(b"ix--")),
+            ]);
+            let tail = stream::once(async move {
+                ready.await.unwrap();
+                if fail {
+                    Err(std::io::Error::other("truncated"))
+                } else {
+                    Ok(Bytes::from_static(b"suffix"))
+                }
+            });
+            let response =
+                http::Response::new(reqwest::Body::wrap_stream(prefix.chain(tail))).into();
+            let body = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                read_decode_body(response, 6),
+            )
+            .await
+            .expect("overflow must return before the tail finishes")
+            .unwrap();
+            let DecodeBody::Passthrough(body) = body else {
+                panic!("body must stream above the budget");
+            };
+            let mut body = body.into_data_stream();
+            let first = body.next().await.unwrap().unwrap();
+            let second = body.next().await.unwrap().unwrap();
+            assert_eq!(first.as_ref(), b"pref");
+            assert_eq!(second.as_ref(), b"ix--");
+            finish.send(()).unwrap();
+            let suffix = body.next().await.unwrap();
+            if fail {
+                assert!(suffix.is_err());
+            } else {
+                assert_eq!(suffix.unwrap().as_ref(), b"suffix");
+            }
+            assert!(body.next().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn large_decode_responses_preserve_success_and_hold_load_until_eof_or_drop() {
+        let router = test_vllm_pd_router().await;
+        let prefill: Arc<dyn Worker> = Arc::new(BasicWorker::new(
+            "https://prefill".into(),
+            WorkerType::Prefill {
+                bootstrap_port: None,
+            },
+        ));
+        let decode: Arc<dyn Worker> = Arc::new(BasicWorker::new(
+            "https://decode".into(),
+            WorkerType::Decode,
+        ));
+        let payload = Bytes::from(vec![b'x'; PD_BUFFERED_BODY_LIMIT_BYTES + 1]);
+        let request = json!({"stream":false, "logprobs":true});
+        for drop_body in [false, true] {
+            let (_, attempt) = router
+                .admit_pair(
+                    std::slice::from_ref(&prefill),
+                    std::slice::from_ref(&decode),
+                    &request,
+                    "/v1/completions",
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            attempt.begin_decode();
+            attempt.finish_prefill();
+            let upstream = http::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .header("x-worker", "decode")
+                .body(payload.clone())
+                .unwrap()
+                .into();
+            let response = router
+                .handle_decode_response(
+                    upstream,
+                    None,
+                    DecodeResponseContext {
+                        path: "/v1/completions",
+                        prefill_http: "prefill",
+                        decode_http: "decode",
+                        decode_base_url: "decode",
+                        start_time: Instant::now(),
+                        request: &request,
+                    },
+                    &attempt,
+                )
+                .await
+                .expect("large successful decode response must be preserved");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["x-worker"], "decode");
+            assert_eq!(decode.load(), 1);
+            let response = attempt.clone().track_response(response);
+            if drop_body {
+                drop(response);
+            } else {
+                let mut stream = response.into_body().into_data_stream();
+                let mut received = 0;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.unwrap();
+                    assert_eq!(chunk.as_ref(), &payload[received..received + chunk.len()]);
+                    received += chunk.len();
+                }
+                assert_eq!(received, payload.len());
+            }
+            assert_eq!(decode.load(), 0);
+            assert!(router.pd_router.pd_load.snapshot().is_empty());
         }
     }
 
