@@ -240,15 +240,23 @@ impl EngineFrontend {
 
     /// P/D prefill leg: one sampled token on `worker_url`. Returns the
     /// engine's `kv_transfer_params` for the decode leg, if it sent any.
-    pub async fn prefill(
+    /// `on_prefill_progress` receives worker progress when it is enabled.
+    pub(crate) async fn prefill(
         &self,
         worker_url: &str,
         prepared: &PreparedRequest,
         engine_request_id: String,
         kv_transfer_params: &serde_json::Value,
+        on_prefill_progress: Option<PrefillProgressCallback>,
     ) -> Result<Option<serde_json::Value>, Response> {
         self.grpc
-            .prefill_prepared(worker_url, prepared, engine_request_id, kv_transfer_params)
+            .prefill_prepared(
+                worker_url,
+                prepared,
+                engine_request_id,
+                kv_transfer_params,
+                on_prefill_progress,
+            )
             .await
     }
 

@@ -46,6 +46,39 @@ fn metrics() -> &'static PrometheusHandle {
     HANDLE.get_or_init(|| PrometheusBuilder::new().install_recorder().unwrap())
 }
 
+/// A P/D stage gauge for `worker`, whatever its rank label.
+fn worker_gauge(name: &str, worker: &str) -> f64 {
+    let label = format!("worker=\"{worker}\"");
+    metrics()
+        .render()
+        .lines()
+        .filter(|line| line.starts_with(&format!("{name}{{")) && line.contains(&label))
+        .find_map(|line| line.rsplit(' ').next().and_then(|n| n.parse().ok()))
+        .unwrap_or(0.0)
+}
+
+async fn wait_for_gauge(name: &str, worker: &str, expected: f64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while worker_gauge(name, worker) != expected {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} for {worker} stayed at {}, expected {expected}",
+            worker_gauge(name, worker)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+fn kv_aware() -> PolicyConfig {
+    PolicyConfig::KvAware {
+        router_temperature: 0.0,
+        kv_penalty_host: 0.8,
+        kv_penalty_external: 0.6,
+        kv_penalty_disk: 0.3,
+        static_kv_event_sources: Default::default(),
+    }
+}
+
 fn worker_counter(name: &str, worker: &str) -> f64 {
     let prefix = format!("{name}{{worker=\"{worker}\"}} ");
     metrics()
@@ -75,6 +108,16 @@ async fn pd_router_with_pools(
     dp_size: usize,
     prefill_policy: PolicyConfig,
 ) -> VllmPDRouter {
+    pd_router_with_progress(prefills, decode, dp_size, prefill_policy, None).await
+}
+
+async fn pd_router_with_progress(
+    prefills: &[&MockVllmRsServer],
+    decode: &MockVllmRsServer,
+    dp_size: usize,
+    prefill_policy: PolicyConfig,
+    prefill_progress_stale_after_secs: Option<u64>,
+) -> VllmPDRouter {
     metrics();
     let prefill_urls: Vec<(String, Option<u16>)> = prefills
         .iter()
@@ -84,14 +127,15 @@ async fn pd_router_with_pools(
         mode: RoutingMode::VllmPrefillDecode {
             prefill_urls: prefill_urls.clone(),
             decode_urls: vec![decode.grpc_url.clone()],
-            prefill_policy: None,
-            decode_policy: None,
+            prefill_policy: Some(prefill_policy.clone()),
+            decode_policy: Some(PolicyConfig::RoundRobin),
             discovery_address: None,
         },
         policy: PolicyConfig::RoundRobin,
         kv_connector: KvConnector::Nixl,
         worker_startup_timeout_secs: 5,
         intra_node_data_parallel_size: dp_size,
+        prefill_progress_stale_after_secs,
         ..RouterConfig::default()
     };
     vllm_router_rs::config::ConfigValidator::validate(&config).unwrap();
@@ -994,4 +1038,103 @@ async fn send_chat(
         p.last().unwrap().token_ids.clone(),
         d.last().unwrap().token_ids.clone(),
     )
+}
+
+/// kv_aware admission on gRPC pools charges P the router's own prompt
+/// tokens; it no longer falls back to occupancy for want of an HTTP render.
+#[tokio::test]
+async fn grpc_pd_kv_aware_admits_prefill_by_router_tokens() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        reply_delay: std::time::Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = std::sync::Arc::new(
+        pd_router_with_progress(&[&prefill], &decode, 1, kv_aware(), None).await,
+    );
+    router.pin_test_token_ids(vec![1, 2, 3, 4, 5]);
+
+    let in_flight = {
+        let router = router.clone();
+        tokio::spawn(async move { router.route_chat(None, &chat(false), None).await.status() })
+    };
+    let url = &prefill.grpc_url;
+    wait_for_gauge("vllm_router_pd_active_prefill_tokens", url, 5.0).await;
+    assert_eq!(
+        worker_gauge("vllm_router_pd_unknown_prefill_requests", url),
+        0.0
+    );
+    assert!(in_flight.await.unwrap().is_success());
+    wait_for_gauge("vllm_router_pd_active_prefill_tokens", url, 0.0).await;
+    let p = &prefill.captured()[0];
+    assert!(p.unary, "without progress opt-in P stays unary");
+    assert_eq!(p.token_ids, vec![1, 2, 3, 4, 5]);
+}
+
+/// With progress on, P streams and its snapshots replace the admission
+/// estimate while it runs.
+#[tokio::test]
+async fn grpc_pd_prefill_progress_replaces_admitted_work() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        supports_prefill_progress: true,
+        prefill_progress: vec![4, 2],
+        reply_delay: std::time::Duration::from_secs(1),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = std::sync::Arc::new(
+        pd_router_with_progress(&[&prefill], &decode, 1, kv_aware(), Some(5)).await,
+    );
+    router.pin_test_token_ids(vec![1, 2, 3, 4, 5]);
+
+    let in_flight = {
+        let router = router.clone();
+        tokio::spawn(async move { router.route_chat(None, &chat(false), None).await.status() })
+    };
+    let url = &prefill.grpc_url;
+    wait_for_gauge("vllm_router_pd_active_prefill_tokens", url, 2.0).await;
+    assert_eq!(worker_gauge("vllm_router_pd_prefill_occupancy", url), 1.0);
+    assert!(in_flight.await.unwrap().is_success());
+    wait_for_gauge("vllm_router_pd_active_prefill_tokens", url, 0.0).await;
+    wait_for_gauge("vllm_router_pd_prefill_occupancy", url, 0.0).await;
+
+    let p = &prefill.captured()[0];
+    assert!(!p.unary, "progress needs GenerateStream");
+    assert!(p.include_prefill_progress);
+    assert_eq!((p.max_new_tokens, p.min_new_tokens), (1, 1));
+    // P's handoff still reaches D over the streaming leg.
+    let d = &decode.captured()[0];
+    assert_eq!(
+        d.kv_transfer_params.as_ref().unwrap()["remote_engine_id"],
+        "P"
+    );
+}
+
+/// A worker without the capability keeps the unary leg and the admission
+/// estimate.
+#[tokio::test]
+async fn grpc_pd_prefill_progress_falls_back_for_unsupported_workers() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        prefill_progress: vec![1],
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router_with_progress(&[&prefill], &decode, 1, kv_aware(), Some(5)).await;
+    router.pin_test_token_ids(vec![1, 2, 3]);
+
+    let response = router.route_chat(None, &chat(false), None).await;
+    assert!(response.status().is_success());
+    let p = &prefill.captured()[0];
+    assert!(p.unary);
+    assert!(!p.include_prefill_progress);
+    assert_eq!(
+        worker_gauge("vllm_router_pd_active_prefill_tokens", &prefill.grpc_url),
+        0.0
+    );
 }

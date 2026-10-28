@@ -37,11 +37,27 @@ impl ConfigValidator {
                     reason: "Must be at least 2 seconds and less than request_timeout_secs".into(),
                 });
             }
-            if !matches!(config.mode, RoutingMode::Regular { .. })
-                || !matches!(config.policy, PolicyConfig::KvAware { .. })
-            {
+            // Regular pools score by the main policy; P/D accepts progress
+            // for its prefill stage only, over gRPC workers.
+            let supported = match &config.mode {
+                RoutingMode::Regular { .. } => {
+                    matches!(config.policy, PolicyConfig::KvAware { .. })
+                }
+                RoutingMode::VllmPrefillDecode { prefill_urls, .. } => {
+                    matches!(
+                        config.mode.get_prefill_policy(&config.policy),
+                        PolicyConfig::KvAware { .. }
+                    ) && !prefill_urls.is_empty()
+                        && prefill_urls
+                            .iter()
+                            .all(|(url, _)| crate::backend::is_grpc_url(url))
+                }
+                _ => false,
+            };
+            if !supported {
                 return Err(ConfigError::IncompatibleConfig {
-                    reason: "Prefill progress requires regular kv_aware routing".into(),
+                    reason: "Prefill progress requires kv_aware routing: regular gRPC                              workers, or a kv_aware prefill policy on gRPC P/D workers"
+                        .into(),
                 });
             }
         }
@@ -977,6 +993,36 @@ mod tests {
         config.policy = PolicyConfig::Random;
         config.prefill_progress_stale_after_secs = Some(10);
         assert!(ConfigValidator::validate(&config).is_err());
+    }
+
+    #[test]
+    fn test_prefill_progress_accepts_kv_aware_grpc_pd_prefill() {
+        let pd = |scheme: &str, prefill_policy: Option<PolicyConfig>| {
+            let mut config = RouterConfig::new(
+                RoutingMode::VllmPrefillDecode {
+                    prefill_urls: vec![(format!("{scheme}://prefill:50051"), None)],
+                    decode_urls: vec![format!("{scheme}://decode:50052")],
+                    prefill_policy,
+                    decode_policy: Some(PolicyConfig::RoundRobin),
+                    discovery_address: None,
+                },
+                PolicyConfig::RoundRobin,
+            );
+            config.prefill_progress_stale_after_secs = Some(10);
+            config
+        };
+        let kv_aware = || PolicyConfig::KvAware {
+            router_temperature: 0.0,
+            kv_penalty_host: 0.8,
+            kv_penalty_external: 0.6,
+            kv_penalty_disk: 0.3,
+            static_kv_event_sources: Default::default(),
+        };
+        assert!(ConfigValidator::validate(&pd("grpc", Some(kv_aware()))).is_ok());
+        // HTTP P/D workers serve no progress stream.
+        assert!(ConfigValidator::validate(&pd("http", Some(kv_aware()))).is_err());
+        // The prefill stage, not the main policy, must be kv_aware.
+        assert!(ConfigValidator::validate(&pd("grpc", None)).is_err());
     }
 
     #[test]

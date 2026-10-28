@@ -324,7 +324,7 @@ struct CliArgs {
     #[arg(long, default_value_t = 1800)]
     request_timeout_secs: u64,
 
-    /// Enable KV-aware gRPC progress; retain stale work after this many seconds.
+    /// Enable KV-aware gRPC progress (regular or P/D prefill); retain stale work after this many seconds.
     #[arg(long)]
     prefill_progress_stale_after_secs: Option<u64>,
 

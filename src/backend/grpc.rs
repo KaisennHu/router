@@ -21,8 +21,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::convert::{
-    chat_to_generate_request, chat_to_generate_request_with_progress, limit_to_prefill,
-    proto_struct_to_json, requires_worker_output_text, set_kv_transfer_params,
+    chat_to_generate_request_with_progress, limit_to_prefill, proto_struct_to_json,
+    requires_worker_output_text, set_kv_transfer_params,
 };
 use super::detect::{grpc_connect_uri, parse_dp_rank};
 use super::frontend::{PreparedRequest, ResponseShape};
@@ -299,69 +299,160 @@ impl GrpcEngineBackend {
         }
     }
 
-    /// P/D prefill leg as unary `Generate`. Returns the engine's
+    /// P/D prefill leg: one sampled token. Returns the engine's
     /// `FinishInfo.kv_transfer_params`, which the decode leg consumes.
+    ///
+    /// With `on_prefill_progress` and a progress-capable worker it streams,
+    /// so remaining-work snapshots replace the admission estimate while P
+    /// runs. Otherwise it stays unary `Generate`, as progress opt-in is
+    /// rejected there.
     pub(crate) async fn prefill_prepared(
         &self,
         worker_url: &str,
         prepared: &PreparedRequest,
         engine_request_id: String,
         kv_transfer_params: &serde_json::Value,
+        on_prefill_progress: Option<PrefillProgressCallback>,
     ) -> Result<Option<serde_json::Value>, Response> {
-        let mut proto = chat_to_generate_request(
+        let deadline = tokio::time::Instant::now()
+            + self
+                .request_timeout
+                .saturating_sub(prepared.t_req.elapsed());
+        let include_prefill_progress =
+            self.prefill_progress_stale_after.is_some() && on_prefill_progress.is_some();
+        let mut proto = chat_to_generate_request_with_progress(
             prepared.request.as_ref(),
             prepared.tokenized.token_ids.as_ref().to_vec(),
             engine_request_id.clone(),
+            include_prefill_progress,
         )
         .map_err(|error| (StatusCode::BAD_REQUEST, error).into_response())?;
         limit_to_prefill(&mut proto);
         set_kv_transfer_params(&mut proto, kv_transfer_params)
             .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())?;
+        if include_prefill_progress {
+            let supported =
+                tokio::time::timeout_at(deadline, self.supports_prefill_progress(worker_url))
+                    .await
+                    .unwrap_or_else(
+                        |_| Err("prefill progress capability deadline exceeded".into()),
+                    );
+            apply_prefill_progress_capability(&mut proto, supported, worker_url);
+        }
+        let mut progress = PrefillProgressState::new(
+            engine_request_id.clone(),
+            on_prefill_progress.filter(|_| proto.include_prefill_progress),
+            self.prefill_progress_stale_after,
+        );
+        let streaming = proto.include_prefill_progress;
+        let rpc = if streaming {
+            "GenerateStream"
+        } else {
+            "Generate"
+        };
 
-        let channel = self.channel_for(worker_url).await.map_err(|error| {
-            error!(error = %error, "grpc prefill connect failed");
-            (StatusCode::BAD_GATEWAY, error).into_response()
-        })?;
-        let abort = EngineAbortGuard::new(&channel, Some(&engine_request_id), self.connect_timeout);
+        let channel = match tokio::time::timeout_at(deadline, self.channel_for(worker_url)).await {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(error)) => {
+                error!(error = %error, "grpc prefill connect failed");
+                return Err((StatusCode::BAD_GATEWAY, error).into_response());
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "gRPC request deadline exceeded",
+                )
+                    .into_response());
+            }
+        };
+        let mut abort =
+            EngineAbortGuard::new(&channel, Some(&engine_request_id), self.connect_timeout);
         let mut client = InferenceClient::new(channel);
         let mut tonic_req = tonic::Request::new(proto);
-        tonic_req.set_timeout(self.request_timeout);
+        tonic_req.set_timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
         if let Some(rank) = parse_dp_rank(worker_url) {
             tonic_req
                 .metadata_mut()
                 .insert(DP_RANK_METADATA, rank.to_string().parse().unwrap());
         }
-        let response = match tokio::time::timeout(self.request_timeout, client.generate(tonic_req))
-            .await
-        {
-            Ok(Ok(response)) => {
-                abort.disarm();
-                response.into_inner()
+        let failed = |status: tonic::Status| {
+            warn!(code = ?status.code(), msg = %status.message(), "prefill {rpc} failed");
+            (
+                grpc_status_code(&status),
+                format!("grpc {rpc}: {}", status.message()),
+            )
+                .into_response()
+        };
+        let timed_out = || {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("grpc {rpc} exceeded request timeout"),
+            )
+                .into_response()
+        };
+        let finish = if streaming {
+            let mut stream =
+                match tokio::time::timeout_at(deadline, client.generate_stream(tonic_req)).await {
+                    Ok(Ok(stream)) => {
+                        abort.answered();
+                        stream.into_inner()
+                    }
+                    Ok(Err(status)) => {
+                        abort.disarm();
+                        return Err(failed(status));
+                    }
+                    Err(_) => return Err(timed_out()),
+                };
+            let mut finish = None;
+            // A dropped stream (timeout, cancelled leg) leaves `abort` armed.
+            loop {
+                match next_response(&mut stream, deadline, &mut progress).await {
+                    Ok(Some(Ok(message))) => {
+                        if let Some(info) = message.outputs.and_then(|outputs| outputs.finish_info)
+                        {
+                            finish = Some(info);
+                        }
+                    }
+                    Ok(Some(Err(status))) => return Err(failed(status)),
+                    Ok(None) => break,
+                    Err(_) => return Err(timed_out()),
+                }
             }
-            Ok(Err(status)) => {
-                abort.disarm();
-                warn!(code = ?status.code(), msg = %status.message(), "prefill Generate failed");
+            if finish.is_none() {
                 return Err((
-                    grpc_status_code(&status),
-                    format!("grpc Generate: {}", status.message()),
+                    StatusCode::BAD_GATEWAY,
+                    "grpc GenerateStream: prefill closed before finish_info",
                 )
                     .into_response());
             }
-            Err(_) => {
-                return Err((
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "grpc Generate exceeded request timeout",
-                )
-                    .into_response());
+            abort.disarm();
+            finish
+        } else {
+            match tokio::time::timeout_at(deadline, client.generate(tonic_req)).await {
+                Ok(Ok(response)) => {
+                    abort.disarm();
+                    response
+                        .into_inner()
+                        .outputs
+                        .and_then(|outputs| outputs.finish_info)
+                }
+                Ok(Err(status)) => {
+                    abort.disarm();
+                    return Err(failed(status));
+                }
+                Err(_) => return Err(timed_out()),
             }
         };
-        let finish = response.outputs.and_then(|outputs| outputs.finish_info);
         if finish
             .as_ref()
             .is_some_and(|finish| finish.finish_reason == FinishReason::Aborted as i32)
         {
-            warn!(%engine_request_id, "prefill Generate finished aborted");
-            return Err((StatusCode::BAD_GATEWAY, "grpc Generate: prefill aborted").into_response());
+            warn!(%engine_request_id, "prefill {rpc} finished aborted");
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("grpc {rpc}: prefill aborted"),
+            )
+                .into_response());
         }
         Ok(finish
             .and_then(|finish| finish.kv_transfer_params)

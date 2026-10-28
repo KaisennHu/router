@@ -181,6 +181,12 @@ fn track_grpc_decode(attempt: &PdAttempt, response: Response) -> Response {
     attempt.clone().track_response(response)
 }
 
+/// Worker progress replaces the attempt's admitted prefill work while P runs.
+fn prefill_progress(attempt: &PdAttempt) -> crate::backend::grpc::PrefillProgressCallback {
+    let attempt = attempt.clone();
+    Arc::new(move |sequence, remaining| attempt.update_prefill_progress(sequence, remaining))
+}
+
 /// Read before [`track_grpc_decode`], which moves the stream task into
 /// the body.
 fn grpc_decode_outcome(
@@ -923,6 +929,7 @@ impl VllmPDRouter {
         .map(|identity| AffinityKey::from_identity(identity, model_scope))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn admit_pair(
         &self,
         prefill_workers: &[Arc<dyn Worker>],
@@ -931,6 +938,7 @@ impl VllmPDRouter {
         path: &str,
         headers: Option<&HeaderMap>,
         forward_policy_headers: bool,
+        tokens: Option<&[u32]>,
     ) -> Option<(super::pd_types::PdSelection, PdAttempt)> {
         let prefill_policy = self.policy_registry.get_prefill_policy();
         let decode_policy = self.policy_registry.get_decode_policy();
@@ -954,7 +962,7 @@ impl VllmPDRouter {
         });
         let (prefill_inputs, decode_inputs) = tokio::join!(
             self.pd_router
-                .prepare_prefill_inputs(prefill_workers, request, path, headers),
+                .prepare_prefill_inputs(prefill_workers, request, path, headers, tokens),
             self.pd_router
                 .prepare_decode_inputs(decode_workers, request, path, headers),
         );
@@ -1037,6 +1045,7 @@ impl VllmPDRouter {
                 path,
                 headers,
                 false,
+                None,
             )
             .await
         else {
@@ -1548,6 +1557,14 @@ impl VllmPDRouter {
             )
                 .into_response();
         }
+        // Tokenize before admission: kv_aware scores P by these tokens, and
+        // both legs reuse them.
+        let prepared = match self.grpc_frontend.prepare(body.clone()).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return (prepare_error_status(&error), error.to_string()).into_response();
+            }
+        };
         let Some((selection, attempt)) = self
             .admit_pair(
                 &prefill_workers,
@@ -1556,6 +1573,7 @@ impl VllmPDRouter {
                 path,
                 headers,
                 true,
+                Some(prepared.tokenized.token_ids.as_ref()),
             )
             .await
         else {
@@ -1563,7 +1581,7 @@ impl VllmPDRouter {
             return (StatusCode::SERVICE_UNAVAILABLE, "No eligible P/D pair").into_response();
         };
         self.process_grpc_two_stage_chat(
-            body.clone(),
+            prepared,
             prefill_workers[selection.prefill.worker_index].clone(),
             decode_workers[selection.decode.worker_index].clone(),
             attempt,
@@ -1577,19 +1595,13 @@ impl VllmPDRouter {
     /// starts, except in NIXL push mode once P's push identity is cached.
     async fn process_grpc_two_stage_chat(
         &self,
-        request: crate::protocols::spec::ChatCompletionRequest,
+        prepared: crate::backend::PreparedRequest,
         prefill_worker: Arc<dyn Worker>,
         decode_worker: Arc<dyn Worker>,
         attempt: PdAttempt,
     ) -> Response {
         let path = "/v1/chat/completions";
         let start_time = Instant::now();
-        let prepared = match self.grpc_frontend.prepare(request).await {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return (prepare_error_status(&error), error.to_string()).into_response();
-            }
-        };
 
         let prefill_base_url = prefill_worker.base_url().to_string();
         let prefill_dp_rank = prefill_worker.dp_rank();
@@ -1635,6 +1647,7 @@ impl VllmPDRouter {
                 &prepared,
                 request_id.clone(),
                 &prefill_params,
+                Some(prefill_progress(&attempt)),
             )
             .await;
         attempt.finish_prefill();
@@ -1728,6 +1741,7 @@ impl VllmPDRouter {
             &prepared,
             request_id.clone(),
             &prefill_params,
+            Some(prefill_progress(&attempt)),
         );
         // Dropping a held response, e.g. when P fails after D's stream opened,
         // aborts D's stream and releases its load.
@@ -2105,6 +2119,11 @@ impl VllmPDRouter {
             {
                 crate::backend::EngineFrontend::from_env(request_timeout)
                     .map_err(|error| format!("tokenizer cache: {error}"))?
+                    .with_prefill_progress_stale_after(
+                        ctx.router_config
+                            .prefill_progress_stale_after_secs
+                            .map(std::time::Duration::from_secs),
+                    )
             } else {
                 crate::backend::EngineFrontend::with_request_timeout(request_timeout)
             };
@@ -2557,6 +2576,7 @@ impl RouterTrait for VllmPDRouter {
                     path,
                     headers,
                     true,
+                    None,
                 )
                 .await
             {
@@ -2769,6 +2789,7 @@ mod tests {
                     "/v1/completions",
                     None,
                     false,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -2859,6 +2880,7 @@ mod tests {
                     "/v1/chat/completions",
                     None,
                     false,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -2926,6 +2948,7 @@ mod tests {
                     "/v1/chat/completions",
                     None,
                     false,
+                    None,
                 )
                 .await
                 .unwrap();

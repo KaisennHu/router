@@ -458,32 +458,41 @@ impl PdRouterBase {
         request: &Value,
         route: &str,
         headers: Option<&HeaderMap>,
+        tokens: Option<&[u32]>,
     ) -> Option<HashMap<String, super::pd_types::PdPrefillInput>> {
         let policy = self.policy_registry.get_prefill_policy();
         if kv_aware_ops(policy.as_ref()).is_some() {
             return Some(
                 self.kv_state
                     .as_ref()?
-                    .prepare(workers, &policy, request, route, headers)
+                    .prepare(workers, &policy, request, route, headers, tokens)
                     .await,
             );
         }
         if policy.name() != "cache_aware" {
             return None;
         }
-        let results = prepare_http_token_inputs(
-            &self.client,
-            workers
-                .iter()
-                .map(|worker| worker.base_url().to_owned())
-                .collect(),
-            request,
-            route,
-            headers,
-            self.api_key.as_deref(),
-            Duration::from_secs(1),
-        )
-        .await;
+        let bases = workers
+            .iter()
+            .map(|worker| worker.base_url().to_owned())
+            .collect();
+        let results = match tokens {
+            Some(tokens) => {
+                crate::backend::preprocess::prepared_token_inputs(bases, request, route, tokens)
+            }
+            None => {
+                prepare_http_token_inputs(
+                    &self.client,
+                    bases,
+                    request,
+                    route,
+                    headers,
+                    self.api_key.as_deref(),
+                    Duration::from_secs(1),
+                )
+                .await
+            }
+        };
         Some(
             results
                 .into_iter()
@@ -2921,6 +2930,77 @@ mod admission_tests {
         attempt.finish_prefill();
         attempt.release();
         attempt.begin_decode();
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn worker_progress_replaces_admitted_prefill_work() {
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        let tokens: Vec<u32> = (0..64).collect();
+        let policy = KvAwarePolicy::default();
+        let inputs = token_inputs(&p, &tokens, &policy);
+        let mut context = context();
+        context.prefill_inputs = Some(&inputs);
+        let manager = Arc::new(PdLoadManager::default());
+        let (selection, attempt) = manager
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .unwrap();
+        let tokens_on = |manager: &PdLoadManager| {
+            sample(manager, Stage::Prefill, &selection.prefill.endpoint).active_prefill_tokens
+        };
+        assert_eq!(tokens_on(&manager), 64);
+
+        attempt.update_prefill_progress(1, 40);
+        assert_eq!(tokens_on(&manager), 40);
+        // Stale or repeated snapshots are ignored.
+        attempt.update_prefill_progress(1, 10);
+        assert_eq!(tokens_on(&manager), 40);
+        // Recomputation can raise remaining work.
+        attempt.update_prefill_progress(2, 50);
+        assert_eq!(tokens_on(&manager), 50);
+        attempt.update_prefill_progress(3, 0);
+        assert_eq!(tokens_on(&manager), 0);
+        assert_eq!(
+            sample(&manager, Stage::Prefill, &selection.prefill.endpoint).prefill_requests,
+            1
+        );
+
+        attempt.update_prefill_progress(4, 30);
+        attempt.finish_prefill();
+        assert_eq!(tokens_on(&manager), 0);
+        // Late snapshots after P finished cannot re-charge it.
+        attempt.update_prefill_progress(5, 30);
+        assert_eq!(tokens_on(&manager), 0);
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn worker_progress_makes_unknown_prefill_work_known() {
+        let manager = Arc::new(PdLoadManager::default());
+        let (selection, attempt) = admit(&manager, &pool("p", 1), &pool("d", 1));
+        assert_eq!(selection.prefill.new_prefill_tokens, None);
+        let load = || sample(&manager, Stage::Prefill, &selection.prefill.endpoint);
+        assert_eq!(load().unknown_prefill_requests, 1);
+
+        attempt.update_prefill_progress(1, 25);
+        assert_eq!(
+            (
+                load().unknown_prefill_requests,
+                load().active_prefill_tokens
+            ),
+            (0, 25)
+        );
+        attempt.finish_prefill();
+        assert_eq!(
+            (
+                load().unknown_prefill_requests,
+                load().active_prefill_tokens
+            ),
+            (0, 0)
+        );
+        drop(attempt);
         assert!(manager.snapshot().is_empty());
     }
 

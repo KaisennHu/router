@@ -29,9 +29,11 @@ queue. Worker-side coalescing keeps only the latest pending pure-progress
 snapshot. Backpressure can delay receipt and stale detection, so receipt age
 alone is not an end-to-end freshness guarantee.
 
-For a regular `kv_aware` gRPC pool, `--prefill-progress-stale-after-secs 5`
-opts in to worker progress; omitting the option preserves static admission
-accounting. Unsupported workers retain that fallback. The threshold must be
+For a regular `kv_aware` gRPC pool, or gRPC P/D workers with a `kv_aware`
+prefill policy, `--prefill-progress-stale-after-secs 5` opts in to worker
+progress; omitting the option preserves static admission accounting. In P/D,
+P's snapshots replace that request's share of the prefill stage's admitted
+tokens until P finishes. Unsupported workers retain that fallback. The threshold must be
 at least 2 seconds and less than `--request-timeout-secs`.
 
 Only newer snapshots for the current request update the reservation or its
@@ -234,8 +236,11 @@ proto media fields and adding parity tests against vLLM HTTP behavior.
 ## P/D Disaggregation
 
 `--vllm-pd-disaggregation` accepts all-`grpc://` prefill and decode pools.
-The router sends P a unary one-token `Generate` and D a `GenerateStream`, both
-carrying the connector's JSON in `GenerateRequest.kv.kv_transfer_params`.
+The router tokenizes the chat once, before P/D admission, so `kv_aware` scores
+P by those tokens; both legs reuse them. It sends P a one-token prefill and D a
+`GenerateStream`, both carrying the connector's JSON in
+`GenerateRequest.kv.kv_transfer_params`. P's leg is a unary `Generate`, or a
+`GenerateStream` when prefill progress is on and P supports it.
 P's `FinishInfo.kv_transfer_params` is handed to D. NIXL push mode runs both
 legs concurrently once P's push identity is cached.
 
