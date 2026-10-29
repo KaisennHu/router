@@ -485,13 +485,18 @@ impl PdKvState {
     }
 }
 
-/// Served model ids carried by a `Control.GetModelInfo` reply.
+/// Model names a `Control.GetModelInfo` reply says this worker serves.
+///
+/// `model_id` is the backend model path (`/models/Qwen3-4B-...`), not the name
+/// clients send; the served name and its aliases are what `request.model`
+/// carries, and they are what an upstream `/v1/models` card would list.
 fn grpc_served_models(model: Result<crate::backend::pb::ModelInfo, String>) -> HashSet<String> {
-    model
-        .ok()
-        .map(|info| info.model_id)
-        .into_iter()
-        .filter(|model_id| !model_id.trim().is_empty())
+    let Ok(info) = model else {
+        return HashSet::new();
+    };
+    std::iter::once(info.served_model_name)
+        .chain(info.served_model_aliases)
+        .filter(|name| !name.trim().is_empty())
         .collect()
 }
 
@@ -551,18 +556,25 @@ mod kv_input_tests {
 
     #[tokio::test]
     async fn grpc_model_info_becomes_the_served_model_set() {
-        // Before the fix a grpc:// base produced an empty set, so the policy
-        // treated every P as `unverified_model` and credited no prefix at all.
+        // Request `model` carries the served name, not the backend path that
+        // GetModelInfo reports as `model_id`. Reading model_id left every P
+        // classified `unverified_model`, so no prefix was ever credited.
         let served = grpc_served_models(Ok(crate::backend::pb::ModelInfo {
-            model_id: "Qwen3-4B-Instruct-2507".into(),
+            model_id: "/models/Qwen3-4B-Instruct-2507".into(),
+            served_model_name: "Qwen3-4B-Instruct-2507".into(),
+            served_model_aliases: vec!["qwen-chat".into()],
             ..Default::default()
         }));
-        assert_eq!(served.len(), 1);
-        assert!(served.contains("Qwen3-4B-Instruct-2507"));
-        // A failed or empty GetModelInfo still means "unknown", not "serves ''".
+        assert!(served.contains("Qwen3-4B-Instruct-2507"), "{served:?}");
+        assert!(served.contains("qwen-chat"), "{served:?}");
+        assert!(
+            !served.contains("/models/Qwen3-4B-Instruct-2507"),
+            "the backend path is not a request model name: {served:?}"
+        );
+        // A failed or empty reply still means "unknown", not "serves ''".
         assert!(grpc_served_models(Err("unavailable".into())).is_empty());
         assert!(grpc_served_models(Ok(crate::backend::pb::ModelInfo {
-            model_id: "   ".into(),
+            served_model_name: "  ".into(),
             ..Default::default()
         }))
         .is_empty());
