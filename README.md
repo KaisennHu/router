@@ -48,6 +48,9 @@ tokens. Different concurrency caps use different synthetic token IDs, with the
 same lengths and prefix-sharing structure. Results are descriptive, not
 confidence intervals or causal counterfactuals.
 
+Total throughput is logical input plus output tokens per replay second. Input
+tokens include locally cached tokens; this is not GPU compute throughput.
+
 The charts can be recreated with Python, matplotlib, and numpy:
 
 ```sh

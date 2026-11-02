@@ -19,7 +19,7 @@ PANELS = (
     ("TTFT mean", "ttft_ms_mean", "ms / request", False),
     ("TPOT mean", "tpot_ms_mean", "ms / output token", False),
     ("Task duration (JCT) mean", "jct_task_duration_s_mean", "s / task", False),
-    ("Output throughput", "output_tok_s", "tokens / s", True),
+    ("Total throughput", "total_tok_s", "logical tokens / s", True),
 )
 
 

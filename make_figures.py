@@ -42,7 +42,7 @@ panels = [
     ('P queue: change in mean', 'prefill_queue_s_mean_ms', 'absolute', 'ms / request', 'Lower is better'),
     ('P prefill: change in mean', 'prefill_prefill_s_mean_ms', 'percent', '% vs progress off', 'Lower is better'),
     ('Client TTFT: change in mean', 'ttft_ms_mean', 'percent', '% vs progress off', 'Lower is better'),
-    ('Output throughput: change', 'output_tok_s', 'percent', '% vs progress off', 'Higher is better'),
+    ('Total throughput: change', 'total_tok_s', 'percent', '% vs progress off', 'Higher is better'),
 ]
 for ax, (title, key, scale, ylabel, direction) in zip(axes.flat, panels):
     vals = []
@@ -73,7 +73,7 @@ fig.suptitle('Five routing configurations: end-to-end comparison\n'
 charts = [('TTFT mean', 'ttft_ms_mean', 'ms / request', 'Lower is better'),
           ('TPOT mean', 'tpot_ms_mean', 'ms / output token', 'Lower is better'),
           ('Task duration (JCT) mean', 'jct_task_duration_s_mean', 's / task', 'Lower is better'),
-          ('Output throughput', 'output_tok_s', 'token / s', 'Higher is better')]
+          ('Total throughput', 'total_tok_s', 'logical tokens / s', 'Higher is better')]
 for ax, (title, key, ylabel, direction) in zip(axes.flat, charts):
     for arm, label, color, marker in ARMS:
         runs = (1,) if arm == 'cache_aware' else (1, 2)
