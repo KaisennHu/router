@@ -6,6 +6,8 @@ No prompts, model weights, or raw dataset are included.
 
 - `figures/progress-impact.png`: progress on versus off with decode affinity;
   each bar compares the means of two independent runs per setting.
+- `figures/full-vs-cache.png`: the full KV-aware configuration versus
+  Cache-aware P; Cache has one run and Full is the mean of two runs.
 - `figures/five-policy-end-to-end.png`: five-policy comparison; each KV
   variant is the mean of its two runs, and Cache has one run.
 - `data/c4-worker-decomposition.csv`: C4 per-worker queue and prefill
@@ -44,6 +46,7 @@ The charts can be recreated with Python, matplotlib, and numpy:
 
 ```sh
 python3 make_figures.py
+python3 make_full_vs_cache.py
 python3 make_c4_worker_analysis.py
 # To re-extract the compact worker data from the original collected report:
 python3 extract_worker_details.py /path/to/report-data.json
