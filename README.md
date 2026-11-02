@@ -6,6 +6,8 @@ No prompts, model weights, or raw dataset are included.
 
 - `figures/progress-impact.png`: progress on versus off with decode affinity;
   each bar compares the means of two independent runs per setting.
+- `figures/progress-kv-no-affinity.png`: Progress on versus off for KV-aware
+  routing without D affinity; each bar compares the means of two runs.
 - `figures/full-vs-cache.png`: the full KV-aware configuration versus
   Cache-aware P; Cache has one run and Full is the mean of two runs.
 - `figures/five-policy-end-to-end.png`: five-policy comparison; each KV
@@ -15,6 +17,10 @@ No prompts, model weights, or raw dataset are included.
 - `data/c4-isolation-affinity-r1*.csv`: the five-mode C4 diagnostic run and
   its comparisons. This is a separate instrumented closed-loop experiment,
   not an extra repetition of the production benchmark.
+- `data/c4-isolation-no-affinity-3rounds*`: three rounds of the separate C4
+  five-mode diagnostic without D affinity. C receives but ignores Progress;
+  E applies Progress, with streaming enabled in both modes. These are
+  independent instrumented closed-loop runs, not production repetitions.
 - `data/c4-instrumented-example.json`: a sanitized record of one routing
   decision and its worker timings, including source hashes and limitations.
 - `report/`: the prior detailed report in Chinese and its small supporting CSV
@@ -47,6 +53,7 @@ The charts can be recreated with Python, matplotlib, and numpy:
 ```sh
 python3 make_figures.py
 python3 make_full_vs_cache.py
+python3 make_progress_kv.py
 python3 make_c4_worker_analysis.py
 # To re-extract the compact worker data from the original collected report:
 python3 extract_worker_details.py /path/to/report-data.json
