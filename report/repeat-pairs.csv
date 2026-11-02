@@ -1,0 +1,541 @@
+concurrency,comparison,baseline_arm,treatment_arm,metric,label,repeat,baseline,treatment,difference,difference_unit
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,input_tok_s,input tok/s,1,75985.68503987044,76523.80442860979,0.7081852173300707,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,output_tok_s,output tok/s,1,742.6071534993201,747.866187583238,0.7081852173300707,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,total_tok_s,total tok/s,1,76728.29219336977,77271.67061619302,0.7081852173300485,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,348.16141834303943,319.20383709023565,-8.317286099826315,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,150.64786048606038,153.1865515280515,1.6851822746105416,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,1397.6536968257262,1190.2273459127166,-14.841040479777279,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,3243.011003877047,2651.330658863301,-18.24478376133746,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,4.326266828484487,4.340041921991845,0.31840600807748753,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,4.310998341739461,4.317805409645834,0.15790003536919617,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,5.753293432713684,5.743600851907928,-0.16847012792087224,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,6.260307596645596,6.234916123914045,-0.40559465073498613,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,89.64953724807128,89.24698052454914,-0.4490337997040794,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,63.517637649783865,63.70167445158586,0.2897412570925795,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,237.51100487776563,237.9493399183964,0.18455357083615453,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,290.2383974346566,290.3981040366367,0.05502600737592456,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,92.73541477167308,92.75843752969766,0.02302275802458098,pp
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,4109584.0,4096560.0,-0.3169177220857411,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:queue,P queue ms,1,17.921127065097632,12.293954343496733,-31.39965863285532,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,202.82710511939064,200.67072200129599,-1.0631631885813952,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,90.55300438507174,93.02950646447368,2.4765020794019392,pp
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,9.44699561492825,6.970493535526321,-2.4765020794019286,pp
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:queue,D queue ms,1,73.43975571047974,46.47914383573177,-36.71119492967041,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:prefill,D prefill ms,1,7.197303666210133,7.204288625069065,0.0970496616910177,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,733.910888671875,541.518310546875,-26.214705503710956,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+4,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,1,76796.47582172482,76523.80442860979,-0.355057169222206,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,2,76737.92249093956,77189.67387487394,0.5886937895506872,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,1,750.5310017120516,747.866187583238,-0.3550571692221727,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,2,749.9587607395642,754.3737213882293,0.5886937895506872,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,1,77547.00682343687,77271.67061619302,-0.355057169222206,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,2,77487.88125167912,77944.04759626217,0.5886937895506872,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,296.45512377817744,319.20383709023565,7.673577377289642,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,2,297.79367968440056,312.5832810672638,4.966391965919881,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,149.47318588383496,153.1865515280515,2.484302199260302,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,2,149.76810989901423,156.32534166797996,4.378256341344722,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,1167.3475912306442,1190.2273459127166,1.9599778895291964,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,2,1125.6867794552813,1146.2953969603402,1.83075948666922,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,2405.255686054013,2651.330658863301,10.23071992869875,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,2,2450.6474128319,2748.3550457097626,12.14812181136411,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,4.337722906005514,4.340041921991845,0.05346159809149764,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,2,4.342935682774308,4.328224360327916,-0.338741430243672,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,4.321812411264284,4.317805409645834,-0.09271576915294011,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,2,4.322477113433405,4.313945732464669,-0.1973724960213752,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,5.726572604246287,5.743600851907928,0.297354959736551,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,2,5.752297313098555,5.714242880963169,-0.6615518994251612,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,6.234795207299906,6.234916123914045,0.001939383895033231,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,2,6.239105395258182,6.2400557886132,0.015232846615176321,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,88.70527511258842,89.24698052454914,0.610680042729328,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,2,88.79202399945643,88.89134916420153,0.11186271049041796,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,63.51509943790734,63.70167445158586,0.2937490696380385,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,2,63.44775064964779,63.46428519953042,0.02606010412242732,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,236.18180421337016,237.9493399183964,0.7483792881137541,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,2,236.24511828229294,237.48771215146402,0.525976527348293,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,289.33696992868096,290.3981040366367,0.36674681020447686,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,2,289.2911236015615,290.04544723434844,0.2607489726597745,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,92.73422686523936,92.75843752969766,0.024210664458294673,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,2,92.73558447259217,92.87479579322735,0.1392113206351837,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,4110256.0,4096560.0,-0.33321525471893265,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,2,4109488.0,4030736.0,-1.9163457832216513,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,1,3.310105466755898,12.293954343496733,271.4067260686272,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,2,1.8583355535281032,9.621797628343513,417.7642762135318,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,188.5416786186397,200.67072200129599,6.433083375262338,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,2,190.7776200875946,196.33665302934202,2.9138810617277855,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,93.02950646447368,93.02950646447368,0.0,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,2,93.02950646447368,92.5982681455536,-0.43123831892008013,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,6.970493535526321,6.970493535526321,0.0,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,2,6.970493535526321,7.40173185444639,0.4312383189200686,pp
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,1,44.53268105687242,46.47914383573177,4.370863672846315,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,2,46.68583833638017,46.17740101346823,-1.0890611393728378,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,1,7.142090014730618,7.204288625069065,0.8708740748178956,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,2,6.978575829799249,7.067218540899762,1.2702120498855773,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,541.518310546875,541.518310546875,0.0,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,2,541.518310546875,575.02001953125,6.186625333230533,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+4,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,1,76162.0333941488,75354.71981921169,-1.059994775558526,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,2,76374.90927645408,75414.1638160127,-1.2579333573592533,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,1,744.3306037692787,736.440738256441,-1.059994775558537,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,2,746.4110371156968,737.0216836968074,-1.2579333573592422,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,1,76906.36399791809,76091.16055746813,-1.059994775558526,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,2,77121.32031356978,76151.1854997095,-1.2579333573592644,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,1,324.6021369063895,344.84615781574115,6.236564275973855,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,2,330.5392462562464,343.2972405144103,3.859751724693372,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,1,155.4023262578994,159.84061593189836,2.8559995084200596,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,2,157.36600616946816,157.15783764608204,-0.1322830314203549,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,1,1206.6197701962656,1383.5298538208006,14.661626470429812,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,2,1227.0195999648415,1436.9987414916968,17.112941108102262,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,1,2644.437636113726,3147.1577603044097,19.01047380831724,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,2,2761.9196930201742,2963.507305108948,7.298822358891122,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,1,4.337452535969807,4.338037243592118,0.013480438516899618,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,2,4.334706308788713,4.339066647131766,0.1005913211285403,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,1,4.3235496262730235,4.315093932873767,-0.1955729465408229,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,2,4.3109915860226975,4.313348067132974,0.05466215981300149,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,1,5.7345337037367985,5.7446571928534755,0.17653552389238492,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,2,5.729456736962574,5.730830115751933,0.023970488868485518,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,1,6.240477794650967,6.227470150470921,-0.20843987604914904,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,2,6.2510838249424845,6.244383101590959,-0.10719298507546604,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,1,89.30876070259546,89.7640353122988,0.5097759795586354,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,2,89.49322526343167,89.77734631678322,0.31747772249264283,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,1,64.39166941842996,65.36092660366558,1.5052524557752855,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,2,63.211229854030535,63.37494422798045,0.2589957106165608,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,1,234.99995813181155,235.1482313035987,0.06309497795908836,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,2,238.8427630468737,237.81445519363038,-0.4305375805091938,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,1,288.5110358188535,290.83650144697174,0.8060231115659455,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,2,290.2324173667189,290.97819869425615,0.25696003716735305,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,1,92.76488616462348,93.02950646447368,0.26462029985020763,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,2,92.84487186449269,92.56678862506052,-0.2780832394321635,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,1,4092912.0,3943216.0,-3.657444870546933,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,2,4047664.0,4204976.0,3.8864886018207034,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,1,5.314100401680151,7.845992196912635,47.64478658385867,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,2,7.670721326227465,2.6275087422244763,-65.74626256802487,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,1,190.87882797067908,189.3765066629148,-0.7870549729040888,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,2,189.42871721627267,196.9494533131843,3.9702196200405826,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,1,90.64339840797912,89.71482326214945,-0.9285751458296687,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,2,89.9537621562425,90.01199785498038,0.058235698737874486,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,1,9.356601592020889,10.285176737850545,0.9285751458296563,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,2,10.046237843757496,9.988002145019617,-0.05823569873787804,pp
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,1,69.75812702248358,87.97583231345227,26.115531004863414,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,2,76.55675398019997,81.65912051902039,6.664815674055435,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,1,7.097392564333261,7.292422569318585,2.747910633623607,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,2,7.232067989159937,7.216676747528453,-0.21281937136865547,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,1,726.888427734375,799.02685546875,9.924277919683199,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,2,780.46435546875,775.940185546875,-0.5796766873687353,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+4,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,input_tok_s,input tok/s,1,100195.30766802575,102460.02575380263,2.2603035396433047,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,output_tok_s,output tok/s,1,979.2074939154628,1001.3405555608864,2.2603035396433047,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,total_tok_s,total tok/s,1,101174.51516194122,103461.36630936353,2.2603035396433047,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,366.4587430305116,345.0343056301242,-5.8463436356336445,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,164.2507545184344,166.8944749981165,1.6095636744154929,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,1382.1980883600188,1228.266064636408,-11.136755651735243,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,3076.359857954085,3020.4433509428136,-1.8176191860876156,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,6.056105979675809,6.094501336867543,0.6339941427806473,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,6.075125306139075,6.29050720252711,3.5453078831211293,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,8.295352124563198,7.818337639405833,-5.750382599731818,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,8.703216228938242,8.547149685396937,-1.7932054017270493,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,120.35111245322332,120.03626871637243,-0.26160434285412704,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,89.08048354112543,82.35832774918526,-7.546159972107446,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,316.93319620648396,305.23586891272566,-3.690786397186807,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,388.2127446883871,387.77184332721873,-0.1135720985982247,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,92.71985885408888,92.75628798472239,0.03642913063350761,pp
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,4118384.0,4097776.0,-0.5003904444073171,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:queue,P queue ms,1,14.798270841448069,13.933169577041104,-5.845961826728607,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,199.41851099225858,202.61769281534401,1.6042551953512563,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,87.91678545731003,92.86817745738244,4.951392000072417,pp
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,12.083214542689964,7.131822542617558,-4.951392000072406,pp
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:queue,D queue ms,1,85.84121629685062,53.399237030989504,-37.7930097747827,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:prefill,D prefill ms,1,10.970925673051443,11.048647904232757,0.7084382257025679,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,938.71142578125,554.051513671875,-40.97744008913482,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+8,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,1,104180.97345120275,102460.02575380263,-1.6518829114283373,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,2,103145.64493966883,100584.1575631902,-2.483369392839496,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,1,1018.1593559733186,1001.3405555608864,-1.6518829114283484,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,2,1008.0411033250273,983.0077190978121,-2.483369392839485,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,1,105199.13280717607,103461.36630936353,-1.6518829114283373,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,2,104153.68604299385,101567.16528228801,-2.483369392839485,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,347.55825558485947,345.0343056301242,-0.7261947930104706,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,2,366.73234322248663,351.043907189359,-4.2778981246303305,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,170.401199022308,166.8944749981165,-2.057922153313263,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,2,169.28531229496002,169.87711004912853,0.3495860013758234,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,1249.4187064468838,1228.266064636408,-1.6929986481977743,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,2,1345.2390283579005,1213.0599555093795,-9.82569417495035,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,3100.654108077304,3020.4433509428136,-2.586897936327015,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,2,3563.2086165342625,2820.7616962073407,-20.83647072702297,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,6.0890982236575235,6.094501336867543,0.08873421008430693,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,2,6.063391377224073,6.027454111059345,-0.5926925037317954,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,6.211773915055952,6.29050720252711,1.2674847563322489,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,2,6.255262925396659,6.258809918814513,0.056704145935304595,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,8.003389863310723,7.818337639405833,-2.3121730549852337,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,2,7.9855361522953245,7.813572094697543,-2.153444105920843,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,8.679263417916117,8.547149685396937,-1.5221767811133047,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,2,8.682631419900712,8.735460830958111,0.6084493110730671,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,121.26509172936494,120.03626871637243,-1.0133361509633398,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,2,122.05321387511503,119.96113011396665,-1.714075110950386,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,88.31079464848153,82.35832774918526,-6.740361609234613,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,2,83.03189533716068,83.16173570160754,0.1563740824169324,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,340.0658429274568,305.23586891272566,-10.242126558462116,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,2,340.78792476854284,309.4003675873391,-9.21029030078505,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,370.5823944533523,387.77184332721873,4.638495819323163,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,2,370.9567198671634,389.9515690056654,5.120502775985281,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,91.61906555885906,92.75628798472239,1.1372224258633281,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,2,91.6226858451332,92.62527887517706,1.0025930300438546,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,4741104.0,4097776.0,-13.569160263094837,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,2,4739056.0,4171888.0,-11.967953111336938,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,1,3.6818256046725053,13.933169577041104,278.43100334135585,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,2,8.893297159125748,10.389053120520222,16.818913555133186,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,215.71253667560038,202.61769281534401,-6.070506639096762,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,2,218.33803235323566,206.62916256561365,-5.362725706293325,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,92.74701100114491,92.86817745738244,0.12116645623753186,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,2,92.48567158573064,92.60242581807157,0.11675423234092364,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,7.252988998855084,7.131822542617558,-0.12116645623752653,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,2,7.514328414269358,7.397574181928436,-0.11675423234092186,pp
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,1,55.79683919985816,53.399237030989504,-4.297021485895847,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,2,66.53628172480488,58.63099093931689,-11.881173069130014,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,1,10.950344360803497,11.048647904232757,0.897721023104392,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,2,10.892411158739092,10.82965697429768,-0.5761275765932106,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,563.464599609375,554.051513671875,-1.670572728797104,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,2,583.767333984375,574.697021484375,-1.5537547190406453,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+8,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,1,102509.07525615561,103741.26592925693,1.2020308153422032,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,2,101602.42713116012,103506.58955457479,1.87413084232384,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,1,1001.8199157364746,1013.8620998378624,1.2020308153422032,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,2,992.9592549031202,1011.5686105509684,1.8741308423238179,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,1,103510.89517189209,104755.12802909479,1.2020308153422032,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,2,102595.38638606324,104518.15816512576,1.87413084232384,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,1,395.40050312978764,394.29498119981423,-0.27959547881771796,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,2,406.07953665599433,396.8689690758666,-2.2681683632658323,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,1,176.16578401066363,177.01146588660777,0.48004888162218595,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,2,177.96296835877,179.01682457886636,0.5921772545239845,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,1,1565.09174092207,1554.4753240654236,-0.6783255306421654,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,2,1415.9043834777544,1546.018190355971,9.189448694171709,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,1,3179.5964191947182,3048.2542237546354,-4.130781964880537,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,2,3447.7251646714385,2949.952500117949,-14.437713007235198,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,1,5.91715301543984,6.094031769330975,2.989254349677939,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,2,6.148715050884701,6.1843855383635145,0.5801291356587024,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,1,5.907665492579097,6.149491823963993,4.093433043706796,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,2,6.211811961437169,6.21141008871025,-0.006469492789129561,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,1,7.90239683869508,8.037748378904153,1.71279097939383,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,2,8.004180806386264,8.110406158144036,1.3271233412545769,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,1,8.692530246423408,8.559285553474428,-1.532864300400949,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,2,9.182551867751782,8.705173796577718,-5.198751698322212,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,1,120.88829264589003,122.1133701781946,1.013396339290784,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,2,121.96193049501744,122.25138657090429,0.23733313724372262,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,1,88.07416840619408,87.4602690464817,-0.6970254398328213,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,2,92.40862417058088,92.33410644251853,-0.08063936535273042,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,1,321.25599947348235,325.149787368346,1.2120514173261432,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,2,331.5249777725897,321.2061825082171,-3.1125242308139955,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,1,400.53105080007583,373.48751775885006,-6.751919230033554,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,2,402.2160300447839,373.49460176469296,-7.140796520937521,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,1,91.55616308484593,92.55253374785612,0.9963706630101825,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,2,91.3597908379605,92.09671707915304,0.7369262411925348,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,1,4776688.0,4213040.0,-11.799975212950898,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,2,4887776.0,4470896.0,-8.529032427017935,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,1,6.504273871342614,10.41560807609803,60.134832605811496,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,2,7.199753185555543,11.845375661266177,64.52474627923195,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,1,211.74550120310525,208.06121849773885,-1.7399579610583804,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,2,227.9704324416306,211.57434226766432,-7.192200321050112,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,1,86.14587151604013,87.70465930843481,1.558787792394682,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,2,87.80447173235224,87.10977273652915,-0.6946989958230887,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,1,13.854128483959869,12.295340691565185,-1.5587877923946838,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,2,12.195528267647765,12.890227263470859,0.694698995823094,pp
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,1,104.85226288693,94.43154445632476,-9.938477381115451,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,2,96.06948173094591,99.48179971056747,3.5519271241393424,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,1,10.69590908998292,11.073392410188504,3.5292308211474,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,2,11.243390385699396,11.233668539622059,-0.08646721090199705,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,1,1076.288818359375,955.19091796875,-11.251431616210494,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,2,947.436767578125,1001.406005859375,5.696341975328689,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+8,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,input_tok_s,input tok/s,1,114788.53385469667,115031.8517117148,0.21197052427390783,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,output_tok_s,output tok/s,1,1121.8269116803897,1124.2048540665241,0.21197052427388563,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,total_tok_s,total tok/s,1,115910.36076637705,116156.05656578133,0.21197052427390783,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,543.0370079512925,416.3653594862721,-23.326522246230063,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,212.37141033634543,195.99206768907607,-7.712593056348038,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,2256.5918234875408,1425.3330164123317,-36.836914785524066,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,3955.541908554733,3408.7037641974184,-13.824607525321786,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,9.426219143939948,9.532822090022552,1.1309194540754852,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,9.670718495516159,10.033020399202467,3.7463804147984447,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,12.354268221635984,12.633593890798956,2.2609649082556693,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,13.537566989115803,13.382664520913801,-1.1442415636911951,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,178.5582624594972,173.63129318015126,-2.7593062407087032,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,145.75462907599285,141.51938793295994,-2.90573353991026,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,399.8766824101796,402.3954701533308,0.6298911274269958,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,458.73579362510714,466.1637848353806,1.619230788941639,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,90.11924883585169,92.26158152205886,2.142332686207169,pp
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,5589552.0,4377632.0,-21.681880766115068,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:queue,P queue ms,1,70.57932306859286,33.117679732992016,-53.07736275565234,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,262.7869482139406,219.90645991076957,-16.31758677309235,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,84.65074985179453,92.46971969933523,7.8189698475407,pp
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,15.349250148205469,7.530280300664775,-7.818969847540694,pp
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:queue,D queue ms,1,112.07308094208575,68.57009391772421,-38.81662452631412,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:prefill,D prefill ms,1,17.679607303022113,17.779069564190426,0.5625818462116516,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,1192.440673828125,585.006591796875,-50.940402769153096,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+16,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,1,114704.25575608975,115031.8517117148,0.2856005241180126,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,2,111256.7226721909,112390.53820004976,1.0190984424371052,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,1,1121.003262872381,1124.2048540665241,0.2856005241179904,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,2,1087.3105649821728,1098.3913300143602,1.0190984424371052,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,1,115825.25901896214,116156.05656578133,0.2856005241179904,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,2,112344.03323717306,113488.92953006412,1.0190984424371052,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,433.33605156496986,416.3653594862721,-3.916288990359562,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,2,433.8142943460086,396.34473919421947,-8.637233867149508,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,192.1661621890962,195.99206768907607,1.9909361025876482,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,2,193.03879840299487,191.59831455908716,-0.746214675922563,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,1698.5131062800053,1425.3330164123317,-16.08348436391983,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,2,1561.382929817773,1363.629069505256,-12.665301799834372,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,3863.223355337984,3408.7037641974184,-11.765294142585258,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,2,3657.287713363767,3028.0295141041374,-17.205597387383932,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,9.617531817950608,9.532822090022552,-0.8807844832907086,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,2,9.415796067392199,9.2904764293844,-1.330951064687913,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,9.959695801599874,10.033020399202467,0.7362132244120856,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,2,9.736689952667543,9.437666170652044,-3.071103049076518,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,12.742464566255743,12.633593890798956,-0.8543926089862985,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,2,12.525496656131326,12.278314836703075,-1.9734292875903892,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,13.708881202860553,13.382664520913801,-2.3796010565667602,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,2,13.227692230564214,12.69791923482521,-4.005029649199865,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,176.11153335087874,173.63129318015126,-1.4083348907001692,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,2,177.01789769246534,173.54140515490144,-1.9639214920536663,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,147.10318629280664,141.51938793295994,-3.7958378064851916,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,2,130.1506956538651,130.03991889883764,-0.08511422430048654,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,406.1085383583791,402.3954701533308,-0.9143043926280736,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,2,423.0458632060559,405.78808668120763,-4.079410301772035,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,448.6691251348798,466.1637848353806,3.8992341394656016,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,2,461.4781994545833,471.7200902715233,2.2193661215296423,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,90.8539406816094,92.26158152205886,1.40764084044946,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,2,90.77358729641546,92.42206202455459,1.648474728139135,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,5173936.0,4377632.0,-15.390681291767038,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,2,5219392.0,4286848.0,-17.866908636101677,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,1,28.974616070188684,33.117679732992016,14.29894240105578,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,2,33.295190062578,31.09680518303832,-6.602710107399412,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,242.1330230891041,219.90645991076957,-9.179484439904439,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,2,237.52137222263502,213.90717768952354,-9.941924093877875,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,92.57448173339307,92.46971969933523,-0.1047620340578419,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,2,92.09123008276879,92.46587314516896,0.37464306240016754,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,7.425518266606932,7.530280300664775,0.10476203405784279,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,2,7.908769917231205,7.534126854831046,-0.37464306240015954,pp
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,1,63.34445100048021,68.57009391772421,8.249566986071732,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,2,69.66514239623531,58.77626971022724,-15.630302776208072,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,1,18.13182942951991,17.779069564190426,-1.9455282584732836,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,2,17.669066250936627,17.393930774335175,-1.557159120317786,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,576.867919921875,585.006591796875,1.4108380088291739,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,2,614.410400390625,585.305419921875,-4.737058560572194,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+16,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,1,110971.3560937887,114001.1031020731,2.7302063477748106,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,2,116216.70756923773,113158.60231491918,-2.6313817679756935,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,1,1084.5216809656647,1114.1313607423833,2.7302063477748106,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,2,1135.7844356048154,1105.8976110428048,-2.6313817679756824,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,1,112055.87777475436,115115.23446281548,2.7302063477748106,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,2,117352.49200484254,114264.49992596198,-2.6313817679756935,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,1,521.8951601860407,469.8027515637191,-9.981393313506137,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,2,455.1644839544155,446.8437237263185,-1.828077655753635,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,1,217.83252828754485,210.31783893704414,-3.4497553738076725,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,2,201.09151117503643,204.5544539578259,1.7220730813322094,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,1,2140.245805471203,1727.7482239063825,-19.273374138163714,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,2,1817.5722580403087,1681.4609031425787,-7.488635144799371,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,1,3699.1590371727953,3152.3629058245638,-14.781633497059332,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,2,3160.8338287007127,3342.2883865656345,5.740718041464077,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,1,9.54559688077236,9.410103961950036,-1.4194284602071061,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,2,9.492271485545162,9.59328127238811,1.0641266107566105,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,1,9.820495394615984,9.81741459808576,-0.03137109083023448,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,2,9.638469697463186,9.91171124793352,2.8349059451029834,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,1,12.93070857721714,12.486421539324635,-3.43590635609331,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,2,12.57446439730532,12.436666918236165,-1.0958516777755167,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,1,13.931613639253529,14.26569272188114,2.397992732775145,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,2,13.770226159443459,14.369471522696472,4.351746705641846,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,1,178.57086962647736,176.2726065661991,-1.2870313422819857,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,2,178.96072504416225,178.00855048293306,-0.5320578361504791,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,1,137.7921924951952,142.3037199350074,3.274153170884131,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,2,142.1547823669389,142.5165681114886,0.25450128270454453,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,1,411.5683833279414,394.1501907025231,-4.232150313533511,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,2,401.86815035000905,404.81741384833583,0.7338883401827534,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,1,455.70196240960627,466.78201821148406,2.4314259572835617,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,2,462.4392720744061,466.2190000884841,0.8173458099963948,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,1,90.46012141535091,92.35737769089091,1.897256275540002,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,2,91.4322814139028,92.41103146481308,0.9787500509102784,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,1,5396720.0,4323440.0,-19.887635452645313,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,2,4846768.0,4293088.0,-11.423695130445688,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,1,40.371401938418416,41.51093388512118,2.8226216876019894,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,2,27.82895685339423,29.986421264427367,7.752588149095474,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,1,252.82758643136245,218.19092517986587,-13.699715976563231,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,2,221.82462366476452,211.96891918574292,-4.443016431717773,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,1,84.37427877109383,83.46349393828318,-0.9107848328106485,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,2,84.88097743204044,85.30291048389651,0.42193305185607244,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,1,15.625721228906176,16.536506061716832,0.9107848328106556,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,2,15.119022567959561,14.697089516103485,-0.421933051856076,pp
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,1,126.16605031533703,116.53641341062747,-7.63251039454863,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,2,114.5232645156857,110.97582397370101,-3.0975719710634064,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,1,20.367541197968063,17.54676904274176,-13.849350433658191,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,2,17.763256649678087,17.932831834083142,0.9546401752188238,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,1,1213.9189453125,1284.67529296875,5.82875388257782,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,2,1174.554931640625,1141.776123046875,-2.790742919785316,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+16,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,input_tok_s,input tok/s,1,107729.19181168049,117481.84914735334,9.052938364859632,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,output_tok_s,output tok/s,1,1052.8360498175055,1148.148648490507,9.052938364859632,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,total_tok_s,total tok/s,1,108782.02786149799,118629.99779584384,9.052938364859632,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,845.4067377915785,619.5551978328508,-26.715133658469583,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,299.5574146043509,231.6672676242888,-22.663484083587115,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,3227.8259339975184,2772.466911189258,-14.107297980728429,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,6080.705215372149,5976.867398680193,-1.7076607566742674,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,14.017550189037257,13.342237977937772,-4.817619355681901,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,14.807360093001432,13.67277073425996,-7.662333809776978,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,21.0889749776459,20.666145509533912,-2.0049787557725463,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,26.092272705040035,21.807281430980854,-16.422453200987285,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,245.4682930274721,231.8214965591469,-5.559494588899061,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,229.70085758715868,202.59105845494196,-11.802219380887625,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,458.2079240740044,438.71558293378905,-4.254038421445361,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,513.5992307160656,480.42267083254643,-6.459620244614461,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,88.17902994429284,92.39782307660978,4.2187931323169465,pp
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,6687136.0,4300560.0,-35.68906030922655,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:queue,P queue ms,1,219.1718728077432,173.98324008737626,-20.61789779019968,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,315.52185395872857,229.41025150046772,-27.291802890307736,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,77.7703675043104,90.46931354846885,12.698946044158447,pp
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,22.229632495689597,9.530686451531155,-12.698946044158442,pp
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:queue,D queue ms,1,187.31667204466584,92.68023987071052,-50.52216182411631,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:prefill,D prefill ms,1,27.344489428023362,25.021495411733852,-8.495291244709957,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,1726.95849609375,740.41259765625,-57.126207761737916,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+32,全量 vs Cache,cache_aware,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,1,115060.2376372601,117481.84914735334,2.1046467136002445,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,input_tok_s,input tok/s,2,117491.08208210442,115169.89671949754,-1.9756268488401507,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,1,1124.4822693633341,1148.148648490507,2.1046467136002445,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,output_tok_s,output tok/s,2,1148.238881846834,1125.553966208246,-1.9756268488401396,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,1,116184.71990662343,118629.99779584384,2.1046467136002445,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,total_tok_s,total tok/s,2,118639.32096395125,116295.45068570579,-1.9756268488401507,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,1,636.2075340009154,619.5551978328508,-2.617437750751417,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:mean,TTFT ms MEAN,2,653.8504421207033,612.5620206454386,-6.314658340116674,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,1,245.6114930100739,231.6672676242888,-5.677350524152047,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p50,TTFT ms P50,2,239.94908318854868,239.3927180673927,-0.23186799206013076,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,1,2476.2123156804555,2772.466911189258,11.964022375334672,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p95,TTFT ms P95,2,2729.425213718786,2269.131202367124,-16.864137146462454,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,1,6383.860837826505,5976.867398680193,-6.375349486548021,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,ttft_ms:p99,TTFT ms P99,2,5690.899449735882,6364.331166194752,11.833484713741061,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,1,13.372594326437884,13.342237977937772,-0.22700418302600278,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:mean,TPOT ms MEAN,2,13.510409670780415,13.6837485121209,1.2830021114413226,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,1,13.891657217639802,13.67277073425996,-1.5756686185856794,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p50,TPOT ms P50,2,14.170092870438122,15.021487519747534,6.008391455821749,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,1,18.78803989306419,20.666145509533912,9.99628288613037,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p95,TPOT ms P95,2,20.203609194440805,19.564630381054737,-3.1626963639837635,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,1,20.624056191301744,21.807281430980854,5.737112179601889,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,tpot_ms:p99,TPOT ms P99,2,21.71929282975373,21.612127331495138,-0.49341154474322746,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,1,230.46709279617062,231.8214965591469,0.5876777228990937,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:mean,JCT s MEAN,2,234.9010057822452,233.52673261456948,-0.5850435433851109,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,1,212.10108618671075,202.59105845494196,-4.483724200920491,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p50,JCT s P50,2,205.3547495242674,214.6504891710356,4.526673801459702,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,1,439.58359344063786,438.71558293378905,-0.19746198898253908,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p95,JCT s P95,2,434.87910060067657,433.9673447795678,-0.20965730931871152,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,1,485.397517734915,480.42267083254643,-1.0249015952087048,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,jct_task_duration_s:p99,JCT s P99,2,475.42795906153975,481.34836064570123,1.2452783794726585,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,1,90.92476253184721,92.39782307660978,1.4730605447625749,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:hit,P 本地命中 %,2,90.47256614941827,92.52246840168887,2.0499022522705985,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,1,5133872.0,4300560.0,-16.23164738037879,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:compute,P 新算 tokens,2,5389680.0,4230048.0,-21.51578572382776,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,1,181.21791143633732,173.98324008737626,-3.992249602491771,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:queue,P queue ms,2,185.99190946209103,170.5180409306992,-8.319646040596052,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,1,257.2160361551565,229.41025150046772,-10.810284253784197,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:prefill,P prefill ms,2,259.6486031039529,230.5641839657081,-11.201454115507236,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,1,92.23394855573204,90.46931354846885,-1.7646350072631947,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:hit,D 本地命中 %,2,91.7372056820393,92.14898496223589,0.4117792801965834,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,1,7.766051444267956,9.530686451531155,1.764635007263199,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:external_rate,D 外部命中 %,2,8.262794317960692,7.851015037764111,-0.4117792801965807,pp
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,1,73.39072752080551,92.68023987071052,26.283309896930284,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:queue,D queue ms,2,83.87062307255827,74.35775470460625,-11.34231274247508,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,1,25.144521166787367,25.021495411733852,-0.4892745987782665,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:prefill,D prefill ms,2,25.515959630018635,25.924279094252682,1.600251255115137,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,1,603.322998046875,740.41259765625,22.722422326543533,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:gib,D 传输 GiB,2,641.91357421875,609.923583984375,-4.98353540401586,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+32,Progress，有 Affinity,kv_aware_aff,kv_aware_aff_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,1,111727.19651495737,109624.97571594556,-1.8815658716813566,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,input_tok_s,input tok/s,2,109437.53395601329,111477.08400645758,1.8636659441394698,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,1,1091.908499987817,1071.3635223020585,-1.8815658716813566,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,output_tok_s,output tok/s,2,1069.5316563168117,1089.464153557379,1.8636659441394698,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,1,112819.10501494518,110696.33923824762,-1.8815658716813566,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,total_tok_s,total tok/s,2,110507.0656123301,112566.54816001495,1.8636659441394698,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,1,691.440180147526,711.4418791001025,2.8927591318614,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:mean,TTFT ms MEAN,2,744.1483628999902,728.1788237003789,-2.146015498492404,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,1,256.41940673813224,263.0601804703474,2.589809334906179,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p50,TTFT ms P50,2,280.9954199474305,271.62896282970905,-3.3333130908232422,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,1,2547.7940202923483,2785.8189009595612,9.34239105561212,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p95,TTFT ms P95,2,2637.3906492255624,2569.793563685376,-2.5630289377129523,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,1,5728.0509405070925,5951.041816077197,3.8929625082971597,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,ttft_ms:p99,TTFT ms P99,2,6054.599468777891,6191.526522999641,2.2615377768232303,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,1,14.062839101668967,14.113278729098294,0.35867314604589584,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:mean,TPOT ms MEAN,2,14.150583867283487,14.0321731368166,-0.8367904220592415,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,1,14.625849582307481,15.068260071075615,3.02485326598263,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p50,TPOT ms P50,2,14.841633883443944,14.932072624750107,0.6093583901638278,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,1,20.979909032563235,20.5920445239727,-1.848742565987893,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p95,TPOT ms P95,2,20.89317688650842,21.575281780250137,3.2647255965280175,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,1,26.51753695297878,25.81340449136798,-2.655346395328406,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,tpot_ms:p99,TPOT ms P99,2,23.590646398344557,25.74852948534654,9.147197794263962,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,1,243.56980348550132,244.49476866269833,0.3797536328234097,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:mean,JCT s MEAN,2,244.46857549420383,244.2258424032916,-0.09929009911459064,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,1,228.08117820206098,226.00981754506938,-0.9081681677198916,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p50,JCT s P50,2,232.2731018906925,218.28013281640597,-6.024360530937245,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,1,445.3180744852172,450.72956483713347,1.2151966564958983,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p95,JCT s P95,2,449.0850826817099,456.8107490421505,1.7203123992244107,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,1,496.0499306605617,503.07437587737576,1.416076242054909,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,jct_task_duration_s:p99,JCT s P99,2,501.355368850655,499.98855443027804,-0.27262387226656415,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,1,91.92579997013264,92.14298886309435,0.21718889296170119,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:hit,P 本地命中 %,2,90.52112889576743,92.45614362580721,1.9350147300397822,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,1,4567584.0,4444720.0,-2.6899122161738065,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:compute,P 新算 tokens,2,5362208.0,4267568.0,-20.413978719214178,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,1,165.58996541999687,173.52444419241831,4.791642266665552,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:queue,P queue ms,2,171.7455432801316,191.26250037400382,11.363879796309106,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,1,232.04044503134304,233.33057579329264,0.5559939181186024,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:prefill,P prefill ms,2,252.05934178403083,233.93501939685785,-7.190498181456906,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,1,76.43640514623694,75.85735732678062,-0.5790478194563207,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:hit,D 本地命中 %,2,75.93049842291279,77.31438113468823,1.383882711775442,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,1,23.56359485376306,24.142642673219385,0.5790478194563242,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:external_rate,D 外部命中 %,2,24.06950157708721,22.685618865311774,-1.3838827117754349,pp
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,1,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:compute,D 新算 tokens,2,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,1,163.7410269960863,170.457870511925,4.10211395339497,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:queue,D queue ms,2,185.0610508998116,164.71151606154257,-10.996119788212955,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,1,27.452668388157267,26.508310173115092,-3.4399505421103593,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:prefill,D prefill ms,2,27.713515266316804,29.638722978455768,6.946818884715333,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,1,1830.59033203125,1875.574951171875,2.4573831923775824,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:gib,D 传输 GiB,2,1869.892822265625,1762.3828125,-5.749527913335816,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,1,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,prefill:preempt,P 抢占,2,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,1,0.0,0.0,,percent
+32,Progress，无 Affinity,kv_aware,kv_aware_progress,decode:preempt,D 抢占,2,0.0,0.0,,percent

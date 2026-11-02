@@ -1,6 +1,6 @@
 # gRPC P/D routing benchmark data for router PR 469
 
-The two PNGs and three CSV files contain the completed formal C4/C8/C16/C32
+The figures and CSV files contain the completed formal C4/C8/C16/C32
 benchmark results described in https://github.com/vllm-project/router/pull/469.
 No prompts, model weights, or raw dataset are included.
 
@@ -8,6 +8,11 @@ No prompts, model weights, or raw dataset are included.
   showing two independent runs separately.
 - `figures/five-policy-end-to-end.png`: five-policy comparison using run 1;
   Cache has no second run.
+- `report/`: the prior detailed report in Chinese and its small supporting CSV
+  files. The interactive HTML has its figures and display data embedded;
+  download the directory to use its CSV links. The copy replaces links to the
+  large raw JSON with the corresponding aggregate CSV and removes a local path
+  from the status file. The PDF is unchanged.
 - `data/repeats-metrics.csv`: one row per validated run (36 total) with
   request/task metrics and aggregate P/D counters.
 - `data/workers.csv`: per-worker metrics for those runs.

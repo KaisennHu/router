@@ -1,0 +1,14 @@
+{
+  "complete": true,
+  "fixture": false,
+  "completed_cells": 20,
+  "expected_cells": 20,
+  "completed_repeats": 36,
+  "missing": [],
+  "issues": [
+    {
+      "id": "native_c4__kv_aware_aff_progress__r2",
+      "status": "interrupted"
+    }
+  ]
+}
