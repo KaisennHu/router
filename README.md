@@ -4,10 +4,17 @@ The figures and CSV files contain the completed formal C4/C8/C16/C32
 benchmark results described in https://github.com/vllm-project/router/pull/469.
 No prompts, model weights, or raw dataset are included.
 
-- `figures/progress-impact.png`: progress on versus off with decode affinity,
-  showing two independent runs separately.
-- `figures/five-policy-end-to-end.png`: five-policy comparison using run 1;
-  Cache has no second run.
+- `figures/progress-impact.png`: progress on versus off with decode affinity;
+  each bar averages the changes from two independent paired runs.
+- `figures/five-policy-end-to-end.png`: five-policy comparison; each KV
+  variant is the mean of its two runs, and Cache has one run.
+- `data/c4-worker-decomposition.csv`: C4 per-worker queue and prefill
+  contributions, reproducible from the two published formal CSVs.
+- `data/c4-isolation-affinity-r1*.csv`: the five-mode C4 diagnostic run and
+  its comparisons. This is a separate instrumented closed-loop experiment,
+  not an extra repetition of the production benchmark.
+- `data/c4-instrumented-example.json`: a sanitized record of one routing
+  decision and its worker timings, including source hashes and limitations.
 - `report/`: the prior detailed report in Chinese and its small supporting CSV
   files. The interactive HTML has its figures and display data embedded;
   download the directory to use its CSV links. The copy replaces links to the
@@ -33,6 +40,7 @@ The charts can be recreated with Python, matplotlib, and numpy:
 
 ```sh
 python3 make_figures.py
+python3 make_c4_worker_analysis.py
 ```
 
 `SHA256SUMS` records the published data, scripts, and image contents.

@@ -1,0 +1,45 @@
+{
+  "scope": "One separate, instrumented, affinity-on C4 closed-loop replay pair; not a formal benchmark run.",
+  "case_id": "diagnostic 510",
+  "input_tokens": 45376,
+  "progress_snapshot": {
+    "old_remaining_tokens": 49152,
+    "completed_tokens": 8192,
+    "new_remaining_tokens": 40960
+  },
+  "selected_busy_p0": {
+    "active_prefill_tokens": 40960,
+    "new_prefill_tokens": 192,
+    "score": 41152.0,
+    "occupancy": 1,
+    "device_prefix_tokens": 45184
+  },
+  "idle_p1": {
+    "active_prefill_tokens": 0,
+    "new_prefill_tokens": 45376,
+    "score": 45376.0,
+    "occupancy": 0,
+    "device_prefix_tokens": 0
+  },
+  "target_worker_on": {
+    "local_cached_tokens": 45184,
+    "first_computed_tokens": 192,
+    "p_queue_ms": 433.8804599829018,
+    "p_prefill_ms": 227.45460085570812,
+    "p_prefill_overlap_with_source_ms": 199.7002800926566
+  },
+  "same_request_other_independent_replay": {
+    "p_queue_ms": 0.007090158760547638,
+    "p_prefill_ms": 27.2963959723711,
+    "ttft_ms": 65.29931584373116
+  },
+  "source_sha256": {
+    "instrumented_case": "76321ec670fbbfdcd93e2cd5186a7fe126494e23b499e008831f9c84cbd377a2",
+    "five_arm_summary": "dd70ec697d742ed92df69c57ede7491384577969301bed050bc22725f30e6710"
+  },
+  "limitations": [
+    "The independent off and on replays can have different arrivals and cache states.",
+    "The counterfactual winner changes only when holding the candidate snapshot fixed; the idle P was not executed for this request.",
+    "No scheduler-step token budget or wait/skip reason was recorded."
+  ]
+}

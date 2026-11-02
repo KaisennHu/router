@@ -1,0 +1,711 @@
+repeat,baseline,treatment,contrast,metric,baseline_value,treatment_value,absolute_change,relative_change_pct
+1,A,B,P RPC: unary to stream,throughput.input_tok_s,77198.81800860385,76719.21719212818,-479.60081647566403,-0.6212540928051674
+1,A,B,P RPC: unary to stream,throughput.output_tok_s,754.4630868932824,749.7759540872537,-4.687132806028671,-0.6212540928051605
+1,A,B,P RPC: unary to stream,throughput.total_tok_s,77953.28109549714,77468.99314621543,-484.287949281701,-0.621254092805178
+1,A,B,P RPC: unary to stream,throughput.request_s,0.9961998510146278,0.9900109186676805,-0.0061889323469472846,-0.6212540928051603
+1,A,B,P RPC: unary to stream,client.ttft_ms.mean,298.74273116368647,296.9054835299923,-1.8372476336941759,-0.6149932507269993
+1,A,B,P RPC: unary to stream,client.ttft_ms.p50,151.7912377603352,150.61126672662795,-1.179971033707261,-0.7773643927789362
+1,A,B,P RPC: unary to stream,client.ttft_ms.p95,1159.536462696269,1091.427455609664,-68.10900708660483,-5.873813310556102
+1,A,B,P RPC: unary to stream,client.ttft_ms.p99,2280.8592864265693,2390.055612353611,109.19632592704193,4.787508224504293
+1,A,B,P RPC: unary to stream,client.tpot_ms.mean,4.337389202896821,4.333378362457383,-0.0040108404394381125,-0.0924713059358239
+1,A,B,P RPC: unary to stream,client.tpot_ms.p50,4.314513318521486,4.321552004064339,0.007038685542852363,0.16313973380581442
+1,A,B,P RPC: unary to stream,client.tpot_ms.p95,5.723021813728004,5.735896992448105,0.012875178720101133,0.22497168697168005
+1,A,B,P RPC: unary to stream,client.tpot_ms.p99,6.251692594895629,6.224981763759952,-0.026710831135677182,-0.4272575903281936
+1,A,B,P RPC: unary to stream,client.jct_task_duration_s.mean,88.75457229005406,88.64047835925885,-0.11409393079520669,-0.12854991900850182
+1,A,B,P RPC: unary to stream,client.jct_task_duration_s.p50,64.18475974514149,63.23328163009137,-0.9514781150501221,-1.4824050426116069
+1,A,B,P RPC: unary to stream,client.jct_task_duration_s.p95,235.18409920663103,235.22518786920696,0.04108866257593036,0.01747085058664198
+1,A,B,P RPC: unary to stream,client.jct_task_duration_s.p99,288.7410869083647,288.47812787925363,-0.26295902911107305,-0.09107087319184544
+1,A,B,P RPC: unary to stream,prefill.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,A,B,P RPC: unary to stream,prefill.local_computed_prompt_tokens,4004272.0,4089392.0,85120.0,2.125729720658337
+1,A,B,P RPC: unary to stream,prefill.local_cached_prompt_tokens,52565840.0,52480720.0,-85120.0,-0.16193025736866373
+1,A,B,P RPC: unary to stream,prefill.remote_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.generated_tokens,730.0,730.0,0.0,0.0
+1,A,B,P RPC: unary to stream,prefill.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,A,B,P RPC: unary to stream,prefill.prefix_hit_tokens,52565840.0,52480720.0,-85120.0,-0.16193025736866373
+1,A,B,P RPC: unary to stream,prefill.external_query_tokens,4004272.0,4089392.0,85120.0,2.125729720658337
+1,A,B,P RPC: unary to stream,prefill.external_hit_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.local_hit_fraction_of_prompt,0.9292157667992597,0.9277110853165714,-0.0015046814826882304,-0.16193025736866234
+1,A,B,P RPC: unary to stream,prefill.local_hit_fraction_by_source,0.9292157667992597,0.9277110853165714,-0.0015046814826882304,-0.16193025736866234
+1,A,B,P RPC: unary to stream,prefill.external_hit_fraction,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.queue_s.mean_ms,5.510871374520333,0.8783223636907665,-4.632549010829567,-84.06200573376265
+1,A,B,P RPC: unary to stream,prefill.prefill_s.mean_ms,191.20099777164424,189.77204716368897,-1.4289506079552723,-0.7473552045276987
+1,A,B,P RPC: unary to stream,prefill.decode_s.mean_ms,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.bytes,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.transfers,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.failed_transfers,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.failed_notifications,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.nixl.xfer_time_s.mean_ms,,,,
+1,A,B,P RPC: unary to stream,prefill.nixl.post_time_s.mean_ms,,,,
+1,A,B,P RPC: unary to stream,prefill.sampled_running.mean,0.07882733904712941,0.08786920618945801,0.009041867142328602,11.470471097499102
+1,A,B,P RPC: unary to stream,prefill.sampled_running.p95,1.0,1.0,0.0,0.0
+1,A,B,P RPC: unary to stream,prefill.sampled_running.max_sampled,3.0,3.0,0.0,0.0
+1,A,B,P RPC: unary to stream,prefill.sampled_waiting.mean,0.009763649125987976,0.0027667377327976824,-0.006996911393190294,-71.66287217928145
+1,A,B,P RPC: unary to stream,prefill.sampled_waiting.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.sampled_waiting.max_sampled,2.0,1.0,-1.0,-50.0
+1,A,B,P RPC: unary to stream,prefill.sampled_capacity.mean,0.009763649125987976,0.0027667377327976824,-0.006996911393190294,-71.66287217928145
+1,A,B,P RPC: unary to stream,prefill.sampled_capacity.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.sampled_capacity.max_sampled,2.0,1.0,-1.0,-50.0
+1,A,B,P RPC: unary to stream,prefill.sampled_deferred.mean,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.sampled_deferred.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,prefill.sampled_deferred.max_sampled,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.local_cached_prompt_tokens,52626896.0,52533008.0,-93888.0,-0.1784030735918759
+1,A,B,P RPC: unary to stream,decode.remote_prompt_tokens,3943216.0,4037104.0,93888.0,2.3810006857346897
+1,A,B,P RPC: unary to stream,decode.generated_tokens,552859.0,552859.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.prefix_hit_tokens,52626896.0,52533008.0,-93888.0,-0.1784030735918759
+1,A,B,P RPC: unary to stream,decode.external_query_tokens,3943216.0,4037104.0,93888.0,2.3810006857346897
+1,A,B,P RPC: unary to stream,decode.external_hit_tokens,3943216.0,4037104.0,93888.0,2.3810006857346897
+1,A,B,P RPC: unary to stream,decode.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.local_hit_fraction_of_prompt,0.9302950646447368,0.9286353896559371,-0.0016596749887997087,-0.17840307359187263
+1,A,B,P RPC: unary to stream,decode.local_hit_fraction_by_source,0.9302950646447368,0.9286353896559371,-0.0016596749887997087,-0.17840307359187263
+1,A,B,P RPC: unary to stream,decode.external_hit_fraction,1.0,1.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.queue_s.mean_ms,41.56272840775448,47.408934736190595,5.846206328436118,14.065983039134105
+1,A,B,P RPC: unary to stream,decode.prefill_s.mean_ms,7.261610245459701,6.997281016960535,-0.2643292284991654,-3.6400911032706063
+1,A,B,P RPC: unary to stream,decode.decode_s.mean_ms,3574.05743750565,3571.1506722813906,-2.9067652242592885,-0.08132956101253741
+1,A,B,P RPC: unary to stream,decode.nixl.bytes,581450858496.0,595295207424.0,13844348928.0,2.3810006857346897
+1,A,B,P RPC: unary to stream,decode.nixl.transfers,730.0,730.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.nixl.failed_transfers,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.nixl.failed_notifications,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.nixl.xfer_time_s.mean_ms,33.5980397260274,39.84734657534246,6.249306849315062,18.600212691795555
+1,A,B,P RPC: unary to stream,decode.nixl.post_time_s.mean_ms,27.685231506849316,33.75239726027397,6.067165753424657,21.914809532741824
+1,A,B,P RPC: unary to stream,decode.sampled_running.mean,3.5861424440533693,3.5357447821993726,-0.050397661853996745,-1.4053446744026412
+1,A,B,P RPC: unary to stream,decode.sampled_running.p95,4.0,4.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.sampled_running.max_sampled,4.0,4.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.sampled_waiting.mean,0.018191244189265654,0.011046147202967583,-0.007145096986298071,-39.27767068573722
+1,A,B,P RPC: unary to stream,decode.sampled_waiting.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.sampled_waiting.max_sampled,4.0,4.0,0.0,0.0
+1,A,B,P RPC: unary to stream,decode.sampled_capacity.mean,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.sampled_capacity.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.sampled_capacity.max_sampled,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.sampled_deferred.mean,0.018191244189265654,0.011046147202967583,-0.007145096986298071,-39.27767068573722
+1,A,B,P RPC: unary to stream,decode.sampled_deferred.p95,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,decode.sampled_deferred.max_sampled,4.0,4.0,0.0,0.0
+1,A,B,P RPC: unary to stream,worker.P0.requests,529.0,548.0,19.0,3.5916824196597354
+1,A,B,P RPC: unary to stream,worker.P0.local_computed_prompt_tokens,3045104.0,3209888.0,164784.0,5.411440791513196
+1,A,B,P RPC: unary to stream,worker.P0.local_cached_prompt_tokens,37202960.0,39451040.0,2248080.0,6.042744985882844
+1,A,B,P RPC: unary to stream,worker.P0.generated_tokens,529.0,548.0,19.0,3.5916824196597354
+1,A,B,P RPC: unary to stream,worker.P0.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.P0.queue_s.mean_ms,7.597514534710655,1.1633666628210324,-6.434147871889622,-84.68753620008259
+1,A,B,P RPC: unary to stream,worker.P0.prefill_s.mean_ms,201.2993851685386,200.50656173232073,-0.7928234362178728,-0.3938528851213721
+1,A,B,P RPC: unary to stream,worker.P1.requests,154.0,116.0,-38.0,-24.675324675324674
+1,A,B,P RPC: unary to stream,worker.P1.local_computed_prompt_tokens,700880.0,539104.0,-161776.0,-23.081839972605867
+1,A,B,P RPC: unary to stream,worker.P1.local_cached_prompt_tokens,10761520.0,7234080.0,-3527440.0,-32.778269240776396
+1,A,B,P RPC: unary to stream,worker.P1.generated_tokens,154.0,116.0,-38.0,-24.675324675324674
+1,A,B,P RPC: unary to stream,worker.P1.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.P1.queue_s.mean_ms,0.019101045009764756,0.019646659172300632,0.0005456141625358769,2.8564623676712473
+1,A,B,P RPC: unary to stream,worker.P1.prefill_s.mean_ms,154.0420530152253,147.82258259244904,-6.219470422776254,-4.037514627360576
+1,A,B,P RPC: unary to stream,worker.P2.requests,24.0,43.0,19.0,79.16666666666666
+1,A,B,P RPC: unary to stream,worker.P2.local_computed_prompt_tokens,147600.0,229712.0,82112.0,55.63143631436315
+1,A,B,P RPC: unary to stream,worker.P2.local_cached_prompt_tokens,2680048.0,3874288.0,1194240.0,44.56039593320716
+1,A,B,P RPC: unary to stream,worker.P2.generated_tokens,24.0,43.0,19.0,79.16666666666666
+1,A,B,P RPC: unary to stream,worker.P2.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.P2.queue_s.mean_ms,0.0207334718046089,0.023471938749385437,0.0027384669447765367,13.207951714906693
+1,A,B,P RPC: unary to stream,worker.P2.prefill_s.mean_ms,244.39521599560976,186.4177702362974,-57.97744575931236,-23.722823510732653
+1,A,B,P RPC: unary to stream,worker.P3.requests,23.0,23.0,0.0,0.0
+1,A,B,P RPC: unary to stream,worker.P3.local_computed_prompt_tokens,110688.0,110688.0,0.0,0.0
+1,A,B,P RPC: unary to stream,worker.P3.local_cached_prompt_tokens,1921312.0,1921312.0,0.0,0.0
+1,A,B,P RPC: unary to stream,worker.P3.generated_tokens,23.0,23.0,0.0,0.0
+1,A,B,P RPC: unary to stream,worker.P3.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.P3.queue_s.mean_ms,0.017902186221402622,0.01574297557058542,-0.002159210650817204,-12.061156241553338
+1,A,B,P RPC: unary to stream,worker.P3.prefill_s.mean_ms,152.234446561045,151.85282170853537,-0.3816248525096171,-0.2506823265893295
+1,A,B,P RPC: unary to stream,worker.D0.requests,154.0,214.0,60.0,38.961038961038966
+1,A,B,P RPC: unary to stream,worker.D0.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D0.local_cached_prompt_tokens,9347264.0,12566864.0,3219600.0,34.44430370213144
+1,A,B,P RPC: unary to stream,worker.D0.generated_tokens,131173.0,157673.0,26500.0,20.202328223033703
+1,A,B,P RPC: unary to stream,worker.D0.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D0.queue_s.mean_ms,43.97335116957109,34.238648801067164,-9.734702368503925,-22.137731397738445
+1,A,B,P RPC: unary to stream,worker.D0.prefill_s.mean_ms,6.829064124711342,6.67465679025469,-0.15440733445665256,-2.2610321361300616
+1,A,B,P RPC: unary to stream,worker.D1.requests,216.0,104.0,-112.0,-51.85185185185185
+1,A,B,P RPC: unary to stream,worker.D1.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D1.local_cached_prompt_tokens,15238672.0,10455712.0,-4782960.0,-31.386987002541954
+1,A,B,P RPC: unary to stream,worker.D1.generated_tokens,151496.0,128823.0,-22673.0,-14.966071711464329
+1,A,B,P RPC: unary to stream,worker.D1.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D1.queue_s.mean_ms,33.363713962629575,75.05511522490102,41.69140126227144,124.96031259880012
+1,A,B,P RPC: unary to stream,worker.D1.prefill_s.mean_ms,6.97436606882278,8.371321108335486,1.3969550395127062,20.029849677054614
+1,A,B,P RPC: unary to stream,worker.D2.requests,115.0,156.0,41.0,35.65217391304348
+1,A,B,P RPC: unary to stream,worker.D2.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D2.local_cached_prompt_tokens,11121760.0,12019072.0,897312.0,8.06807555638676
+1,A,B,P RPC: unary to stream,worker.D2.generated_tokens,128385.0,124996.0,-3389.0,-2.639716477781672
+1,A,B,P RPC: unary to stream,worker.D2.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D2.queue_s.mean_ms,47.140401941926584,45.218357514852705,-1.9220444270738781,-4.0772762808465055
+1,A,B,P RPC: unary to stream,worker.D2.prefill_s.mean_ms,9.084727202096712,7.101245522976686,-1.9834816791200254,-21.83314517867138
+1,A,B,P RPC: unary to stream,worker.D3.requests,245.0,256.0,11.0,4.489795918367347
+1,A,B,P RPC: unary to stream,worker.D3.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D3.local_cached_prompt_tokens,16919200.0,17491360.0,572160.0,3.3817201758948414
+1,A,B,P RPC: unary to stream,worker.D3.generated_tokens,141805.0,141367.0,-438.0,-0.30887486336871056
+1,A,B,P RPC: unary to stream,worker.D3.preemption_events,0.0,0.0,0.0,
+1,A,B,P RPC: unary to stream,worker.D3.queue_s.mean_ms,44.65790701345826,48.522092805797,3.864185792338745,8.652859148043415
+1,A,B,P RPC: unary to stream,worker.D3.prefill_s.mean_ms,6.930991448462009,6.6454175484977895,-0.2855738999642199,-4.120246029557414
+1,B,C,Progress production/delivery/receipt,throughput.input_tok_s,76719.21719212818,76857.26883340813,138.05164127994794,0.17994401706970597
+1,B,C,Progress production/delivery/receipt,throughput.output_tok_s,749.7759540872537,751.1251310580609,1.349176970807207,0.1799440170696911
+1,B,C,Progress production/delivery/receipt,throughput.total_tok_s,77468.99314621543,77608.39396446619,139.40081825075322,0.17994401706970337
+1,B,C,Progress production/delivery/receipt,throughput.request_s,0.9900109186676805,0.9917923840841598,0.0017814654164792776,0.17994401706970128
+1,B,C,Progress production/delivery/receipt,client.ttft_ms.mean,296.9054835299923,295.8034717503374,-1.1020117796549016,-0.3711658560673166
+1,B,C,Progress production/delivery/receipt,client.ttft_ms.p50,150.61126672662795,153.85137661360204,3.2401098869740963,2.1513064443280774
+1,B,C,Progress production/delivery/receipt,client.ttft_ms.p95,1091.427455609664,1075.123570719732,-16.30388488993208,-1.493812969990281
+1,B,C,Progress production/delivery/receipt,client.ttft_ms.p99,2390.055612353611,2125.8835708256875,-264.17204152792374,-11.052966305992348
+1,B,C,Progress production/delivery/receipt,client.tpot_ms.mean,4.333378362457383,4.3426933456248795,0.009314983167496571,0.21495891630875746
+1,B,C,Progress production/delivery/receipt,client.tpot_ms.p50,4.321552004064339,4.319204226154201,-0.0023477779101375162,-0.054327193284483793
+1,B,C,Progress production/delivery/receipt,client.tpot_ms.p95,5.735896992448105,5.726685843223598,-0.009211149224507054,-0.16058777269944827
+1,B,C,Progress production/delivery/receipt,client.tpot_ms.p99,6.224981763759952,6.243900668082013,0.018918904322061003,0.3039190320556665
+1,B,C,Progress production/delivery/receipt,client.jct_task_duration_s.mean,88.64047835925885,88.73926637369732,0.09878801443846896,0.11144797079961852
+1,B,C,Progress production/delivery/receipt,client.jct_task_duration_s.p50,63.23328163009137,64.40621161204763,1.1729299819562584,1.8549250516805158
+1,B,C,Progress production/delivery/receipt,client.jct_task_duration_s.p95,235.22518786920696,235.70862461822105,0.4834367490140892,0.20552082597672153
+1,B,C,Progress production/delivery/receipt,client.jct_task_duration_s.p99,288.47812787925363,289.34076726975854,0.8626393905049099,0.29903112476727495
+1,B,C,Progress production/delivery/receipt,prefill.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,prefill.local_computed_prompt_tokens,4089392.0,4089488.0,96.0,0.0023475372378094347
+1,B,C,Progress production/delivery/receipt,prefill.local_cached_prompt_tokens,52480720.0,52480624.0,-96.0,-0.00018292431963585866
+1,B,C,Progress production/delivery/receipt,prefill.remote_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.generated_tokens,730.0,730.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,prefill.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,prefill.prefix_hit_tokens,52480720.0,52480624.0,-96.0,-0.00018292431963585866
+1,B,C,Progress production/delivery/receipt,prefill.external_query_tokens,4089392.0,4089488.0,96.0,0.0023475372378094347
+1,B,C,Progress production/delivery/receipt,prefill.external_hit_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.local_hit_fraction_of_prompt,0.9277110853165714,0.9277093883073804,-1.6970091910595286e-06,-0.00018292431964208366
+1,B,C,Progress production/delivery/receipt,prefill.local_hit_fraction_by_source,0.9277110853165714,0.9277093883073804,-1.6970091910595286e-06,-0.00018292431964208366
+1,B,C,Progress production/delivery/receipt,prefill.external_hit_fraction,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.queue_s.mean_ms,0.8783223636907665,1.8753418112046099,0.9970194475138433,113.51406826581348
+1,B,C,Progress production/delivery/receipt,prefill.prefill_s.mean_ms,189.77204716368897,190.34765013940122,0.5756029757122576,0.30331283469570625
+1,B,C,Progress production/delivery/receipt,prefill.decode_s.mean_ms,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.bytes,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.transfers,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.failed_transfers,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.failed_notifications,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.xfer_time_s.mean_ms,,,,
+1,B,C,Progress production/delivery/receipt,prefill.nixl.post_time_s.mean_ms,,,,
+1,B,C,Progress production/delivery/receipt,prefill.sampled_running.mean,0.08786920618945801,0.07320517918091449,-0.014664027008543523,-16.688471017851096
+1,B,C,Progress production/delivery/receipt,prefill.sampled_running.p95,1.0,1.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_running.max_sampled,3.0,3.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_waiting.mean,0.0027667377327976824,0.0,-0.0027667377327976824,-100.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_waiting.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.sampled_waiting.max_sampled,1.0,0.0,-1.0,-100.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_capacity.mean,0.0027667377327976824,0.0,-0.0027667377327976824,-100.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_capacity.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.sampled_capacity.max_sampled,1.0,0.0,-1.0,-100.0
+1,B,C,Progress production/delivery/receipt,prefill.sampled_deferred.mean,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.sampled_deferred.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,prefill.sampled_deferred.max_sampled,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.local_cached_prompt_tokens,52533008.0,52626896.0,93888.0,0.17872191898853385
+1,B,C,Progress production/delivery/receipt,decode.remote_prompt_tokens,4037104.0,3943216.0,-93888.0,-2.3256274795001564
+1,B,C,Progress production/delivery/receipt,decode.generated_tokens,552859.0,552859.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.prefix_hit_tokens,52533008.0,52626896.0,93888.0,0.17872191898853385
+1,B,C,Progress production/delivery/receipt,decode.external_query_tokens,4037104.0,3943216.0,-93888.0,-2.3256274795001564
+1,B,C,Progress production/delivery/receipt,decode.external_hit_tokens,4037104.0,3943216.0,-93888.0,-2.3256274795001564
+1,B,C,Progress production/delivery/receipt,decode.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.local_hit_fraction_of_prompt,0.9286353896559371,0.9302950646447368,0.0016596749887997087,0.17872191898853051
+1,B,C,Progress production/delivery/receipt,decode.local_hit_fraction_by_source,0.9286353896559371,0.9302950646447368,0.0016596749887997087,0.17872191898853051
+1,B,C,Progress production/delivery/receipt,decode.external_hit_fraction,1.0,1.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.queue_s.mean_ms,47.408934736190595,44.13285227237295,-3.2760824638176445,-6.9102638185134735
+1,B,C,Progress production/delivery/receipt,decode.prefill_s.mean_ms,6.997281016960535,7.082715792555923,0.08543477559538815,1.2209710513027119
+1,B,C,Progress production/delivery/receipt,decode.decode_s.mean_ms,3571.1506722813906,3576.310849233135,5.1601769517442335,0.14449619815250503
+1,B,C,Progress production/delivery/receipt,decode.nixl.bytes,595295207424.0,581450858496.0,-13844348928.0,-2.3256274795001564
+1,B,C,Progress production/delivery/receipt,decode.nixl.transfers,730.0,730.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.nixl.failed_transfers,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.nixl.failed_notifications,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.nixl.xfer_time_s.mean_ms,39.84734657534246,36.549660273972606,-3.2976863013698576,-8.275798979825838
+1,B,C,Progress production/delivery/receipt,decode.nixl.post_time_s.mean_ms,33.75239726027397,30.683076712328777,-3.069320547945196,-9.093637184573367
+1,B,C,Progress production/delivery/receipt,decode.sampled_running.mean,3.5357447821993726,3.5410591110875864,0.005314328888213815,0.1503029549804806
+1,B,C,Progress production/delivery/receipt,decode.sampled_running.p95,4.0,4.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.sampled_running.max_sampled,4.0,4.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.sampled_waiting.mean,0.011046147202967583,0.01676253742363507,0.005716390220667486,51.750081866840944
+1,B,C,Progress production/delivery/receipt,decode.sampled_waiting.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.sampled_waiting.max_sampled,4.0,4.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,decode.sampled_capacity.mean,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.sampled_capacity.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.sampled_capacity.max_sampled,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.sampled_deferred.mean,0.011046147202967583,0.01676253742363507,0.005716390220667486,51.750081866840944
+1,B,C,Progress production/delivery/receipt,decode.sampled_deferred.p95,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,decode.sampled_deferred.max_sampled,4.0,4.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.P0.requests,548.0,524.0,-24.0,-4.37956204379562
+1,B,C,Progress production/delivery/receipt,worker.P0.local_computed_prompt_tokens,3209888.0,2914928.0,-294960.0,-9.189105663499786
+1,B,C,Progress production/delivery/receipt,worker.P0.local_cached_prompt_tokens,39451040.0,35174928.0,-4276112.0,-10.839034915175874
+1,B,C,Progress production/delivery/receipt,worker.P0.generated_tokens,548.0,524.0,-24.0,-4.37956204379562
+1,B,C,Progress production/delivery/receipt,worker.P0.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.P0.queue_s.mean_ms,1.1633666628210324,2.6052865032675383,1.441919840446506,123.94371323568905
+1,B,C,Progress production/delivery/receipt,worker.P0.prefill_s.mean_ms,200.50656173232073,184.50225719236522,-16.004304539955513,-7.981935554469034
+1,B,C,Progress production/delivery/receipt,worker.P1.requests,116.0,159.0,43.0,37.06896551724138
+1,B,C,Progress production/delivery/receipt,worker.P1.local_computed_prompt_tokens,539104.0,916272.0,377168.0,69.96201104054134
+1,B,C,Progress production/delivery/receipt,worker.P1.local_cached_prompt_tokens,7234080.0,12704336.0,5470256.0,75.61785327228895
+1,B,C,Progress production/delivery/receipt,worker.P1.generated_tokens,116.0,159.0,43.0,37.06896551724138
+1,B,C,Progress production/delivery/receipt,worker.P1.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.P1.queue_s.mean_ms,0.019646659172300632,0.017716833419582377,-0.0019298257527182554,-9.82266621410663
+1,B,C,Progress production/delivery/receipt,worker.P1.prefill_s.mean_ms,147.82258259244904,206.95294291308187,59.13036032063283,40.000897889639006
+1,B,C,Progress production/delivery/receipt,worker.P2.requests,43.0,24.0,-19.0,-44.18604651162791
+1,B,C,Progress production/delivery/receipt,worker.P2.local_computed_prompt_tokens,229712.0,147600.0,-82112.0,-35.74562930974437
+1,B,C,Progress production/delivery/receipt,worker.P2.local_cached_prompt_tokens,3874288.0,2680048.0,-1194240.0,-30.824760575362493
+1,B,C,Progress production/delivery/receipt,worker.P2.generated_tokens,43.0,24.0,-19.0,-44.18604651162791
+1,B,C,Progress production/delivery/receipt,worker.P2.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.P2.queue_s.mean_ms,0.023471938749385437,0.024662372500946123,0.0011904337515606864,5.071731671896321
+1,B,C,Progress production/delivery/receipt,worker.P2.prefill_s.mean_ms,186.4177702362974,244.77636829639474,58.358598060097336,31.305276308220932
+1,B,C,Progress production/delivery/receipt,worker.P3.requests,23.0,23.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.P3.local_computed_prompt_tokens,110688.0,110688.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.P3.local_cached_prompt_tokens,1921312.0,1921312.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.P3.generated_tokens,23.0,23.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.P3.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.P3.queue_s.mean_ms,0.01574297557058542,0.01828352232342181,0.0025405467528363916,16.13765289443258
+1,B,C,Progress production/delivery/receipt,worker.P3.prefill_s.mean_ms,151.85282170853537,151.9326552465234,0.07983353798803705,0.052572969728062524
+1,B,C,Progress production/delivery/receipt,worker.D0.requests,214.0,214.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.D0.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D0.local_cached_prompt_tokens,12566864.0,12566864.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.D0.generated_tokens,157673.0,157673.0,0.0,0.0
+1,B,C,Progress production/delivery/receipt,worker.D0.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D0.queue_s.mean_ms,34.238648801067164,35.81641506508132,1.5777662640141585,4.608144068947552
+1,B,C,Progress production/delivery/receipt,worker.D0.prefill_s.mean_ms,6.67465679025469,6.498802999452313,-0.1758537908023765,-2.634649186144391
+1,B,C,Progress production/delivery/receipt,worker.D1.requests,104.0,156.0,52.0,50.0
+1,B,C,Progress production/delivery/receipt,worker.D1.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D1.local_cached_prompt_tokens,10455712.0,12019072.0,1563360.0,14.95220985428826
+1,B,C,Progress production/delivery/receipt,worker.D1.generated_tokens,128823.0,124996.0,-3827.0,-2.9707428021393696
+1,B,C,Progress production/delivery/receipt,worker.D1.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D1.queue_s.mean_ms,75.05511522490102,53.74595258110322,-21.309162643797798,-28.39135291438213
+1,B,C,Progress production/delivery/receipt,worker.D1.prefill_s.mean_ms,8.371321108335486,7.16781091147986,-1.2035101968556265,-14.376586219554618
+1,B,C,Progress production/delivery/receipt,worker.D2.requests,156.0,112.0,-44.0,-28.205128205128204
+1,B,C,Progress production/delivery/receipt,worker.D2.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D2.local_cached_prompt_tokens,12019072.0,9512288.0,-2506784.0,-20.85671838890723
+1,B,C,Progress production/delivery/receipt,worker.D2.generated_tokens,124996.0,132197.0,7201.0,5.760984351499248
+1,B,C,Progress production/delivery/receipt,worker.D2.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D2.queue_s.mean_ms,45.218357514852705,32.59245867541592,-12.625898839436786,-27.92206425297426
+1,B,C,Progress production/delivery/receipt,worker.D2.prefill_s.mean_ms,7.101245522976686,7.673996429990178,0.572750907013492,8.065499286854784
+1,B,C,Progress production/delivery/receipt,worker.D3.requests,256.0,248.0,-8.0,-3.125
+1,B,C,Progress production/delivery/receipt,worker.D3.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D3.local_cached_prompt_tokens,17491360.0,18528672.0,1037312.0,5.930425078438726
+1,B,C,Progress production/delivery/receipt,worker.D3.generated_tokens,141367.0,137993.0,-3374.0,-2.386695622033431
+1,B,C,Progress production/delivery/receipt,worker.D3.preemption_events,0.0,0.0,0.0,
+1,B,C,Progress production/delivery/receipt,worker.D3.queue_s.mean_ms,48.522092805797,50.47397322825066,1.9518804224536552,4.022663305694146
+1,B,C,Progress production/delivery/receipt,worker.D3.prefill_s.mean_ms,6.6454175484977895,7.2660184852148015,0.620600936717012,9.338780177286228
+1,C,D,legacy progress accounting,throughput.input_tok_s,76857.26883340813,76015.44913053326,-841.8197028748691,-1.0953026508130992
+1,C,D,legacy progress accounting,throughput.output_tok_s,751.1251310580609,742.8980375866586,-8.227093471402327,-1.0953026508131019
+1,C,D,legacy progress accounting,throughput.total_tok_s,77608.39396446619,76758.34716811992,-850.0467963462725,-1.0953026508131005
+1,C,D,legacy progress accounting,throughput.request_s,0.9917923840841598,0.9809292558107235,-0.010863128273436273,-1.095302650813103
+1,C,D,legacy progress accounting,client.ttft_ms.mean,295.8034717503374,325.2452263366176,29.441754586280183,9.95314707162378
+1,C,D,legacy progress accounting,client.ttft_ms.p50,153.85137661360204,158.14622398465872,4.294847371056676,2.7915560234752994
+1,C,D,legacy progress accounting,client.ttft_ms.p95,1075.123570719732,1220.708188530988,145.58461781125607,13.541198591134574
+1,C,D,legacy progress accounting,client.ttft_ms.p99,2125.8835708256875,2621.714890617879,495.8313197921916,23.32354069605101
+1,C,D,legacy progress accounting,client.tpot_ms.mean,4.3426933456248795,4.339381319457671,-0.0033120261672081597,-0.07626663693730336
+1,C,D,legacy progress accounting,client.tpot_ms.p50,4.319204226154201,4.318348475959036,-0.0008557501951651503,-0.01981268192838166
+1,C,D,legacy progress accounting,client.tpot_ms.p95,5.726685843223598,5.714567786711712,-0.01211805651188591,-0.21160679743285093
+1,C,D,legacy progress accounting,client.tpot_ms.p99,6.243900668082013,6.233373798497333,-0.01052686958467941,-0.16859444351015004
+1,C,D,legacy progress accounting,client.jct_task_duration_s.mean,88.73926637369732,89.4110529870959,0.6717866133985808,0.7570342204200384
+1,C,D,legacy progress accounting,client.jct_task_duration_s.p50,64.40621161204763,64.10501437773928,-0.3011972343083471,-0.4676524620367612
+1,C,D,legacy progress accounting,client.jct_task_duration_s.p95,235.70862461822105,238.84696219821922,3.138337579998165,1.3314479201095644
+1,C,D,legacy progress accounting,client.jct_task_duration_s.p99,289.34076726975854,290.8308872820577,1.490120012299144,0.5150052052325809
+1,C,D,legacy progress accounting,prefill.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,D,legacy progress accounting,prefill.local_computed_prompt_tokens,4089488.0,4285072.0,195584.0,4.782603592430153
+1,C,D,legacy progress accounting,prefill.local_cached_prompt_tokens,52480624.0,52285040.0,-195584.0,-0.37267849559105853
+1,C,D,legacy progress accounting,prefill.remote_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.generated_tokens,730.0,730.0,0.0,0.0
+1,C,D,legacy progress accounting,prefill.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,D,legacy progress accounting,prefill.prefix_hit_tokens,52480624.0,52285040.0,-195584.0,-0.37267849559105853
+1,C,D,legacy progress accounting,prefill.external_query_tokens,4089488.0,4285072.0,195584.0,4.782603592430153
+1,C,D,legacy progress accounting,prefill.external_hit_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.local_hit_fraction_of_prompt,0.9277093883073804,0.9242520149155794,-0.0034573733918009664,-0.3726784955910596
+1,C,D,legacy progress accounting,prefill.local_hit_fraction_by_source,0.9277093883073804,0.9242520149155794,-0.0034573733918009664,-0.3726784955910596
+1,C,D,legacy progress accounting,prefill.external_hit_fraction,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.queue_s.mean_ms,1.8753418112046099,10.639010971947894,8.763669160743284,467.31049819200774
+1,C,D,legacy progress accounting,prefill.prefill_s.mean_ms,190.34765013940122,206.68485441806484,16.33720427866362,8.582824251677946
+1,C,D,legacy progress accounting,prefill.decode_s.mean_ms,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.bytes,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.transfers,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.failed_transfers,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.failed_notifications,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.nixl.xfer_time_s.mean_ms,,,,
+1,C,D,legacy progress accounting,prefill.nixl.post_time_s.mean_ms,,,,
+1,C,D,legacy progress accounting,prefill.sampled_running.mean,0.07320517918091449,0.10245541709930318,0.029250237918388697,39.956514341835806
+1,C,D,legacy progress accounting,prefill.sampled_running.p95,1.0,1.0,0.0,0.0
+1,C,D,legacy progress accounting,prefill.sampled_running.max_sampled,3.0,4.0,1.0,33.33333333333333
+1,C,D,legacy progress accounting,prefill.sampled_waiting.mean,0.0,0.015128312006008173,0.015128312006008173,
+1,C,D,legacy progress accounting,prefill.sampled_waiting.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.sampled_waiting.max_sampled,0.0,2.0,2.0,
+1,C,D,legacy progress accounting,prefill.sampled_capacity.mean,0.0,0.015128312006008173,0.015128312006008173,
+1,C,D,legacy progress accounting,prefill.sampled_capacity.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.sampled_capacity.max_sampled,0.0,2.0,2.0,
+1,C,D,legacy progress accounting,prefill.sampled_deferred.mean,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.sampled_deferred.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,prefill.sampled_deferred.max_sampled,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.local_cached_prompt_tokens,52626896.0,52626896.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.remote_prompt_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.generated_tokens,552859.0,552859.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.prefix_hit_tokens,52626896.0,52626896.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.external_query_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.external_hit_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.local_hit_fraction_of_prompt,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,C,D,legacy progress accounting,decode.local_hit_fraction_by_source,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,C,D,legacy progress accounting,decode.external_hit_fraction,1.0,1.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.queue_s.mean_ms,44.13285227237295,45.54954961082604,1.4166973384530905,3.2100742768895074
+1,C,D,legacy progress accounting,decode.prefill_s.mean_ms,7.082715792555923,7.0574896926800275,-0.02522609987589597,-0.35616422590906593
+1,C,D,legacy progress accounting,decode.decode_s.mean_ms,3576.310849233135,3575.985636164702,-0.32521306843273123,-0.009093534710565397
+1,C,D,legacy progress accounting,decode.nixl.bytes,581450858496.0,581450858496.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.nixl.transfers,730.0,730.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.nixl.failed_transfers,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.nixl.failed_notifications,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.nixl.xfer_time_s.mean_ms,36.549660273972606,37.77800136986303,1.2283410958904213,3.360745590199468
+1,C,D,legacy progress accounting,decode.nixl.post_time_s.mean_ms,30.683076712328777,31.701447945205484,1.0183712328767065,3.318999728822874
+1,C,D,legacy progress accounting,decode.sampled_running.mean,3.5410591110875864,3.5011021245474208,-0.03995698654016566,-1.1283908369406868
+1,C,D,legacy progress accounting,decode.sampled_running.p95,4.0,4.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.sampled_running.max_sampled,4.0,4.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.sampled_waiting.mean,0.01676253742363507,0.017913369770090056,0.0011508323464549872,6.865502026156976
+1,C,D,legacy progress accounting,decode.sampled_waiting.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.sampled_waiting.max_sampled,4.0,4.0,0.0,0.0
+1,C,D,legacy progress accounting,decode.sampled_capacity.mean,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.sampled_capacity.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.sampled_capacity.max_sampled,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.sampled_deferred.mean,0.01676253742363507,0.017913369770090056,0.0011508323464549872,6.865502026156976
+1,C,D,legacy progress accounting,decode.sampled_deferred.p95,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,decode.sampled_deferred.max_sampled,4.0,4.0,0.0,0.0
+1,C,D,legacy progress accounting,worker.P0.requests,524.0,559.0,35.0,6.679389312977099
+1,C,D,legacy progress accounting,worker.P0.local_computed_prompt_tokens,2914928.0,3348160.0,433232.0,14.862528336892025
+1,C,D,legacy progress accounting,worker.P0.local_cached_prompt_tokens,35174928.0,39526272.0,4351344.0,12.370583956845627
+1,C,D,legacy progress accounting,worker.P0.generated_tokens,524.0,559.0,35.0,6.679389312977099
+1,C,D,legacy progress accounting,worker.P0.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.P0.queue_s.mean_ms,2.6052865032675383,13.887321453188314,11.282034949920774,433.0439257168415
+1,C,D,legacy progress accounting,worker.P0.prefill_s.mean_ms,184.50225719236522,216.35855854303978,31.856301350674556,17.266076759950224
+1,C,D,legacy progress accounting,worker.P1.requests,159.0,117.0,-42.0,-26.41509433962264
+1,C,D,legacy progress accounting,worker.P1.local_computed_prompt_tokens,916272.0,590512.0,-325760.0,-35.55276162536888
+1,C,D,legacy progress accounting,worker.P1.local_cached_prompt_tokens,12704336.0,7552592.0,-5151744.0,-40.551068548564835
+1,C,D,legacy progress accounting,worker.P1.generated_tokens,159.0,117.0,-42.0,-26.41509433962264
+1,C,D,legacy progress accounting,worker.P1.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.P1.queue_s.mean_ms,0.017716833419582377,0.02076774915186768,0.003050915732285303,17.22043471331131
+1,C,D,legacy progress accounting,worker.P1.prefill_s.mean_ms,206.95294291308187,146.86670309951543,-60.086239813566436,-29.033769207525616
+1,C,D,legacy progress accounting,worker.P2.requests,24.0,31.0,7.0,29.166666666666668
+1,C,D,legacy progress accounting,worker.P2.local_computed_prompt_tokens,147600.0,235712.0,88112.0,59.69647696476965
+1,C,D,legacy progress accounting,worker.P2.local_cached_prompt_tokens,2680048.0,3284864.0,604816.0,22.56735700256115
+1,C,D,legacy progress accounting,worker.P2.generated_tokens,24.0,31.0,7.0,29.166666666666668
+1,C,D,legacy progress accounting,worker.P2.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.P2.queue_s.mean_ms,0.024662372500946123,0.02181439870788205,-0.002847973793064073,-11.54785004141356
+1,C,D,legacy progress accounting,worker.P2.prefill_s.mean_ms,244.77636829639474,298.6645479386131,53.888179642218375,22.015270517032214
+1,C,D,legacy progress accounting,worker.P3.requests,23.0,23.0,0.0,0.0
+1,C,D,legacy progress accounting,worker.P3.local_computed_prompt_tokens,110688.0,110688.0,0.0,0.0
+1,C,D,legacy progress accounting,worker.P3.local_cached_prompt_tokens,1921312.0,1921312.0,0.0,0.0
+1,C,D,legacy progress accounting,worker.P3.generated_tokens,23.0,23.0,0.0,0.0
+1,C,D,legacy progress accounting,worker.P3.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.P3.queue_s.mean_ms,0.01828352232342181,0.01561931212959082,-0.0026642101938309896,-14.571646243558039
+1,C,D,legacy progress accounting,worker.P3.prefill_s.mean_ms,151.9326552465234,151.89148916903397,-0.04116607748943579,-0.027094950340096666
+1,C,D,legacy progress accounting,worker.D0.requests,214.0,186.0,-28.0,-13.084112149532709
+1,C,D,legacy progress accounting,worker.D0.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D0.local_cached_prompt_tokens,12566864.0,12491168.0,-75696.0,-0.6023459790764029
+1,C,D,legacy progress accounting,worker.D0.generated_tokens,157673.0,151595.0,-6078.0,-3.854813443011803
+1,C,D,legacy progress accounting,worker.D0.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D0.queue_s.mean_ms,35.81641506508132,54.767296028633915,18.950880963552592,52.911160787916124
+1,C,D,legacy progress accounting,worker.D0.prefill_s.mean_ms,6.498802999452313,6.965461950649017,0.4666589511967034,7.180690832389152
+1,C,D,legacy progress accounting,worker.D1.requests,156.0,112.0,-44.0,-28.205128205128204
+1,C,D,legacy progress accounting,worker.D1.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D1.local_cached_prompt_tokens,12019072.0,9512288.0,-2506784.0,-20.85671838890723
+1,C,D,legacy progress accounting,worker.D1.generated_tokens,124996.0,132197.0,7201.0,5.760984351499248
+1,C,D,legacy progress accounting,worker.D1.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D1.queue_s.mean_ms,53.74595258110322,42.25045994722417,-11.495492633879046,-21.38857361683603
+1,C,D,legacy progress accounting,worker.D1.prefill_s.mean_ms,7.16781091147986,7.232175208628178,0.06436429714831782,0.8979631011922052
+1,C,D,legacy progress accounting,worker.D2.requests,112.0,156.0,44.0,39.285714285714285
+1,C,D,legacy progress accounting,worker.D2.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D2.local_cached_prompt_tokens,9512288.0,12019072.0,2506784.0,26.35311294191261
+1,C,D,legacy progress accounting,worker.D2.generated_tokens,132197.0,124996.0,-7201.0,-5.447173536464519
+1,C,D,legacy progress accounting,worker.D2.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D2.queue_s.mean_ms,32.59245867541592,37.36708489043686,4.7746262150209375,14.649481533660355
+1,C,D,legacy progress accounting,worker.D2.prefill_s.mean_ms,7.673996429990178,7.234346288710068,-0.4396501412801106,-5.729089729074493
+1,C,D,legacy progress accounting,worker.D3.requests,248.0,276.0,28.0,11.29032258064516
+1,C,D,legacy progress accounting,worker.D3.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D3.local_cached_prompt_tokens,18528672.0,18604368.0,75696.0,0.4085344054878839
+1,C,D,legacy progress accounting,worker.D3.generated_tokens,137993.0,144071.0,6078.0,4.40457124636757
+1,C,D,legacy progress accounting,worker.D3.preemption_events,0.0,0.0,0.0,
+1,C,D,legacy progress accounting,worker.D3.queue_s.mean_ms,50.47397322825066,45.30122245499945,-5.1727507732512095,-10.248352650700348
+1,C,D,legacy progress accounting,worker.D3.prefill_s.mean_ms,7.2660184852148015,6.948659088516581,-0.31735939669822066,-4.367720744779232
+1,D,E,initial queued accounting fix,throughput.input_tok_s,76015.44913053326,76558.08449761987,542.6353670866083,0.7138487942823283
+1,D,E,initial queued accounting fix,throughput.output_tok_s,742.8980375866586,748.201206270718,5.303168684059415,0.7138487942823248
+1,D,E,initial queued accounting fix,throughput.total_tok_s,76758.34716811992,77306.2857038906,547.9385357706778,0.7138487942823415
+1,D,E,initial queued accounting fix,throughput.request_s,0.9809292558107235,0.987931607476091,0.007002351665367446,0.7138487942823262
+1,D,E,initial queued accounting fix,client.ttft_ms.mean,325.2452263366176,310.2061743924573,-15.039051944160292,-4.623911659996323
+1,D,E,initial queued accounting fix,client.ttft_ms.p50,158.14622398465872,150.9689532686025,-7.177270716056228,-4.53837627938083
+1,D,E,initial queued accounting fix,client.ttft_ms.p95,1220.708188530988,1137.5070088077334,-83.20117972325465,-6.815812370635421
+1,D,E,initial queued accounting fix,client.ttft_ms.p99,2621.714890617879,2692.891171700324,71.1762810824448,2.7148749597890163
+1,D,E,initial queued accounting fix,client.tpot_ms.mean,4.339381319457671,4.339126255355403,-0.0002550641022684985,-0.005877890959358603
+1,D,E,initial queued accounting fix,client.tpot_ms.p50,4.318348475959036,4.3181944202228095,-0.00015405573622651048,-0.0035674688387045276
+1,D,E,initial queued accounting fix,client.tpot_ms.p95,5.714567786711712,5.743786588033987,0.0292188013222745,0.5113037838175272
+1,D,E,initial queued accounting fix,client.tpot_ms.p99,6.233373798497333,6.2362895035465,0.002915705049166384,0.046775713175893074
+1,D,E,initial queued accounting fix,client.jct_task_duration_s.mean,89.4110529870959,89.04959064610011,-0.3614623409957858,-0.4042703099
+1,D,E,initial queued accounting fix,client.jct_task_duration_s.p50,64.10501437773928,63.70952045591548,-0.3954939218237996,-0.6169469356848571
+1,D,E,initial queued accounting fix,client.jct_task_duration_s.p95,238.84696219821922,237.86686049392443,-0.9801017042947819,-0.4103471508594675
+1,D,E,initial queued accounting fix,client.jct_task_duration_s.p99,290.8308872820577,290.34323747301477,-0.4876498090429209,-0.16767469700354815
+1,D,E,initial queued accounting fix,prefill.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,D,E,initial queued accounting fix,prefill.local_computed_prompt_tokens,4285072.0,4079104.0,-205968.0,-4.806640355167895
+1,D,E,initial queued accounting fix,prefill.local_cached_prompt_tokens,52285040.0,52491008.0,205968.0,0.39393294908065485
+1,D,E,initial queued accounting fix,prefill.remote_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.generated_tokens,730.0,730.0,0.0,0.0
+1,D,E,initial queued accounting fix,prefill.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,D,E,initial queued accounting fix,prefill.prefix_hit_tokens,52285040.0,52491008.0,205968.0,0.39393294908065485
+1,D,E,initial queued accounting fix,prefill.external_query_tokens,4285072.0,4079104.0,-205968.0,-4.806640355167895
+1,D,E,initial queued accounting fix,prefill.external_hit_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.local_hit_fraction_of_prompt,0.9242520149155794,0.9278929481348738,0.0036409332192943733,0.39393294908066107
+1,D,E,initial queued accounting fix,prefill.local_hit_fraction_by_source,0.9242520149155794,0.9278929481348738,0.0036409332192943733,0.39393294908066107
+1,D,E,initial queued accounting fix,prefill.external_hit_fraction,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.queue_s.mean_ms,10.639010971947894,5.547346160683322,-5.091664811264572,-47.858441209336775
+1,D,E,initial queued accounting fix,prefill.prefill_s.mean_ms,206.68485441806484,196.7402407982425,-9.944613619822348,-4.81148637998758
+1,D,E,initial queued accounting fix,prefill.decode_s.mean_ms,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.bytes,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.transfers,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.failed_transfers,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.failed_notifications,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.nixl.xfer_time_s.mean_ms,,,,
+1,D,E,initial queued accounting fix,prefill.nixl.post_time_s.mean_ms,,,,
+1,D,E,initial queued accounting fix,prefill.sampled_running.mean,0.10245541709930318,0.10032275392095737,-0.002132663178345817,-2.081552385149893
+1,D,E,initial queued accounting fix,prefill.sampled_running.p95,1.0,1.0,0.0,0.0
+1,D,E,initial queued accounting fix,prefill.sampled_running.max_sampled,4.0,3.0,-1.0,-25.0
+1,D,E,initial queued accounting fix,prefill.sampled_waiting.mean,0.015128312006008173,0.005518974088320768,-0.009609337917687404,-63.518903588656016
+1,D,E,initial queued accounting fix,prefill.sampled_waiting.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.sampled_waiting.max_sampled,2.0,1.0,-1.0,-50.0
+1,D,E,initial queued accounting fix,prefill.sampled_capacity.mean,0.015128312006008173,0.005518974088320768,-0.009609337917687404,-63.518903588656016
+1,D,E,initial queued accounting fix,prefill.sampled_capacity.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.sampled_capacity.max_sampled,2.0,1.0,-1.0,-50.0
+1,D,E,initial queued accounting fix,prefill.sampled_deferred.mean,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.sampled_deferred.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,prefill.sampled_deferred.max_sampled,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.local_cached_prompt_tokens,52626896.0,52626896.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.remote_prompt_tokens,3943216.0,3943216.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.generated_tokens,552859.0,552859.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.prefix_hit_tokens,52626896.0,52626896.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.external_query_tokens,3943216.0,3943216.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.external_hit_tokens,3943216.0,3943216.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.local_hit_fraction_of_prompt,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,D,E,initial queued accounting fix,decode.local_hit_fraction_by_source,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,D,E,initial queued accounting fix,decode.external_hit_fraction,1.0,1.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.queue_s.mean_ms,45.54954961082604,46.8148960043,1.265346393473962,2.7779558838342924
+1,D,E,initial queued accounting fix,decode.prefill_s.mean_ms,7.0574896926800275,7.008028510728315,-0.04946118195171234,-0.7008325071025338
+1,D,E,initial queued accounting fix,decode.decode_s.mean_ms,3575.985636164702,3575.55832731512,-0.42730884958200477,-0.011949400614491837
+1,D,E,initial queued accounting fix,decode.nixl.bytes,581450858496.0,581450858496.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.nixl.transfers,730.0,730.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.nixl.failed_transfers,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.nixl.failed_notifications,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.nixl.xfer_time_s.mean_ms,37.77800136986303,39.361299999999986,1.5832986301369587,4.191059803920748
+1,D,E,initial queued accounting fix,decode.nixl.post_time_s.mean_ms,31.701447945205484,33.319986301369866,1.6185383561643825,5.105566026390822
+1,D,E,initial queued accounting fix,decode.sampled_running.mean,3.5011021245474208,3.510192646818733,0.009090522271312462,0.2596474466590309
+1,D,E,initial queued accounting fix,decode.sampled_running.p95,4.0,4.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.sampled_running.max_sampled,4.0,4.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.sampled_waiting.mean,0.017913369770090056,0.018130195113579994,0.00021682534348993823,1.2104106947648197
+1,D,E,initial queued accounting fix,decode.sampled_waiting.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.sampled_waiting.max_sampled,4.0,4.0,0.0,0.0
+1,D,E,initial queued accounting fix,decode.sampled_capacity.mean,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.sampled_capacity.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.sampled_capacity.max_sampled,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.sampled_deferred.mean,0.017913369770090056,0.018130195113579994,0.00021682534348993823,1.2104106947648197
+1,D,E,initial queued accounting fix,decode.sampled_deferred.p95,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,decode.sampled_deferred.max_sampled,4.0,4.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.P0.requests,559.0,601.0,42.0,7.5134168157423975
+1,D,E,initial queued accounting fix,worker.P0.local_computed_prompt_tokens,3348160.0,3415728.0,67568.0,2.0180636528720255
+1,D,E,initial queued accounting fix,worker.P0.local_cached_prompt_tokens,39526272.0,42030160.0,2503888.0,6.334743635827836
+1,D,E,initial queued accounting fix,worker.P0.generated_tokens,559.0,601.0,42.0,7.5134168157423975
+1,D,E,initial queued accounting fix,worker.P0.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.P0.queue_s.mean_ms,13.887321453188314,6.7338187142140455,-7.153502738974268,-51.511033017327726
+1,D,E,initial queued accounting fix,worker.P0.prefill_s.mean_ms,216.35855854303978,200.082229864094,-16.276328678945788,-7.522849471983319
+1,D,E,initial queued accounting fix,worker.P1.requests,117.0,80.0,-37.0,-31.62393162393162
+1,D,E,initial queued accounting fix,worker.P1.local_computed_prompt_tokens,590512.0,376016.0,-214496.0,-36.32373262524724
+1,D,E,initial queued accounting fix,worker.P1.local_cached_prompt_tokens,7552592.0,5532784.0,-2019808.0,-26.74324258479738
+1,D,E,initial queued accounting fix,worker.P1.generated_tokens,117.0,80.0,-37.0,-31.62393162393162
+1,D,E,initial queued accounting fix,worker.P1.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.P1.queue_s.mean_ms,0.02076774915186768,0.019205932039767504,-0.0015618171121001764,-7.520396652902173
+1,D,E,initial queued accounting fix,worker.P1.prefill_s.mean_ms,146.86670309951543,147.6851585903205,0.8184554908050643,0.5572777719742826
+1,D,E,initial queued accounting fix,worker.P2.requests,31.0,26.0,-5.0,-16.129032258064516
+1,D,E,initial queued accounting fix,worker.P2.local_computed_prompt_tokens,235712.0,176672.0,-59040.0,-25.0475156122726
+1,D,E,initial queued accounting fix,worker.P2.local_cached_prompt_tokens,3284864.0,3006752.0,-278112.0,-8.466469235864864
+1,D,E,initial queued accounting fix,worker.P2.generated_tokens,31.0,26.0,-5.0,-16.129032258064516
+1,D,E,initial queued accounting fix,worker.P2.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.P2.queue_s.mean_ms,0.02181439870788205,0.022260364718162097,0.0004459660102800467,2.0443653581838532
+1,D,E,initial queued accounting fix,worker.P2.prefill_s.mean_ms,298.6645479386131,309.6846273849503,11.020079446337206,3.689784918363411
+1,D,E,initial queued accounting fix,worker.P3.requests,23.0,23.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.P3.local_computed_prompt_tokens,110688.0,110688.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.P3.local_cached_prompt_tokens,1921312.0,1921312.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.P3.generated_tokens,23.0,23.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.P3.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.P3.queue_s.mean_ms,0.01561931212959082,0.018365478709987972,0.0027461665803971518,17.581866330685163
+1,D,E,initial queued accounting fix,worker.P3.prefill_s.mean_ms,151.89148916903397,152.36272326792064,0.47123409888666856,0.3102439125883156
+1,D,E,initial queued accounting fix,worker.D0.requests,186.0,186.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D0.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D0.local_cached_prompt_tokens,12491168.0,12491168.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D0.generated_tokens,151595.0,151595.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D0.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D0.queue_s.mean_ms,54.767296028633915,51.90059182394336,-2.8667042046905564,-5.234335840118455
+1,D,E,initial queued accounting fix,worker.D0.prefill_s.mean_ms,6.965461950649017,6.87040672487309,-0.09505522577592718,-1.3646650638450517
+1,D,E,initial queued accounting fix,worker.D1.requests,112.0,112.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D1.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D1.local_cached_prompt_tokens,9512288.0,9512288.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D1.generated_tokens,132197.0,132197.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D1.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D1.queue_s.mean_ms,42.25045994722417,45.18970699531825,2.9392470480940744,6.956722013832612
+1,D,E,initial queued accounting fix,worker.D1.prefill_s.mean_ms,7.232175208628178,7.230618839717603,-0.001556368910574868,-0.021520066448584906
+1,D,E,initial queued accounting fix,worker.D2.requests,156.0,156.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D2.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D2.local_cached_prompt_tokens,12019072.0,12019072.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D2.generated_tokens,124996.0,124996.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D2.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D2.queue_s.mean_ms,37.36708489043686,48.167272321641065,10.800187431204208,28.90294349390963
+1,D,E,initial queued accounting fix,worker.D2.prefill_s.mean_ms,7.234346288710068,7.46437178279918,0.23002549408911221,3.179630679942573
+1,D,E,initial queued accounting fix,worker.D3.requests,276.0,276.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D3.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D3.local_cached_prompt_tokens,18604368.0,18604368.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D3.generated_tokens,144071.0,144071.0,0.0,0.0
+1,D,E,initial queued accounting fix,worker.D3.preemption_events,0.0,0.0,0.0,
+1,D,E,initial queued accounting fix,worker.D3.queue_s.mean_ms,45.30122245499945,43.2826896312822,-2.018532823717244,-4.4558021049484475
+1,D,E,initial queued accounting fix,worker.D3.prefill_s.mean_ms,6.948659088516581,6.752513963189246,-0.19614512532733475,-2.822776636883597
+1,C,E,corrected progress accounting versus received-but-ignored progress,throughput.input_tok_s,76857.26883340813,76558.08449761987,-299.1843357882608,-0.38927266129734245
+1,C,E,corrected progress accounting versus received-but-ignored progress,throughput.output_tok_s,751.1251310580609,748.201206270718,-2.923924787342912,-0.3892726612973488
+1,C,E,corrected progress accounting versus received-but-ignored progress,throughput.total_tok_s,77608.39396446619,77306.2857038906,-302.1082605755946,-0.38927266129733085
+1,C,E,corrected progress accounting versus received-but-ignored progress,throughput.request_s,0.9917923840841598,0.987931607476091,-0.0038607766080688277,-0.3892726612973484
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.ttft_ms.mean,295.8034717503374,310.2061743924573,14.402702642119891,4.869010683646063
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.ttft_ms.p50,153.85137661360204,150.9689532686025,-2.8824233449995518,-1.87351157230056
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.ttft_ms.p95,1075.123570719732,1137.5070088077334,62.38343808800141,5.802443531792291
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.ttft_ms.p99,2125.8835708256875,2692.891171700324,567.0076008746364,26.671620621933318
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.tpot_ms.mean,4.3426933456248795,4.339126255355403,-0.003567090269476658,-0.08214004502690443
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.tpot_ms.p50,4.319204226154201,4.3181944202228095,-0.0010098059313916607,-0.02337944395583228
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.tpot_ms.p95,5.726685843223598,5.743786588033987,0.01710074481038859,0.298615032822587
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.tpot_ms.p99,6.243900668082013,6.2362895035465,-0.007611164535513026,-0.12189759158758376
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.jct_task_duration_s.mean,88.73926637369732,89.04959064610011,0.31032427240279503,0.3497034459310973
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.jct_task_duration_s.p50,64.40621161204763,63.70952045591548,-0.6966911561321467,-1.0817142301874276
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.jct_task_duration_s.p95,235.70862461822105,237.86686049392443,2.158235875703383,0.9156372106447498
+1,C,E,corrected progress accounting versus received-but-ignored progress,client.jct_task_duration_s.p99,289.34076726975854,290.34323747301477,1.0024702032562232,0.34646697481160643
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.local_computed_prompt_tokens,4089488.0,4079104.0,-10384.0,-0.253919317039199
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.local_cached_prompt_tokens,52480624.0,52491008.0,10384.0,0.019786350101325016
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.remote_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.generated_tokens,730.0,730.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.prefix_hit_tokens,52480624.0,52491008.0,10384.0,0.019786350101325016
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.external_query_tokens,4089488.0,4079104.0,-10384.0,-0.253919317039199
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.external_hit_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.local_hit_fraction_of_prompt,0.9277093883073804,0.9278929481348738,0.00018355982749340694,0.019786350101330178
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.local_hit_fraction_by_source,0.9277093883073804,0.9278929481348738,0.00018355982749340694,0.019786350101330178
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.external_hit_fraction,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.queue_s.mean_ms,1.8753418112046099,5.547346160683322,3.672004349478712,195.80453694039016
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.prefill_s.mean_ms,190.34765013940122,196.7402407982425,6.3925906588412715,3.3583764518026116
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.decode_s.mean_ms,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.bytes,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.transfers,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.failed_transfers,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.failed_notifications,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.xfer_time_s.mean_ms,,,,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.nixl.post_time_s.mean_ms,,,,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_running.mean,0.07320517918091449,0.10032275392095737,0.02711757474004288,37.04324617938067
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_running.p95,1.0,1.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_running.max_sampled,3.0,3.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_waiting.mean,0.0,0.005518974088320768,0.005518974088320768,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_waiting.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_waiting.max_sampled,0.0,1.0,1.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_capacity.mean,0.0,0.005518974088320768,0.005518974088320768,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_capacity.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_capacity.max_sampled,0.0,1.0,1.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_deferred.mean,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_deferred.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,prefill.sampled_deferred.max_sampled,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.prompt_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.local_cached_prompt_tokens,52626896.0,52626896.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.remote_prompt_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.generated_tokens,552859.0,552859.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.prefix_query_tokens,56570112.0,56570112.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.prefix_hit_tokens,52626896.0,52626896.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.external_query_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.external_hit_tokens,3943216.0,3943216.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.local_hit_fraction_of_prompt,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.local_hit_fraction_by_source,0.9302950646447368,0.9302950646447368,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.external_hit_fraction,1.0,1.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.queue_s.mean_ms,44.13285227237295,46.8148960043,2.6820437319270525,6.077204607974103
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.prefill_s.mean_ms,7.082715792555923,7.008028510728315,-0.07468728182760831,-1.0545006183377588
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.decode_s.mean_ms,3576.310849233135,3575.55832731512,-0.752521918014736,-0.02104184870216465
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.bytes,581450858496.0,581450858496.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.transfers,730.0,730.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.failed_transfers,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.failed_notifications,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.kv_expired_requests,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.xfer_time_s.mean_ms,36.549660273972606,39.361299999999986,2.81163972602738,7.692656251663105
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.nixl.post_time_s.mean_ms,30.683076712328777,33.319986301369866,2.636909589041089,8.59401947778448
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_running.mean,3.5410591110875864,3.510192646818733,-0.0308664642688532,-0.8716732282781069
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_running.p95,4.0,4.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_running.max_sampled,4.0,4.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_waiting.mean,0.01676253742363507,0.018130195113579994,0.0013676576899449254,8.159013491695696
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_waiting.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_waiting.max_sampled,4.0,4.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_capacity.mean,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_capacity.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_capacity.max_sampled,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_deferred.mean,0.01676253742363507,0.018130195113579994,0.0013676576899449254,8.159013491695696
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_deferred.p95,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,decode.sampled_deferred.max_sampled,4.0,4.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.requests,524.0,601.0,77.0,14.694656488549619
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.local_computed_prompt_tokens,2914928.0,3415728.0,500800.0,17.180527272028677
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.local_cached_prompt_tokens,35174928.0,42030160.0,6855232.0,19.48897237259448
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.generated_tokens,524.0,601.0,77.0,14.694656488549619
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.queue_s.mean_ms,2.6052865032675383,6.7338187142140455,4.128532210946507,158.4674931439794
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P0.prefill_s.mean_ms,184.50225719236522,200.082229864094,15.579972671728768,8.444326323598753
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.requests,159.0,80.0,-79.0,-49.685534591194966
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.local_computed_prompt_tokens,916272.0,376016.0,-540256.0,-58.96240417692563
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.local_cached_prompt_tokens,12704336.0,5532784.0,-7171552.0,-56.44964050069204
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.generated_tokens,159.0,80.0,-79.0,-49.685534591194966
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.queue_s.mean_ms,0.017716833419582377,0.019205932039767504,0.0014890986201851267,8.40499306461407
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P1.prefill_s.mean_ms,206.95294291308187,147.6851585903205,-59.26778432276137,-28.63829017771119
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.requests,24.0,26.0,2.0,8.333333333333332
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.local_computed_prompt_tokens,147600.0,176672.0,29072.0,19.696476964769648
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.local_cached_prompt_tokens,2680048.0,3006752.0,326704.0,12.19022942872665
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.generated_tokens,24.0,26.0,2.0,8.333333333333332
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.queue_s.mean_ms,0.024662372500946123,0.022260364718162097,-0.0024020077827840262,-9.739564929091383
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P2.prefill_s.mean_ms,244.77636829639474,309.6846273849503,64.90825908855558,26.517371566669983
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.requests,23.0,23.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.local_computed_prompt_tokens,110688.0,110688.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.local_cached_prompt_tokens,1921312.0,1921312.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.generated_tokens,23.0,23.0,0.0,0.0
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.queue_s.mean_ms,0.01828352232342181,0.018365478709987972,8.195638656616211e-05,0.44825272240444175
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.P3.prefill_s.mean_ms,151.9326552465234,152.36272326792064,0.43006802139723277,0.28306490181416993
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.requests,214.0,186.0,-28.0,-13.084112149532709
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.local_cached_prompt_tokens,12566864.0,12491168.0,-75696.0,-0.6023459790764029
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.generated_tokens,157673.0,151595.0,-6078.0,-3.854813443011803
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.queue_s.mean_ms,35.81641506508132,51.90059182394336,16.084176758862036,44.90727709525307
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D0.prefill_s.mean_ms,6.498802999452313,6.87040672487309,0.37160372542077624,5.71803338941176
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.requests,156.0,112.0,-44.0,-28.205128205128204
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.local_cached_prompt_tokens,12019072.0,9512288.0,-2506784.0,-20.85671838890723
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.generated_tokens,124996.0,132197.0,7201.0,5.760984351499248
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.queue_s.mean_ms,53.74595258110322,45.18970699531825,-8.556245585784971,-15.919795212250643
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D1.prefill_s.mean_ms,7.16781091147986,7.230618839717603,0.06280792823774295,0.8762497924875599
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.requests,112.0,156.0,44.0,39.285714285714285
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.local_cached_prompt_tokens,9512288.0,12019072.0,2506784.0,26.35311294191261
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.generated_tokens,132197.0,124996.0,-7201.0,-5.447173536464519
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.queue_s.mean_ms,32.59245867541592,48.167272321641065,15.574813646225145,47.78655639739456
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D2.prefill_s.mean_ms,7.673996429990178,7.46437178279918,-0.20962464719099838,-2.7316229438390116
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.requests,248.0,276.0,28.0,11.29032258064516
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.local_computed_prompt_tokens,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.local_cached_prompt_tokens,18528672.0,18604368.0,75696.0,0.4085344054878839
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.generated_tokens,137993.0,144071.0,6078.0,4.40457124636757
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.preemption_events,0.0,0.0,0.0,
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.queue_s.mean_ms,50.47397322825066,43.2826896312822,-7.191283596968454,-14.247508442516349
+1,C,E,corrected progress accounting versus received-but-ignored progress,worker.D3.prefill_s.mean_ms,7.2660184852148015,6.752513963189246,-0.5135045220255554,-7.067206380914884
