@@ -47,14 +47,12 @@ panels = [
 for ax, (title, key, scale, ylabel, direction) in zip(axes.flat, panels):
     vals = []
     for cap in CAPS:
-        changes = []
-        for rep in (1, 2):
-            a = f(record(cap, 'kv_aware_aff', rep), key)
-            b = f(record(cap, 'kv_aware_aff_progress', rep), key)
-            changes.append((b - a) if scale == 'absolute' else (b / a - 1) * 100)
-        vals.append(sum(changes) / len(changes))
+        a = sum(f(record(cap, 'kv_aware_aff', rep), key) for rep in (1, 2)) / 2
+        b = sum(f(record(cap, 'kv_aware_aff_progress', rep), key) for rep in (1, 2)) / 2
+        vals.append((b - a) if scale == 'absolute' else (b / a - 1) * 100)
     bars = ax.bar(x, vals, width=.46, color='#2563eb', zorder=3)
-    ax.bar_label(bars, labels=[f'{v:+.1f}' for v in vals], padding=3, fontsize=11)
+    labels = [f'{v:+.1f}' if scale == 'absolute' else f'{v:+.2f}' for v in vals]
+    ax.bar_label(bars, labels=labels, padding=3, fontsize=11)
     ax.axhline(0, color='#334155', linewidth=1)
     ax.grid(axis='y', color='#e2e8f0', linewidth=.8, zorder=0)
     ax.set_title(title, loc='left')
@@ -64,7 +62,7 @@ for ax, (title, key, scale, ylabel, direction) in zip(axes.flat, panels):
             fontsize=10.5, color='#475569')
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo - (hi - lo) * .12, hi + (hi - lo) * .17)
-fig.text(.5, -.005, 'Each bar is the arithmetic mean of two paired-run changes; '
+fig.text(.5, -.005, 'Each bar compares the mean of two progress-on runs with the mean of two progress-off runs; '
          '32 sessions / 730 requests per run.', ha='center', fontsize=11, color='#475569')
 fig.savefig(OUT / 'progress-impact.png', dpi=150, bbox_inches='tight')
 plt.close(fig)

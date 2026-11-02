@@ -5,7 +5,7 @@ benchmark results described in https://github.com/vllm-project/router/pull/469.
 No prompts, model weights, or raw dataset are included.
 
 - `figures/progress-impact.png`: progress on versus off with decode affinity;
-  each bar averages the changes from two independent paired runs.
+  each bar compares the means of two independent runs per setting.
 - `figures/five-policy-end-to-end.png`: five-policy comparison; each KV
   variant is the mean of its two runs, and Cache has one run.
 - `data/c4-worker-decomposition.csv`: C4 per-worker queue and prefill
