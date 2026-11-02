@@ -23,6 +23,10 @@ No prompts, model weights, or raw dataset are included.
 - `data/repeats-metrics.csv`: one row per validated run (36 total) with
   request/task metrics and aggregate P/D counters.
 - `data/workers.csv`: per-worker metrics for those runs.
+- `data/repeats-worker-detail.csv`: per-worker vLLM iteration-token sums and
+  receiver-side NIXL transfer time and size histograms. All 36 aggregate and
+  288 worker iteration sums match first-computed prompt plus generated tokens;
+  these counters are not GPU FLOPs or exact per-scheduler-step work.
 - `data/repeat-pairs.csv`: matched-run progress and Cache comparisons.
 
 Workload: 8 B300 GPUs, Qwen3-4B-Instruct-2507 BF16 TP1, 4P+4D, NIXL,
@@ -41,6 +45,8 @@ The charts can be recreated with Python, matplotlib, and numpy:
 ```sh
 python3 make_figures.py
 python3 make_c4_worker_analysis.py
+# To re-extract the compact worker data from the original collected report:
+python3 extract_worker_details.py /path/to/report-data.json
 ```
 
 `SHA256SUMS` records the published data, scripts, and image contents.
