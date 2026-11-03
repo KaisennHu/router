@@ -1,0 +1,178 @@
+{
+  "formal": {
+    "without_progress": {
+      "worker": 2,
+      "requests": 91.0,
+      "queue_mean_ms": 4853.74129171084,
+      "prefill_mean_ms": 990.3260733379605,
+      "decode_mean_ms": 15137.801439680446,
+      "local_hit_pct": 14.365142022071792,
+      "kv_usage_p95_pct": 98.99747652481418,
+      "kv_usage_peak_sampled_pct": 99.97596690299211,
+      "running_mean": 13.001610169179553,
+      "running_p95": 16.0,
+      "capacity_wait": {
+        "mean": 4.0328166880579825,
+        "max_sampled": 15.0,
+        "observed_s": 111.2018449306488,
+        "nonzero_time_fraction": 0.810399730781864,
+        "p50": 4.0,
+        "p95": 11.0,
+        "p99": 14.0
+      },
+      "other_workers_queue_mean_ms": [
+        27.162630763517594,
+        25.812430884284172,
+        49.89529482110311
+      ],
+      "preemptions": 0.0,
+      "sticky_decisions": 375.0,
+      "total_requests": 512
+    },
+    "with_progress": {
+      "worker": 3,
+      "requests": 83.0,
+      "queue_mean_ms": 5572.864153865635,
+      "prefill_mean_ms": 1049.1592637319343,
+      "decode_mean_ms": 16010.405615437776,
+      "local_hit_pct": 6.72633737388401,
+      "kv_usage_p95_pct": 98.15116818017955,
+      "kv_usage_peak_sampled_pct": 99.88498446431944,
+      "running_mean": 12.927877347314716,
+      "running_p95": 16.0,
+      "capacity_wait": {
+        "mean": 4.2983074307102465,
+        "max_sampled": 17.0,
+        "observed_s": 108.51039695739746,
+        "nonzero_time_fraction": 0.8549732026495227,
+        "p50": 4.0,
+        "p95": 10.0,
+        "p99": 15.0
+      },
+      "other_workers_queue_mean_ms": [
+        25.21753480812167,
+        34.25762053268651,
+        26.894102434123884
+      ],
+      "preemptions": 0.0,
+      "sticky_decisions": 375.0,
+      "total_requests": 512
+    }
+  },
+  "diagnostic": {
+    "without_progress": {
+      "worker": 3,
+      "requests": 68,
+      "sessions": 18,
+      "bound": {
+        "requests": 50,
+        "mean_input_tokens": 64616.96,
+        "mean_output_tokens": 286.56,
+        "mean_queue_ms": 8369.588568173349,
+        "mean_prefill_ms": 1600.078284991905,
+        "local_hit_pct": 16.409314211005903
+      },
+      "unbound": {
+        "requests": 18,
+        "mean_input_tokens": 401.77777777777777,
+        "mean_output_tokens": 18.88888888888889,
+        "mean_queue_ms": 8.758760678271452,
+        "mean_prefill_ms": 36.81447093064586,
+        "local_hit_pct": 0.0
+      },
+      "other_bound": {
+        "requests": 43,
+        "mean_input_tokens": 42690.976744186046,
+        "mean_output_tokens": 229.25581395348837,
+        "mean_queue_ms": 14.285035355579714,
+        "mean_prefill_ms": 141.64513662500784,
+        "local_hit_pct": 85.7807760694488
+      },
+      "sampled_remaining_absolute_error_tokens": {
+        "n": 661,
+        "mean": 24748.043872919818,
+        "p50": 16376.0,
+        "p95": 88022.0,
+        "p99": 138778.59999999995
+      },
+      "shadow_valid_unbound_decisions": 35,
+      "shadow_selected_not_minimum_count": 0
+    },
+    "with_progress": {
+      "worker": 0,
+      "requests": 68,
+      "sessions": 18,
+      "bound": {
+        "requests": 50,
+        "mean_input_tokens": 64616.96,
+        "mean_output_tokens": 286.56,
+        "mean_queue_ms": 8461.046983925626,
+        "mean_prefill_ms": 1558.2851461041719,
+        "local_hit_pct": 18.37932332316469
+      },
+      "unbound": {
+        "requests": 18,
+        "mean_input_tokens": 401.77777777777777,
+        "mean_output_tokens": 18.88888888888889,
+        "mean_queue_ms": 9.998218984239632,
+        "mean_prefill_ms": 41.27269941899512,
+        "local_hit_pct": 0.0
+      },
+      "other_bound": {
+        "requests": 43,
+        "mean_input_tokens": 42690.976744186046,
+        "mean_output_tokens": 229.25581395348837,
+        "mean_queue_ms": 10.25409230875761,
+        "mean_prefill_ms": 143.00767625790348,
+        "local_hit_pct": 85.7807760694488
+      },
+      "sampled_remaining_absolute_error_tokens": {
+        "n": 653,
+        "mean": 9541.180704441042,
+        "p50": 8180.0,
+        "p95": 42073.59999999999,
+        "p99": 89991.68000000002
+      },
+      "shadow_valid_unbound_decisions": 35,
+      "shadow_selected_not_minimum_count": 0
+    },
+    "same_hot_worker_request_ids": 68,
+    "same_hot_worker_sessions": 18,
+    "request_population_per_run": 128,
+    "sessions_per_run": 32,
+    "worker_relabel_comparison": {
+      "matched_requests": 128,
+      "worker_changed_count": 124,
+      "worker_relabel_known_requests": 128,
+      "worker_changed_after_optimal_relabel_count": 9,
+      "optimal_worker_relabel": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "queue_delta_ms": {
+        "n": 128,
+        "mean": 38.46342381439172,
+        "p50": 0.00044051557779312134,
+        "p95": 4764.891286590135,
+        "p99": 11023.053676392883
+      },
+      "prefill_delta_ms": {
+        "n": 128,
+        "mean": -16.91223211673787,
+        "p50": 0.6903333123773336,
+        "p95": 344.86889827530825,
+        "p99": 579.3919839756568
+      },
+      "ttft_delta_ms": {
+        "n": 128,
+        "mean": 21.27222360650194,
+        "p50": 2.0860556978732347,
+        "p95": 5373.230791091911,
+        "p99": 10832.480880101213
+      }
+    }
+  },
+  "limits": "One formal run per arm. Diagnostic replays are separate and instrumented. Worker labels can permute between runs. Capacity waiting and sampled KV usage show a bottleneck, but do not independently prove which admission constraint or eviction caused individual misses."
+}

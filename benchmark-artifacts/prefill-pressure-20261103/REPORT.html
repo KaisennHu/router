@@ -736,6 +736,55 @@ ms，decode 均值 2,532.73 → 4,869.13 (+92.25%) ms。</li>
 </ul>
 <p>这些是同步观测，不足以单独证明吞吐下降的原因；不同并发的合成 token ID
 也可能不同。</p>
+<p><strong>C32：Affinity 热点的证据</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>策略</th>
+<th>热点 worker</th>
+<th style="text-align: right;">请求数</th>
+<th>Queue 均值 ms：热点 / 其他 worker</th>
+<th style="text-align: right;">热点占总排队时间</th>
+<th style="text-align: right;">热点命中率 %</th>
+<th style="text-align: right;">KV 使用率 P95 %</th>
+<th style="text-align: right;">capacity 等待非零时间占比 %</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>KV+A</td>
+<td>W2</td>
+<td style="text-align: right;">91/512</td>
+<td>4,853.74 / 25.81–49.90</td>
+<td style="text-align: right;">96.88%</td>
+<td style="text-align: right;">14.37</td>
+<td style="text-align: right;">99.00</td>
+<td style="text-align: right;">81.04</td>
+</tr>
+<tr class="even">
+<td>Full</td>
+<td>W3</td>
+<td style="text-align: right;">83/512</td>
+<td>5,572.86 / 25.22–34.26</td>
+<td style="text-align: right;">97.39%</td>
+<td style="text-align: right;">6.73</td>
+<td style="text-align: right;">98.15</td>
+<td style="text-align: right;">85.50</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>独立的 32-session 诊断中，开关两组均将同样的 68/128 个请求集中到一个
+worker，来自 18 个 session。初始的 18 个未绑定请求平均 402 输入
+token；后续 50 个绑定请求平均 64,617 输入 token，开启 Progress
+时平均排队 8,461.05 ms。</li>
+<li>两次运行物理 worker 编号会轮换：直接比较有 124/128
+个请求换编号，按最佳一一映射重标后为
+9/128；这仍不能独立证明因果。Affinity 在绑定有效时直接选择原
+worker，较准确的剩余量不会自动把绑定请求移走。</li>
+<li>KV 占用和 capacity
+排队支持资源压力解释；现有数据不能确定具体触发了哪一条准入限制，也不能证明缓存逐出。该压力子集和每组单轮实验不代表全部负载。</li>
+</ul>
 <details>
 <summary>各组 TTFT、TPOT、JCT 全部分位数及相对 Cache 的变化</summary>
 

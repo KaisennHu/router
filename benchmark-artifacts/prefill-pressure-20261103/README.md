@@ -40,3 +40,7 @@ with confirmed worker scheduling steps and per-request client timings. These
 diagnostics are excluded from performance comparisons. A shadow no-progress
 ranking uses the actual progress-on trajectory and cannot by itself establish
 what an independently executed no-progress run would have done.
+
+`diagnostic-hotspot-analysis.json` summarizes the C32 affinity hotspot and
+request-level evidence. Physical worker labels can rotate across independent
+runs; relabeled placement counts are descriptive, not causal estimates.

@@ -478,6 +478,14 @@
       "kv_aware -> kv_aware_progress": {
         "matched_requests": 128,
         "worker_changed_count": 81,
+        "worker_relabel_known_requests": 128,
+        "worker_changed_after_optimal_relabel_count": 71,
+        "optimal_worker_relabel": [
+          1,
+          0,
+          2,
+          3
+        ],
         "queue_delta_ms": {
           "n": 128,
           "mean": 24.85947933018906,
@@ -503,6 +511,14 @@
       "kv_aware_affinity -> kv_aware_affinity_progress": {
         "matched_requests": 128,
         "worker_changed_count": 95,
+        "worker_relabel_known_requests": 128,
+        "worker_changed_after_optimal_relabel_count": 29,
+        "optimal_worker_relabel": [
+          0,
+          2,
+          3,
+          1
+        ],
         "queue_delta_ms": {
           "n": 128,
           "mean": 15.928205186355626,
@@ -530,6 +546,14 @@
       "kv_aware -> kv_aware_progress": {
         "matched_requests": 128,
         "worker_changed_count": 108,
+        "worker_relabel_known_requests": 128,
+        "worker_changed_after_optimal_relabel_count": 67,
+        "optimal_worker_relabel": [
+          1,
+          0,
+          3,
+          2
+        ],
         "queue_delta_ms": {
           "n": 128,
           "mean": 4.080453752976609,
@@ -555,6 +579,14 @@
       "kv_aware_affinity -> kv_aware_affinity_progress": {
         "matched_requests": 128,
         "worker_changed_count": 124,
+        "worker_relabel_known_requests": 128,
+        "worker_changed_after_optimal_relabel_count": 9,
+        "optimal_worker_relabel": [
+          1,
+          2,
+          3,
+          0
+        ],
         "queue_delta_ms": {
           "n": 128,
           "mean": 38.46342381439172,
