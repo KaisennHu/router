@@ -1,0 +1,583 @@
+{
+  "pilot": {
+    "client_requests": 32,
+    "slot_request_ids": 32,
+    "engine_ids": 32,
+    "worker_request_ids": 32,
+    "normalized_worker_request_ids": 32,
+    "fully_joined_requests": 32,
+    "ledger_event_mismatches": 0,
+    "queue_ms": {
+      "n": 32,
+      "mean": 8.62657577090431,
+      "p50": 0.04760990850627422,
+      "p95": 0.15073821414262056,
+      "p99": 189.23084640409832
+    },
+    "prefill_ms": {
+      "n": 32,
+      "mean": 204.14017923758365,
+      "p50": 41.338077979162335,
+      "p95": 850.2854715101421,
+      "p99": 942.2129170782866
+    },
+    "sampled_remaining_signed_error_tokens": {
+      "n": 103,
+      "mean": 4329.174757281553,
+      "p50": 0.0,
+      "p95": 16382.0,
+      "p99": 24573.0
+    },
+    "sampled_remaining_absolute_error_tokens": {
+      "n": 103,
+      "mean": 4329.174757281553,
+      "p50": 0.0,
+      "p95": 16382.0,
+      "p99": 24573.0
+    },
+    "shadow_valid_unbound_decisions": 32,
+    "shadow_selected_not_minimum_count": 0,
+    "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+    "timing_crosscheck": {
+      "queue": {
+        "prometheus_mean_ms": 8.62657577090431,
+        "trace_mean_ms": 8.62657577090431,
+        "difference_ms": 0.0
+      },
+      "prefill": {
+        "prometheus_mean_ms": 204.35804604494479,
+        "trace_mean_ms": 204.14017923758365,
+        "difference_ms": -0.2178668073611334
+      }
+    }
+  },
+  "runs": {
+    "16": {
+      "kv_aware": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 35.62169169890694,
+          "p50": 0.07168902084231377,
+          "p95": 272.40621452219784,
+          "p99": 747.2401405964048
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 373.64347169932444,
+          "p50": 68.99281265214086,
+          "p95": 1455.6953351479024,
+          "p99": 2811.5254219435164
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 476,
+          "mean": 15901.38025210084,
+          "p50": 0.0,
+          "p95": 65522.0,
+          "p99": 120842.5
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 476,
+          "mean": 15901.38025210084,
+          "p50": 0.0,
+          "p95": 65522.0,
+          "p99": 120842.5
+        },
+        "shadow_valid_unbound_decisions": 128,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 35.62169169890694,
+            "trace_mean_ms": 35.62169169890694,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 373.88041634039837,
+            "trace_mean_ms": 373.64347169932444,
+            "difference_ms": -0.23694464107393287
+          }
+        }
+      },
+      "kv_aware_progress": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 60.481171029096004,
+          "p50": 0.05462882108986378,
+          "p95": 385.15818763989915,
+          "p99": 1380.1862090080979
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 384.85257201682543,
+          "p50": 68.59924620948732,
+          "p95": 1460.3533418616275,
+          "p99": 3038.0532111600046
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 477,
+          "mean": 4308.117400419287,
+          "p50": 0.0,
+          "p95": 16378.0,
+          "p99": 16382.48
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 477,
+          "mean": 4308.117400419287,
+          "p50": 0.0,
+          "p95": 16378.0,
+          "p99": 16382.48
+        },
+        "shadow_valid_unbound_decisions": 128,
+        "shadow_selected_not_minimum_count": 6,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 60.481171029096004,
+            "trace_mean_ms": 60.481171029096004,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 385.1138408317638,
+            "trace_mean_ms": 384.85257201682543,
+            "difference_ms": -0.2612688149383757
+          }
+        }
+      },
+      "kv_aware_affinity": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 221.2019566395611,
+          "p50": 0.07325876504182816,
+          "p95": 667.6749196369187,
+          "p99": 6300.572648621177
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 380.8946858807758,
+          "p50": 66.53298693709075,
+          "p95": 1422.2050135256702,
+          "p99": 3092.9502096818787
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 475,
+          "mean": 16217.113684210526,
+          "p50": 0.0,
+          "p95": 65520.0,
+          "p99": 123729.13999999993
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 475,
+          "mean": 16217.113684210526,
+          "p50": 0.0,
+          "p95": 65520.0,
+          "p99": 123729.13999999993
+        },
+        "shadow_valid_unbound_decisions": 35,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 221.2019566395611,
+            "trace_mean_ms": 221.2019566395611,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 381.1410487287503,
+            "trace_mean_ms": 380.8946858807758,
+            "difference_ms": -0.2463628479745239
+          }
+        }
+      },
+      "kv_aware_affinity_progress": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 237.13016182591673,
+          "p50": 0.05353381857275963,
+          "p95": 661.8181240279212,
+          "p99": 6135.4399478808045
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 390.6806425184186,
+          "p50": 68.78984509967268,
+          "p95": 1550.4013125319025,
+          "p99": 2931.1641736794277
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 476,
+          "mean": 4278.848739495798,
+          "p50": 0.0,
+          "p95": 16378.0,
+          "p99": 16384.0
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 476,
+          "mean": 4278.848739495798,
+          "p50": 0.0,
+          "p95": 16378.0,
+          "p99": 16384.0
+        },
+        "shadow_valid_unbound_decisions": 35,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 237.13016182591673,
+            "trace_mean_ms": 237.13016182591673,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 390.9315638447879,
+            "trace_mean_ms": 390.6806425184186,
+            "difference_ms": -0.25092132636928
+          }
+        }
+      }
+    },
+    "32": {
+      "kv_aware": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 798.521765456826,
+          "p50": 0.09251362644135952,
+          "p95": 5041.463173506779,
+          "p99": 8127.683354737237
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 436.1658152229211,
+          "p50": 74.15218534879386,
+          "p95": 1715.800608205607,
+          "p99": 3010.2339427219704
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 484,
+          "mean": 15979.626033057852,
+          "p50": 0.0,
+          "p95": 65447.94999999998,
+          "p99": 116080.64000000013
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 484,
+          "mean": 15979.626033057852,
+          "p50": 0.0,
+          "p95": 65447.94999999998,
+          "p99": 116080.64000000013
+        },
+        "shadow_valid_unbound_decisions": 128,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 798.521765456826,
+            "trace_mean_ms": 798.521765456826,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 436.40389673237223,
+            "trace_mean_ms": 436.1658152229211,
+            "difference_ms": -0.23808150945114903
+          }
+        }
+      },
+      "kv_aware_progress": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 802.6022192098026,
+          "p50": 0.07991353049874306,
+          "p95": 4460.128149064256,
+          "p99": 8837.15950682294
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 466.3061885185016,
+          "p50": 77.09059305489063,
+          "p95": 2180.0828828709145,
+          "p99": 2928.199174487964
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 496,
+          "mean": 4247.389112903225,
+          "p50": 0.0,
+          "p95": 16372.0,
+          "p99": 16382.0
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 496,
+          "mean": 4247.389112903225,
+          "p50": 0.0,
+          "p95": 16372.0,
+          "p99": 16382.0
+        },
+        "shadow_valid_unbound_decisions": 128,
+        "shadow_selected_not_minimum_count": 4,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 802.6022192098026,
+            "trace_mean_ms": 802.6022192098026,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 466.5674398493138,
+            "trace_mean_ms": 466.3061885185016,
+            "difference_ms": -0.26125133081222884
+          }
+        }
+      },
+      "kv_aware_affinity": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 3335.8950574074697,
+          "p50": 0.12105214409530163,
+          "p95": 16405.089088436205,
+          "p99": 24152.299139457766
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 765.9451623840141,
+          "p50": 198.7310629338026,
+          "p95": 2594.5902168517923,
+          "p99": 5970.438391594226
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 661,
+          "mean": -2116.143721633888,
+          "p50": 0.0,
+          "p95": 57316.0,
+          "p99": 102146.59999999982
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 661,
+          "mean": 24748.043872919818,
+          "p50": 16376.0,
+          "p95": 88022.0,
+          "p99": 138778.59999999995
+        },
+        "shadow_valid_unbound_decisions": 35,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 3335.8950574074697,
+            "trace_mean_ms": 3335.8950574074697,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 766.2053559724882,
+            "trace_mean_ms": 765.9451623840141,
+            "difference_ms": -0.26019358847406693
+          }
+        }
+      },
+      "kv_aware_affinity_progress": {
+        "client_requests": 128,
+        "slot_request_ids": 128,
+        "engine_ids": 128,
+        "worker_request_ids": 128,
+        "normalized_worker_request_ids": 128,
+        "fully_joined_requests": 128,
+        "ledger_event_mismatches": 0,
+        "queue_ms": {
+          "n": 128,
+          "mean": 3374.3584812218614,
+          "p50": 0.12766732834279537,
+          "p95": 14456.51741723995,
+          "p99": 24618.002989287503
+        },
+        "prefill_ms": {
+          "n": 128,
+          "mean": 749.0329302672762,
+          "p50": 167.036484926939,
+          "p95": 2806.1547133140257,
+          "p99": 5509.993847492164
+        },
+        "sampled_remaining_signed_error_tokens": {
+          "n": 653,
+          "mean": 1111.802450229709,
+          "p50": 8179.0,
+          "p95": 16360.0,
+          "p99": 16380.0
+        },
+        "sampled_remaining_absolute_error_tokens": {
+          "n": 653,
+          "mean": 9541.180704441042,
+          "p50": 8180.0,
+          "p95": 42073.59999999999,
+          "p99": 89991.68000000002
+        },
+        "shadow_valid_unbound_decisions": 35,
+        "shadow_selected_not_minimum_count": 0,
+        "semantics": "Worker samples are confirmed scheduled prefill states; queued states without prefix accounting are excluded. Remaining error is sampled at worker steps and includes delivery delay. Shadow ranking retains each active request's original reservation on the observed progress-on trajectory; it is not a measured counterfactual run or proof of end-to-end causation.",
+        "timing_crosscheck": {
+          "queue": {
+            "prometheus_mean_ms": 3374.3584812218614,
+            "trace_mean_ms": 3374.3584812218614,
+            "difference_ms": 0.0
+          },
+          "prefill": {
+            "prometheus_mean_ms": 749.3019299618027,
+            "trace_mean_ms": 749.0329302672762,
+            "difference_ms": -0.26899969452642836
+          }
+        }
+      }
+    }
+  },
+  "comparisons": {
+    "16": {
+      "kv_aware -> kv_aware_progress": {
+        "matched_requests": 128,
+        "worker_changed_count": 81,
+        "queue_delta_ms": {
+          "n": 128,
+          "mean": 24.85947933018906,
+          "p50": -0.005765119567513466,
+          "p95": 0.08482390549033864,
+          "p99": 1114.7547674458476
+        },
+        "prefill_delta_ms": {
+          "n": 128,
+          "mean": 11.209100317500997,
+          "p50": 1.3191793113946915,
+          "p95": 129.0223164483903,
+          "p99": 344.4083212874832
+        },
+        "ttft_delta_ms": {
+          "n": 128,
+          "mean": 43.339436830137856,
+          "p50": 3.354088868945837,
+          "p95": 267.2557410318403,
+          "p99": 1440.9531982243063
+        }
+      },
+      "kv_aware_affinity -> kv_aware_affinity_progress": {
+        "matched_requests": 128,
+        "worker_changed_count": 95,
+        "queue_delta_ms": {
+          "n": 128,
+          "mean": 15.928205186355626,
+          "p50": -0.011428724974393845,
+          "p95": 1.2554425280541033,
+          "p99": 762.0310420589533
+        },
+        "prefill_delta_ms": {
+          "n": 128,
+          "mean": 9.785956637642812,
+          "p50": -0.1251990906894207,
+          "p95": 103.25733220670355,
+          "p99": 402.7294764714318
+        },
+        "ttft_delta_ms": {
+          "n": 128,
+          "mean": 24.4390331536124,
+          "p50": -0.9175045415759087,
+          "p95": 227.94045712798828,
+          "p99": 850.0598655827345
+        }
+      }
+    },
+    "32": {
+      "kv_aware -> kv_aware_progress": {
+        "matched_requests": 128,
+        "worker_changed_count": 108,
+        "queue_delta_ms": {
+          "n": 128,
+          "mean": 4.080453752976609,
+          "p50": 0.0032240059226751328,
+          "p95": 1376.1807430302715,
+          "p99": 4169.836559137339
+        },
+        "prefill_delta_ms": {
+          "n": 128,
+          "mean": 30.140373295580503,
+          "p50": 1.4836753252893686,
+          "p95": 281.37494293041493,
+          "p99": 795.3374722320594
+        },
+        "ttft_delta_ms": {
+          "n": 128,
+          "mean": 54.70416855314397,
+          "p50": 9.465966606512666,
+          "p95": 1427.5526540819535,
+          "p99": 4689.93488251698
+        }
+      },
+      "kv_aware_affinity -> kv_aware_affinity_progress": {
+        "matched_requests": 128,
+        "worker_changed_count": 124,
+        "queue_delta_ms": {
+          "n": 128,
+          "mean": 38.46342381439172,
+          "p50": 0.00044051557779312134,
+          "p95": 4764.891286590135,
+          "p99": 11023.053676392883
+        },
+        "prefill_delta_ms": {
+          "n": 128,
+          "mean": -16.91223211673787,
+          "p50": 0.6903333123773336,
+          "p95": 344.86889827530825,
+          "p99": 579.3919839756568
+        },
+        "ttft_delta_ms": {
+          "n": 128,
+          "mean": 21.27222360650194,
+          "p50": 2.0860556978732347,
+          "p95": 5373.230791091911,
+          "p99": 10832.480880101213
+        }
+      }
+    }
+  },
+  "note": "Diagnostic replays use a separate, instrumented binary and 32 sessions; they are not additional performance samples. Shadow rankings are computed on the observed progress-on trajectory and are not causal counterfactuals."
+}
