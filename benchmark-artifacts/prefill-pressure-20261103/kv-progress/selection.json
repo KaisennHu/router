@@ -1,0 +1,61 @@
+{
+  "name": "agentx-prefill-pressure-128x4",
+  "dataset": "semianalysisai/cc-traces-weka-062126",
+  "revision": "23f152f6f0f9399a85901b89a6458def0ef16729",
+  "source_sha256": "29b6a19e751ff5230771519aab755f80a0f43a4ba9cf96b72d3a6a437ec99276",
+  "subset_sha256": "ad5b4239f0b29add56064bade04114c7a4025c3b777a5f2ce587345889a29b94",
+  "seed": "20261103",
+  "selection": "Retain each source session's first four chronological model requests. Require every original output to be positive and context <= 196608, session output <= 2048 and estimated novel input >= 32768 tokens. Select the 128 smallest session output totals, breaking ties by sha256(seed:id). Original request fields and hash snapshots are unchanged.",
+  "pilot_selection": null,
+  "source_sessions": 393,
+  "eligible_sessions": 217,
+  "sessions": 128,
+  "requests": 512,
+  "input_tokens": 21739008,
+  "effective_output_tokens": 111278,
+  "source_zero_output_requests_mapped_to_one": 0,
+  "subagent_requests": 16,
+  "estimated_novel_input_tokens": 8130112,
+  "estimated_earlier_prefix_tokens": 13608896,
+  "estimated_earlier_prefix_fraction": 0.6260127417037613,
+  "session_output_tokens_distribution": {
+    "min": 215,
+    "mean": 869.359375,
+    "p50": 894.0,
+    "p95": 1207.8,
+    "p99": 1270.03,
+    "max": 1282
+  },
+  "session_estimated_novel_input_tokens_distribution": {
+    "min": 36608,
+    "mean": 63516.5,
+    "p50": 55616.0,
+    "p95": 106777.59999999998,
+    "p99": 162103.68000000002,
+    "max": 236544
+  },
+  "input_tokens_distribution": {
+    "min": 128,
+    "mean": 42459,
+    "p50": 45984.0,
+    "p95": 92451.19999999997,
+    "p99": 148810.23999999944,
+    "max": 163904
+  },
+  "output_tokens_distribution": {
+    "min": 1,
+    "mean": 217.33984375,
+    "p50": 184.0,
+    "p95": 548.25,
+    "p99": 766.3799999999994,
+    "max": 841
+  },
+  "source_first4_span_seconds_distribution": {
+    "min": 5.298,
+    "mean": 106.586484375,
+    "p50": 17.477,
+    "p95": 266.1325999999999,
+    "p99": 2226.264850000009,
+    "max": 5007.429
+  }
+}
