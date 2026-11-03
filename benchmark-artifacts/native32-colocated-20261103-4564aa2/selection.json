@@ -1,0 +1,17 @@
+{
+  "name": "native32_bounded",
+  "source_sha256": "29b6a19e751ff5230771519aab755f80a0f43a4ba9cf96b72d3a6a437ec99276",
+  "subset_sha256": "3d7e5e46b5488ade48073ad273199c4abb34ec1c2b5a91e7db607760e013a279",
+  "dataset": "semianalysisai/cc-traces-weka-062126",
+  "revision": "23f152f6f0f9399a85901b89a6458def0ef16729",
+  "seed": 20261029,
+  "selection": "32 complete sessions; first sha256(20261029:id) among20..26 requests,max context<=196608,actual AgentInfer effective root/cross-agent gap<=30s under same-agent gap scale0. Original requests/hash snapshots/output lengths/timing graph preserved. Release-delay check uses the unmodified AgentInfer converter.",
+  "sessions": 32,
+  "requests": 730,
+  "input_tokens": 56570112,
+  "effective_output_tokens": 552859,
+  "max_context": 179631,
+  "min_input": 256,
+  "max_input": 177984,
+  "max_effective_gap_s": 3.057
+}
