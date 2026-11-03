@@ -38,8 +38,18 @@ const DP_RANK_METADATA: &str = "x-data-parallel-rank";
 const STREAM_BUFFER_CAPACITY: usize = 32;
 
 pub(crate) type FirstOutputCallback = Arc<dyn Fn() + Send + Sync + 'static>;
-pub(crate) type PrefillProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync + 'static>;
-type PrefillProgressCapabilityCache = Arc<DashMap<String, Arc<OnceCell<Result<bool, String>>>>>;
+/// The first QUEUED snapshot may be only a conservative upper bound: the
+/// worker has not yet confirmed the request's prefix cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrefillProgressKind {
+    Snapshot,
+    InitialUnconfirmedQueue,
+}
+
+pub(crate) type PrefillProgressCallback =
+    Arc<dyn Fn(u64, u64, PrefillProgressKind) + Send + Sync + 'static>;
+type PrefillProgressCapabilityCache =
+    Arc<DashMap<String, Arc<tokio::sync::OnceCell<Result<bool, String>>>>>;
 
 /// P/D fields layered on a prepared chat. Default is a colocated request.
 #[derive(Clone, Debug, Default)]
@@ -557,6 +567,7 @@ struct PrefillProgressState {
     stale_after: Option<Duration>,
     last_received: tokio::time::Instant,
     sequence: u64,
+    initial_queued_prompt: Option<u32>,
     pending: bool,
     stale: bool,
 }
@@ -574,6 +585,7 @@ impl PrefillProgressState {
             stale_after,
             last_received: tokio::time::Instant::now(),
             sequence: 0,
+            initial_queued_prompt: None,
             stale: false,
         }
     }
@@ -598,6 +610,14 @@ impl PrefillProgressState {
             metrics::histogram!("vllm_router_prefill_progress_update_gap_seconds")
                 .record(self.last_received.elapsed().as_secs_f64());
         }
+        // An unchanged initial queue has not confirmed the prefix cache, even
+        // after a delayed or coalesced update. A real phase change ends it.
+        let first_or_unchanged =
+            self.sequence == 0 || self.initial_queued_prompt == Some(progress.prompt_tokens);
+        let initial_queue = first_or_unchanged
+            && progress.phase == super::pb::PrefillPhase::Queued as i32
+            && !progress.cache_accounting_final;
+        self.initial_queued_prompt = initial_queue.then_some(progress.prompt_tokens);
         self.sequence = progress.sequence;
         self.last_received = tokio::time::Instant::now();
         self.pending = progress.remaining_compute_tokens != 0;
@@ -605,6 +625,11 @@ impl PrefillProgressState {
         callback(
             progress.sequence,
             u64::from(progress.remaining_compute_tokens),
+            if initial_queue {
+                PrefillProgressKind::InitialUnconfirmedQueue
+            } else {
+                PrefillProgressKind::Snapshot
+            },
         );
     }
 
@@ -1176,6 +1201,172 @@ mod tests {
         manager.begin_prefill(&target, 100);
         let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
         (manager, slot, target)
+    }
+
+    #[test]
+    fn initial_queued_progress_stays_unconfirmed_across_sequence_gaps() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback = Arc::new(move |sequence, remaining, kind| {
+            sink.lock().unwrap().push((sequence, remaining, kind));
+        });
+        let mut state = PrefillProgressState::new("request".into(), Some(callback), None);
+        let mut queued = progress(2, 100).prefill_progress.unwrap();
+        queued.phase = super::super::pb::PrefillPhase::Queued as i32;
+        queued.total_compute_tokens = 100;
+        state.observe(&queued);
+        queued.sequence = 3;
+        state.observe(&queued);
+        // A sequence gap alone does not confirm prefix-cache accounting.
+        queued.sequence = 5;
+        state.observe(&queued);
+        queued.sequence = 6;
+        state.observe(&queued);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (2, 100, PrefillProgressKind::InitialUnconfirmedQueue),
+                (3, 100, PrefillProgressKind::InitialUnconfirmedQueue),
+                (5, 100, PrefillProgressKind::InitialUnconfirmedQueue),
+                (6, 100, PrefillProgressKind::InitialUnconfirmedQueue),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_initial_queue_remains_unconfirmed_until_worker_reconciles() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback = Arc::new(move |sequence, remaining, kind| {
+            sink.lock().unwrap().push((sequence, remaining, kind));
+        });
+        let mut state = PrefillProgressState::new(
+            "request".into(),
+            Some(callback),
+            Some(Duration::from_secs(2)),
+        );
+        let mut queued = progress(1, 100).prefill_progress.unwrap();
+        queued.phase = super::super::pb::PrefillPhase::Queued as i32;
+        queued.total_compute_tokens = 100;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let (tx, rx) = mpsc::channel(2);
+        let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        tx.send(Ok(GenerateResponse {
+            prefill_progress: Some(queued.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+            _ = next_response(&mut stream, deadline, &mut state) => panic!("stream ended before the observation"),
+        }
+        assert!(state.stale);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(1, 100, PrefillProgressKind::InitialUnconfirmedQueue)]
+        );
+        queued.sequence = 4;
+        queued.local_cached_tokens = 10;
+        queued.total_compute_tokens = 90;
+        queued.remaining_compute_tokens = 90;
+        tx.send(Ok(GenerateResponse {
+            prefill_progress: Some(queued.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        queued.sequence = 5;
+        queued.cache_accounting_final = true;
+        queued.remaining_compute_tokens = 16;
+        tx.send(Ok(GenerateResponse {
+            prefill_progress: Some(queued.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        queued.sequence = 6;
+        queued.phase = super::super::pb::PrefillPhase::Preempted as i32;
+        queued.cache_accounting_final = false;
+        queued.remaining_compute_tokens = 100;
+        tx.send(Ok(GenerateResponse {
+            prefill_progress: Some(queued),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        next_response(&mut stream, deadline, &mut state)
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (1, 100, PrefillProgressKind::InitialUnconfirmedQueue),
+                (4, 90, PrefillProgressKind::InitialUnconfirmedQueue),
+                (5, 16, PrefillProgressKind::Snapshot),
+                (6, 100, PrefillProgressKind::Snapshot),
+            ]
+        );
+    }
+
+    #[test]
+    fn initial_queue_requires_final_accounting_or_a_phase_change() {
+        type Mutation = fn(&mut super::super::pb::PrefillProgress);
+        let cases: Vec<(Mutation, PrefillProgressKind)> = vec![
+            (
+                |p| p.phase = super::super::pb::PrefillPhase::Preempted as i32,
+                PrefillProgressKind::Snapshot,
+            ),
+            (
+                |p| p.cache_accounting_final = true,
+                PrefillProgressKind::Snapshot,
+            ),
+            (
+                |p| p.local_cached_tokens = 1,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+            (
+                |p| p.external_cached_tokens = 1,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+            (
+                |p| p.pending_kv_transfer_tokens = 1,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+            (
+                |p| p.completed_compute_tokens = 1,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+            (
+                |p| p.total_compute_tokens = 99,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+            (
+                |p| p.remaining_compute_tokens = 99,
+                PrefillProgressKind::InitialUnconfirmedQueue,
+            ),
+        ];
+        for (change, expected) in cases {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let callback = Arc::new(move |_, _, kind| sink.lock().unwrap().push(kind));
+            let mut state = PrefillProgressState::new("request".into(), Some(callback), None);
+            let mut queued = progress(1, 100).prefill_progress.unwrap();
+            queued.phase = super::super::pb::PrefillPhase::Queued as i32;
+            queued.total_compute_tokens = 100;
+            change(&mut queued);
+            state.observe(&queued);
+            assert_eq!(*seen.lock().unwrap(), vec![expected]);
+        }
     }
 
     #[tokio::test(start_paused = true)]

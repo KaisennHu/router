@@ -157,6 +157,22 @@ impl RequestLoadGuard {
         }
     }
 
+    fn first_output_callback(&self) -> Option<crate::backend::grpc::FirstOutputCallback> {
+        let slot = self.state.kv_slot.clone()?;
+        Some(Arc::new(move || slot.begin_decode()))
+    }
+
+    fn prefill_progress_callback(&self) -> Option<crate::backend::grpc::PrefillProgressCallback> {
+        // The backend may drop this callback before dispatch (for example,
+        // when progress is disabled). Only the request guard releases load.
+        let slot = self.state.kv_slot.clone()?;
+        Some(Arc::new(move |sequence, remaining, kind| {
+            if kind != crate::backend::grpc::PrefillProgressKind::InitialUnconfirmedQueue {
+                slot.update_prefill_progress(sequence, remaining);
+            }
+        }))
+    }
+
     fn release(&self) {
         if self.state.released.swap(true, Ordering::AcqRel) {
             return;
@@ -3411,6 +3427,104 @@ impl RouterTrait for Router {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn colocated_progress_retains_estimate_until_queue_is_reconciled() {
+        use crate::backend::grpc::PrefillProgressKind;
+        use crate::policies::{LoadProvider, SlotManager};
+
+        let manager = Arc::new(crate::policies::InMemorySlotManager::new());
+        let target = crate::kv_index::RoutableTarget {
+            instance_id: Arc::from("worker"),
+            dp_rank: 0,
+        };
+        manager.begin_prefill(&target, 16);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None);
+        let load = RequestLoadGuard::new(None, Some(slot));
+        let callback = load.prefill_progress_callback().unwrap();
+        callback(1, 100, PrefillProgressKind::InitialUnconfirmedQueue);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 16);
+        callback(4, 100, PrefillProgressKind::InitialUnconfirmedQueue);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 16);
+        callback(5, 8, PrefillProgressKind::Snapshot);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 8);
+        callback(6, 80, PrefillProgressKind::Snapshot);
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 80);
+        load.release();
+        assert_eq!(manager.sample(&target).active_prefill_tokens, 0);
+    }
+
+    #[test]
+    fn dropping_progress_callback_keeps_admission_until_request_finishes() {
+        use crate::policies::LoadProvider;
+
+        let worker: Arc<dyn Worker> = Arc::new(BasicWorker::new(
+            "grpc://progress-callback:50051".into(),
+            WorkerType::Regular,
+        ));
+        let manager = Arc::new(crate::policies::InMemorySlotManager::new());
+        let target = crate::kv_index::RoutableTarget {
+            instance_id: Arc::from(worker.url()),
+            dp_rank: 0,
+        };
+        let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
+
+        let callback = load.prefill_progress_callback().unwrap();
+        drop(callback);
+        assert_eq!(worker.load(), 1);
+        assert_eq!(
+            manager.sample(&target),
+            crate::policies::LoadSample {
+                active_prefill_tokens: 64,
+                active_requests: 1,
+            }
+        );
+
+        drop(load);
+        assert_eq!(worker.load(), 0);
+        assert_eq!(
+            manager.sample(&target),
+            crate::policies::LoadSample::default()
+        );
+    }
+
+    #[test]
+    fn first_output_and_late_callbacks_preserve_request_lifetime() {
+        use crate::backend::grpc::PrefillProgressKind;
+        use crate::policies::LoadProvider;
+
+        let worker: Arc<dyn Worker> = Arc::new(BasicWorker::new(
+            "grpc://first-output-callback:50051".into(),
+            WorkerType::Regular,
+        ));
+        let manager = Arc::new(crate::policies::InMemorySlotManager::new());
+        let target = crate::kv_index::RoutableTarget {
+            instance_id: Arc::from(worker.url()),
+            dp_rank: 0,
+        };
+        let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
+        let first_output = load.first_output_callback().unwrap();
+        let progress = load.prefill_progress_callback().unwrap();
+
+        first_output();
+        drop(first_output);
+        assert_eq!(worker.load(), 1);
+        assert_eq!(
+            manager.sample(&target),
+            crate::policies::LoadSample {
+                active_prefill_tokens: 0,
+                active_requests: 1,
+            }
+        );
+
+        drop(load);
+        progress(1, 32, PrefillProgressKind::Snapshot);
+        assert_eq!(worker.load(), 0);
+        assert_eq!(
+            manager.sample(&target),
+            crate::policies::LoadSample::default()
+        );
+    }
 
     struct CompletionResponseFixture {
         router: Arc<Router>,
