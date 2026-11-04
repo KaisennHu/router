@@ -197,7 +197,7 @@ mod prefill_progress_regressions {
     }
 
     #[tokio::test]
-    async fn grpc_decode_context_tracks_stream_and_cleans_up_with_or_without_progress() {
+    async fn grpc_inflight_context_tracks_stream_and_cleans_up_with_or_without_progress() {
         for stream in [false, true] {
             for (enabled, supported) in
                 [(false, Some(true)), (true, Some(false)), (true, Some(true))]
@@ -209,11 +209,11 @@ mod prefill_progress_regressions {
                 } else {
                     None
                 };
-                assert_eq!(h.slots.decode_context_tokens(&h.target), None);
+                assert_eq!(h.slots.inflight_context_tokens(&h.target), Some(100));
                 h.output("hello", false).await;
-                wait_until(|| h.slots.decode_context_tokens(&h.target) == Some(101)).await;
+                wait_until(|| h.slots.inflight_context_tokens(&h.target) == Some(101)).await;
                 h.output(" world", false).await;
-                wait_until(|| h.slots.decode_context_tokens(&h.target) == Some(102)).await;
+                wait_until(|| h.slots.inflight_context_tokens(&h.target) == Some(102)).await;
 
                 if let Some(response) = response {
                     drop(response); // Client cancellation aborts the producer.
@@ -224,7 +224,7 @@ mod prefill_progress_regressions {
                     assert!(response.status().is_success());
                 }
                 wait_until(|| h.worker.load() == 0).await;
-                assert_eq!(h.slots.decode_context_tokens(&h.target), Some(0));
+                assert_eq!(h.slots.inflight_context_tokens(&h.target), Some(0));
                 assert_eq!(h.slots.sample(&h.target), LoadSample::default());
             }
         }
