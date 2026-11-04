@@ -1,0 +1,18 @@
+{
+  "dataset": "semianalysisai/cc-traces-weka-062126",
+  "revision": "23f152f6f0f9399a85901b89a6458def0ef16729",
+  "source_sha256": "29b6a19e751ff5230771519aab755f80a0f43a4ba9cf96b72d3a6a437ec99276",
+  "seed": "20261104",
+  "eligible_sessions": 216,
+  "name": "agentx32x4-seeded-prefill-focused",
+  "subset_sha256": "bdf8cda2e891b14114045bf257b30fb537511708d39fb47e878f4da90dc398cd",
+  "selection": "First 32 sessions of the fixed-seed, workload-defined prefill stratum. Original first four requests per session, positive outputs, <=196608 context, session output <=2048 and at least one estimated novel input >=32768. The stratum was selected without ranking by algorithm performance; it is not representative of all AgentX.",
+  "sessions": 32,
+  "requests": 128,
+  "input_tokens": 5745600,
+  "effective_output_tokens": 37989,
+  "estimated_novel_input_tokens": 2065216,
+  "estimated_prior_prefix_tokens": 3680384,
+  "session_output_median": 1178.0,
+  "source_stratum_sha256": "ff9cd8b00f0b3465e455d932dd791e5f17107a40b8d497796849b5161e3a638d"
+}
