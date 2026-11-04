@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -56,10 +56,67 @@ pub struct MockVllmRs {
     pub frames: Option<Vec<(String, Vec<u32>)>>,
     pub capture_limit: usize,
     pub failures_remaining: Arc<AtomicUsize>,
-    /// `None` models a worker without capability discovery.
-    pub prefill_progress_supported: Option<bool>,
-    /// Optional externally driven stream for lifecycle and progress tests.
-    pub scripted_stream: Arc<Mutex<Option<ResponseStream>>>,
+    /// Returned in `FinishInfo.kv_transfer_params`, as a P/D prefill engine does.
+    pub finish_kv_transfer_params: Option<serde_json::Value>,
+    /// Wait before sending any output, as a long prefill would.
+    pub reply_delay: Duration,
+    /// Streams the client cancelled before their first output.
+    pub cancelled: Arc<AtomicUsize>,
+    /// Streams to fail with a gRPC error after their prompt info, i.e.
+    /// after the stream has opened.
+    pub stream_failures_remaining: Arc<AtomicUsize>,
+    /// Requests to finish with `FinishReason::Aborted` instead of `Stop`.
+    pub aborted_finishes_remaining: Arc<AtomicUsize>,
+    /// Request ids received by `Control.Abort`.
+    pub aborts: Arc<Mutex<Vec<String>>>,
+    /// `ServerInfo.supports_prefill_progress`.
+    pub supports_prefill_progress: bool,
+    /// Optional mutable capability for worker upgrade/downgrade tests.
+    pub progress_capability_override: Option<Arc<AtomicBool>>,
+    /// Remaining-work snapshots sent, in order, before `reply_delay` on
+    /// streams that opted into prefill progress.
+    pub prefill_progress: Vec<u32>,
+    /// After `hold_after` recorded requests, wait until [`HoldGate::release`].
+    pub hold: Option<HoldGate>,
+}
+
+/// Blocks requests after the first `hold_after` ones until [`HoldGate::release`].
+///
+/// The request is recorded before the wait, so a test can see the admission
+/// while the worker is still occupied.
+#[derive(Clone)]
+pub struct HoldGate {
+    hold_after: usize,
+    seen: Arc<AtomicUsize>,
+    released: Arc<watch::Sender<bool>>,
+}
+
+impl HoldGate {
+    pub fn new(hold_after: usize) -> Self {
+        let (released, _) = watch::channel(false);
+        Self {
+            hold_after,
+            seen: Arc::new(AtomicUsize::new(0)),
+            released: Arc::new(released),
+        }
+    }
+
+    pub fn release(&self) {
+        let _ = self.released.send(true);
+    }
+
+    pub async fn wait(&self) {
+        let seen = self.seen.fetch_add(1, Ordering::SeqCst);
+        if self.hold_after == 0 || seen < self.hold_after {
+            return;
+        }
+        let mut released = self.released.subscribe();
+        while !*released.borrow() {
+            if released.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 impl Default for MockVllmRs {
@@ -70,8 +127,16 @@ impl Default for MockVllmRs {
             frames: None,
             capture_limit: usize::MAX,
             failures_remaining: Arc::new(AtomicUsize::new(0)),
-            prefill_progress_supported: None,
-            scripted_stream: Arc::new(Mutex::new(None)),
+            finish_kv_transfer_params: None,
+            reply_delay: Duration::ZERO,
+            cancelled: Arc::new(AtomicUsize::new(0)),
+            stream_failures_remaining: Arc::new(AtomicUsize::new(0)),
+            aborted_finishes_remaining: Arc::new(AtomicUsize::new(0)),
+            aborts: Arc::new(Mutex::new(Vec::new())),
+            supports_prefill_progress: false,
+            progress_capability_override: None,
+            prefill_progress: Vec::new(),
+            hold: None,
         }
     }
 }
@@ -320,7 +385,11 @@ macro_rules! mock_control {
                 let supported = self.prefill_progress_supported
                     .ok_or_else(|| Status::unimplemented("GetServerInfo"))?;
                 Ok(Response::new(pb::ServerInfo {
-                    supports_prefill_progress: supported,
+                    engine_version: "mock".into(),
+                    supports_prefill_progress: self.progress_capability_override.as_ref().map_or(
+                        self.supports_prefill_progress,
+                        |supported| supported.load(Ordering::Relaxed),
+                    ),
                     ..Default::default()
                 }))
             }
