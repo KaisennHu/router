@@ -1,0 +1,43 @@
+{
+  "name": "agentx128x4-seeded",
+  "dataset": "semianalysisai/cc-traces-weka-062126",
+  "revision": "23f152f6f0f9399a85901b89a6458def0ef16729",
+  "source_sha256": "29b6a19e751ff5230771519aab755f80a0f43a4ba9cf96b72d3a6a437ec99276",
+  "subset_sha256": "60e7340cb534655847efd682f3c5a4c64b0dea1c393a0090a033e8a8485595ea",
+  "seed": "20261104",
+  "selection": "First four chronological model requests per session; positive output, input plus output <= 196608, effective root/cross-agent gap <= 30 s with same-agent gap scale 0. Select by sha256(seed:session_id), without ranking by output length, cache or performance.",
+  "source_sessions": 393,
+  "eligible_before_gap_filter": 389,
+  "gap_exclusions_before_selected_128": 1,
+  "sessions": 128,
+  "requests": 512,
+  "input_tokens": 25679552,
+  "effective_output_tokens": 405747,
+  "estimated_novel_input_tokens": 9923328,
+  "estimated_earlier_prefix_tokens": 15756224,
+  "session_output_tokens_distribution": {
+    "min": 268,
+    "mean": 3169.8984375,
+    "p50": 1792.5,
+    "p95": 12891.34999999999,
+    "p99": 19811.500000000015,
+    "max": 24861
+  },
+  "input_tokens_distribution": {
+    "min": 256,
+    "mean": 50155.375,
+    "p50": 50464.0,
+    "p95": 108415.99999999999,
+    "p99": 163478.4,
+    "max": 189120
+  },
+  "output_tokens_distribution": {
+    "min": 1,
+    "mean": 792.474609375,
+    "p50": 336.5,
+    "p95": 2699.35,
+    "p99": 7477.909999999984,
+    "max": 23374
+  },
+  "max_effective_gap_s": 29.065999999999995
+}

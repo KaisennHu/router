@@ -1,0 +1,128 @@
+{
+  "8": {
+    "kv_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 266,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.51953125,
+      "mean_scheduled_prefill_requests": 0.6229853393190513,
+      "mean_queued_requests": 0.006111852644737837,
+      "mean_decode_requests": 6.529628801257461
+    },
+    "kv_aware_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 281,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.548828125,
+      "mean_scheduled_prefill_requests": 0.6254829359034637,
+      "mean_queued_requests": 0.006545987756826321,
+      "mean_decode_requests": 6.508486052679127
+    },
+    "kv_aware_affinity": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 284,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.5546875,
+      "mean_scheduled_prefill_requests": 0.629145217442906,
+      "mean_queued_requests": 0.013926569714804597,
+      "mean_decode_requests": 6.477198161519975
+    },
+    "kv_aware_affinity_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 273,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.533203125,
+      "mean_scheduled_prefill_requests": 0.6384018241890188,
+      "mean_queued_requests": 0.023643255259956593,
+      "mean_decode_requests": 6.650726778833215
+    },
+    "cache_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 274,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.53515625,
+      "mean_scheduled_prefill_requests": 0.6247616506647184,
+      "mean_queued_requests": 0.004644076761674315,
+      "mean_decode_requests": 6.559852117344301
+    }
+  },
+  "16": {
+    "kv_aware_affinity_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 208,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.40625,
+      "mean_scheduled_prefill_requests": 0.6576123838098503,
+      "mean_queued_requests": 0.0637643627183776,
+      "mean_decode_requests": 11.207392941188903
+    },
+    "cache_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 215,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.419921875,
+      "mean_scheduled_prefill_requests": 0.7943480685190043,
+      "mean_queued_requests": 0.07393629402252501,
+      "mean_decode_requests": 12.76448148022841
+    },
+    "kv_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 219,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.427734375,
+      "mean_scheduled_prefill_requests": 0.775197396017743,
+      "mean_queued_requests": 0.0439830520475344,
+      "mean_decode_requests": 13.030435228270118
+    },
+    "kv_aware_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 214,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.41796875,
+      "mean_scheduled_prefill_requests": 0.7456058301923291,
+      "mean_queued_requests": 0.048326207726058466,
+      "mean_decode_requests": 12.598097865688864
+    },
+    "kv_aware_affinity": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 215,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.419921875,
+      "mean_scheduled_prefill_requests": 0.6935513114276631,
+      "mean_queued_requests": 0.047739400719210796,
+      "mean_decode_requests": 11.925757106904912
+    }
+  },
+  "32": {
+    "kv_aware_affinity": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 165,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.322265625,
+      "mean_scheduled_prefill_requests": 0.835249308823852,
+      "mean_queued_requests": 0.2519077324169739,
+      "mean_decode_requests": 22.355356425430084
+    },
+    "kv_aware_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 183,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.357421875,
+      "mean_scheduled_prefill_requests": 0.8245511542960619,
+      "mean_queued_requests": 0.11251356027735343,
+      "mean_decode_requests": 21.844720735454285
+    },
+    "cache_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 171,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.333984375,
+      "mean_scheduled_prefill_requests": 0.8375126458825565,
+      "mean_queued_requests": 0.21410096236741244,
+      "mean_decode_requests": 22.094747213993173
+    },
+    "kv_aware_affinity_progress": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 174,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.33984375,
+      "mean_scheduled_prefill_requests": 0.7485944106131239,
+      "mean_queued_requests": 0.22350797745852566,
+      "mean_decode_requests": 20.874767825743255
+    },
+    "kv_aware": {
+      "requests": 512,
+      "client_arrivals_with_no_other_ttft_pending": 178,
+      "client_arrivals_with_no_other_ttft_pending_fraction": 0.34765625,
+      "mean_scheduled_prefill_requests": 0.8091424806107153,
+      "mean_queued_requests": 0.1025035950929296,
+      "mean_decode_requests": 22.149497422145068
+    }
+  }
+}
