@@ -12,7 +12,7 @@
 | Policies | Cache = cache-aware; KV = KV-aware without affinity; KV+P = KV with prefill progress. KV temperature 0; Cache threshold 0.3, balance thresholds 64/1.5. Progress stale threshold 5 s. |
 | Versions | vLLM `d16847dafe12`; Router base `6a9014e52f92`. KV arms and all C32 arms use the event-limit build; C8/C16 Cache used the base build and does not subscribe to KV events. |
 
-The event-limit benchmark build (binary SHA256 `d8692c7dd733…`) has the same production decoder change as commit `fed842de6c0a`: up to 65,536 events per batch with the existing 16 MiB payload cap. Its source differs in test code and comments. All reported runs completed 721 requests; KV runs had no logged event decode/replay errors. The host was shared, with no foreign processes on the selected devices. C8/C16 used GPUs 2/3/6/7; C32 uses 2/3/4/7. One run per arm does not establish repeatability.
+The event-limit benchmark build (binary SHA256 `d8692c7dd733…`) has the same production decoder change as commit `fed842de6c0a`: up to 65,536 events per batch with the existing 16 MiB payload cap. Its source differs in test code and comments. These measurements predate the capability-cache and unknown-context tie fixes and do not measure the latest PR head. All reported runs completed 721 requests; KV runs had no logged event decode/replay errors. The host was shared, with no foreign processes on the selected devices. C8/C16 used GPUs 2/3/6/7; C32 uses 2/3/4/7. One run per arm does not establish repeatability.
 
 ### 1. What does prefill progress improve?
 

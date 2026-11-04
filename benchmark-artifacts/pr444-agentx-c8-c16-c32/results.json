@@ -10,6 +10,8 @@
     "max_num_seqs": 16,
     "router_base": "6a9014e52f923898df911ba6750088f5fbebbe7c",
     "event_limit_change_commit": "fed842de6c0a0075d41d3a81f489f1aca2c8a8e5",
+    "subsequent_review_fix_commit": "14db195a697a8e9ffc0ff98a250e200ba0800228",
+    "benchmark_includes_review_fixes": false,
     "event_limit_benchmark_binary_sha256": "d8692c7dd733815e2c7d0595aac10fa455d1bc672bd9d2bdae636c52f0fc19bc",
     "c8_c16_cache_binary_sha256": "0a4e935096aa9c2a78313700af00e1bbe93d1a2583481a8b04b41e2a880f457e",
     "event_limit": 65536,
