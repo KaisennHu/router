@@ -162,6 +162,11 @@ impl RequestLoadGuard {
         Some(Arc::new(move || slot.begin_decode()))
     }
 
+    fn generated_tokens_callback(&self) -> Option<crate::backend::grpc::GeneratedTokensCallback> {
+        let slot = self.state.kv_slot.clone()?;
+        Some(Arc::new(move |tokens| slot.record_generated_tokens(tokens)))
+    }
+
     fn prefill_progress_callback(&self) -> Option<crate::backend::grpc::PrefillProgressCallback> {
         // The backend may drop this callback before dispatch (for example,
         // when progress is disabled). Only the request guard releases load.
@@ -1905,22 +1910,16 @@ impl Router {
                 )
                     .into_response();
             };
-            // Callbacks update accounting but do not own attempt cleanup:
-            // capability fallback may drop them before inference starts.
-            let on_first_output = load.state.kv_slot.clone().map(|slot| {
-                Arc::new(move || slot.begin_decode()) as crate::backend::grpc::FirstOutputCallback
-            });
-            let on_prefill_progress = load.state.kv_slot.clone().map(|slot| {
-                Arc::new(move |sequence, remaining| {
-                    slot.update_prefill_progress(sequence, remaining)
-                }) as crate::backend::grpc::PrefillProgressCallback
-            });
+            let on_first_output = load.first_output_callback();
+            let on_generated_tokens = load.generated_tokens_callback();
+            let on_prefill_progress = load.prefill_progress_callback();
             let mut response = self
                 .frontend
                 .dispatch_with_first_output(
                     worker_url,
                     prepared,
                     on_first_output,
+                    on_generated_tokens,
                     on_prefill_progress,
                 )
                 .await;
@@ -3439,7 +3438,7 @@ mod tests {
             dp_rank: 0,
         };
         manager.begin_prefill(&target, 16);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None, None);
         let load = RequestLoadGuard::new(None, Some(slot));
         let callback = load.prefill_progress_callback().unwrap();
         callback(1, 100, PrefillProgressKind::InitialUnconfirmedQueue);
@@ -4258,6 +4257,7 @@ mod tests {
                 manager.clone(),
                 second_target.clone(),
                 64,
+                None,
                 None,
             )),
         );
@@ -6015,7 +6015,7 @@ mod tests {
         worker.increment_load();
         RequestLoadGuard::new(
             Some(worker),
-            Some(KvRequestSlot::new(manager, target, 64, None)),
+            Some(KvRequestSlot::new(manager, target, 64, None, None)),
         )
     }
 
@@ -6113,7 +6113,13 @@ mod tests {
         worker.increment_load();
         let unrelated = RequestLoadGuard::new(
             Some(worker.clone()),
-            Some(KvRequestSlot::new(manager.clone(), target.clone(), 7, None)),
+            Some(KvRequestSlot::new(
+                manager.clone(),
+                target.clone(),
+                7,
+                None,
+                None,
+            )),
         );
         let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
         let request: CompletionRequest = serde_json::from_value(serde_json::json!({
@@ -6284,7 +6290,13 @@ mod tests {
         fixture.worker.increment_load();
         let unrelated = RequestLoadGuard::new(
             Some(fixture.worker.clone()),
-            Some(KvRequestSlot::new(manager.clone(), target.clone(), 7, None)),
+            Some(KvRequestSlot::new(
+                manager.clone(),
+                target.clone(),
+                7,
+                None,
+                None,
+            )),
         );
         for (case, echo, fail_body, status) in [
             ("cancel", false, false, StatusCode::OK),
@@ -6872,6 +6884,7 @@ mod tests {
                 manager.clone(),
                 target.clone(),
                 64,
+                None,
                 None,
             )),
         );
