@@ -124,10 +124,51 @@
 <p>两组各有 128 个 queue 和 prefill 样本；queue 均值下降约 125.81 ms，与 TTFT 均值下降约 122.76 ms 接近，而实际 P 计算量没有变化。KV+Progress 接收了 635 条 progress 更新。这支持「收益主要体现在排队」这一轮的观察，但单轮闭环对照不能证明因果。</p>
 <p>请求逐一配对后，128 个请求只有 51 个 TTFT 下降、77 个上升。改善最大的 5 个请求合计下降约 23.64 秒，而全部请求合计仅下降约 15.71 秒；均值收益高度集中。TTFT P95 虽比纯 KV 下降，但仍比 Cache 高 6.51%。</p>
 <p>吞吐降低的直接数值原因是三组 token 总量固定，而 KV → KV+Progress 的回放时间由 34.27 s 增至 35.16 s；同时 worker decode 均值 5.15 → 5.40 s，TPOT 均值 +4.59%。这些指标的同步变化尚不能证明是哪次选路或哪个 worker 导致了整轮变慢。</p>
+<h2>为什么 TTFT 和总吞吐方向不同</h2>
+<p>TTFT 使用相同 128 个请求的均值；P queue 与 P prefill 的 histogram 均各有 128 个样本。下表的「余量」是 <code>TTFT 均值 - P queue 均值 - P prefill 均值</code>，包含 Router、传输及其他未单独测出的时间，也可能包含计时边界差异，并非独立实测阶段。</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th style="text-align:right">P queue 均值</th>
+<th style="text-align:right">P prefill 均值</th>
+<th style="text-align:right">余量</th>
+<th style="text-align:right">TTFT 均值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td style="text-align:right">510.26 ms</td>
+<td style="text-align:right">514.54 ms</td>
+<td style="text-align:right">231.61 ms</td>
+<td style="text-align:right">1,256.42 ms</td>
+</tr>
+<tr>
+<td>KV</td>
+<td style="text-align:right">663.22 ms</td>
+<td style="text-align:right">448.08 ms</td>
+<td style="text-align:right">249.71 ms</td>
+<td style="text-align:right">1,361.01 ms</td>
+</tr>
+<tr>
+<td>KV+Progress</td>
+<td style="text-align:right">537.41 ms</td>
+<td style="text-align:right">445.85 ms</td>
+<td style="text-align:right">255.00 ms</td>
+<td style="text-align:right">1,238.25 ms</td>
+</tr>
+</tbody>
+</table>
+<p>Cache → KV 时，P queue <strong>增加 152.96 ms</strong>，超过 P prefill <strong>减少的 66.46 ms</strong>，所以少算 P 并未让平均 TTFT 下降。再开 Progress 后，P queue 降低 125.81 ms，TTFT 均值降低 122.76 ms；两者的均值变化接近，但这不能证明全部改善都由推送引起。KV+Progress 相对 Cache 的 TTFT 均值下降 1.45%，P95 仍上升 6.51%。</p>
+<p>逐 worker 数据也显示，请求数量接近并不代表 prefill 负担接近。纯 KV 的 W3 处理 26 个请求，平均输入约 65,866 token、平均新算约 21,755 token，P queue / prefill 均值为 863.83 / 715.13 ms；W0 处理 36 个请求，平均输入约 37,399 token、平均新算约 13,639 token，对应 585.82 / 363.67 ms。请求分配和批次不同，不能据此单独断定 W3 的长输入就是排队的根因。</p>
+<p>总吞吐统计的是整轮固定 token 总数除以最后完成时间，与每请求平均 TPOT 不是同一个口径。Cache → KV+Progress 的回放时间 <strong>34.45 → 35.16 s（+2.07%）</strong>，因此总吞吐为 <strong>-2.03%</strong>，即使 TPOT 均值下降了 20.34%。</p>
+<p>把各轮相对首请求的共同 5.00–29.27 s 作为窗口，按 worker 约 1 秒一次的计数器采样，Cache / KV / KV+Progress 的输出速率约为 <strong>1,331.64 / 1,448.92 / 1,417.66 token/s</strong>；不同轮次该窗口的请求组成可能不同。窗口结束至最后一个请求完成期间，客户端平均在途请求数为 <strong>6.33 / 3.62 / 3.16</strong>，对应时长约 <strong>5.14 / 4.96 / 5.85 s</strong>。KV+Progress 的尾段并发更低且结束更晚，共同窗口的输出速率优势没有转化为整轮吞吐优势；这些数据不能证明具体是哪一次调度造成了尾段变化。</p>
+<p>这轮所有组都没有 preemption，4 个 worker 的 KV 使用率采样峰值均低于 58%；没有观察到支持「抢占或 KV 占满」的证据，但 1 秒采样无法排除短时波动。当前 KV 成本分数仍是 <code>(本请求新算 P + 已在途剩余 P) × (活动请求数 + 1)</code>；decode 上下文只在分数完全相同时用于次级选择。该分数并不直接等于 worker 的实际排队时间。要确认具体哪次选路导致排队或尾部变慢，还需关联请求的候选 worker 状态、选路和 vLLM 调度步；本次常规性能日志没有这些完整信息。</p>
 <h2>使用建议与边界</h2>
 <p>在长输入、前缀可复用、多个 prefill 并发的 AgentX 场景，值得重点测 <strong>真实 P 命中率、新算 token 和 P queue</strong>：这轮的 KV 直接减少了 P 计算，Progress 对照同时出现了更低的 P 排队。不要只以逻辑 input/total token/s 或 TTFT 均值判断；还应看尾部、TPOT、实际新算量和相同请求配对变化。</p>
 <p>本实验每组一次且共享主机，其结果不能证明普适或稳定收益。若需要验证稳定性，应保持 workload 和 backend 不变，先针对 Cache / KV / KV+Progress 做小规模重复及请求级诊断，而不是直接扩展成多并发大矩阵。</p>
-<p>完整分位数和 worker 数据：<a href="#full-report">报告明细</a>。请求配对数据：<code>runs/c32-kv_aware/paired-c32-cache_aware.json</code>、<code>runs/c32-kv_aware_progress/paired-c32-kv_aware.json</code> 和 <code>runs/c32-kv_aware_progress/paired-c32-cache_aware.json</code>。</p>
+<p>完整分位数和 worker 数据：<a href="#full-report">报告明细</a>。均值拆分与共同窗口计算可由 <code>python3 analyze_root_cause.py</code> 重建，数据见 <code>root-cause.json</code>。请求配对数据：<code>runs/c32-kv_aware/paired-c32-cache_aware.json</code>、<code>runs/c32-kv_aware_progress/paired-c32-kv_aware.json</code> 和 <code>runs/c32-kv_aware_progress/paired-c32-cache_aware.json</code>。</p>
 <hr><div id="full-report"></div><h1>AgentX 混部 KV-aware：快速定向验证</h1>
 <p>进度 3/3。4 张 B300、4 个 TP1 混部 worker；Qwen3-4B BF16；C32。
 32 个原生 AgentX session，每个 session 的前 4 个请求，共 128 请求；每组运行一次。
