@@ -65,7 +65,6 @@ Each cell compares C16 → C32 for the same policy; C32 uses a different set of 
 
 - **Capacity and reuse:** Cache worker P95 KV usage is 98.0–99.0% at C32. Mean sampled capacity-waiting requests per worker rise 0.01 → 1.44; 634/721 matched trace requests have higher TTFT. The replay changes request arrival times and placements across concurrency levels. The measurements support capacity pressure and less reuse; they do not isolate their individual effects on throughput.
 - **Actual work versus logical throughput:** For Cache, newly computed P tokens per wall second rise 27,413 → 51,614 (+88.28%), but the same logical workload requires 130.55% more new P tokens and 22.45% more wall time. This rate is a work proxy, not FLOPs or GPU efficiency.
-- **Cache policy:** The Router records 452/721 and 452/721 historical-prefix selections at C16 and C32, respectively, and no load-imbalance fallback in either run. Its prefix tree reflects request history, not confirmed worker residency. Prefix selections count requests, while worker hit rate counts tokens; they cannot be compared directly. The data does not establish how much of the hit-rate drop came from stale predictions or evictions.
 
 <details>
 <summary>Input/output throughput and full latency distributions</summary>
