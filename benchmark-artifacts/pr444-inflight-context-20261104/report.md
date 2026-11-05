@@ -12,7 +12,7 @@
 | Policies | Cache: cache-aware; KV: KV-aware without affinity; KV+P: KV-aware plus prefill progress. Ties use in-flight context; unknown context falls back to active requests, then random. KV temperature 0; Cache threshold 0.3 and balance thresholds 64/1.5; progress stale threshold 5 s. |
 | Revisions | Router `b2a1f411d5bb`, vLLM `d16847dafe12`; every arm uses the same Router binary and GPUs 2/3/4/7. |
 
-All runs completed 721 requests, without KV-event warnings or foreign processes on the selected GPUs; the host was shared. Each cell is a single run, so changes do not establish repeatability.
+All runs completed 721 requests, without Router KV-event warnings or foreign processes on the selected GPUs; the host was shared. Each run also logged 28,095–28,272 vLLM CPU KV-offload allocation warnings; these include repeated attempts, not distinct requests. Their performance impact has not been isolated. Each cell is a single run, so changes do not establish repeatability.
 
 ### 1. What does prefill progress improve?
 
