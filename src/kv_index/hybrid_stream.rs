@@ -32,6 +32,9 @@ enum Phase {
 struct SourceState {
     generation: u64,
     phase: Phase,
+    /// Whether this generation already reported that the publisher's hash
+    /// encoding cannot be indexed, so a retrying subscriber does not repeat it.
+    reported_int_hashes: bool,
 }
 
 /// Serializes lease changes and index mutations, so a retired subscriber
@@ -49,6 +52,7 @@ impl HybridEventStream {
             source: Mutex::new(SourceState {
                 generation: 0,
                 phase: Phase::Retired,
+                reported_int_hashes: false,
             }),
         }
     }
@@ -62,6 +66,7 @@ impl HybridEventStream {
             .checked_add(1)
             .expect("source generation exhausted");
         source.phase = Phase::Replaying;
+        source.reported_int_hashes = false;
         self.index.begin_replay(0);
         HybridSourceLease(source.generation)
     }
@@ -103,7 +108,22 @@ impl HybridEventStream {
             // A rejected batch means the publisher's layout and the declared
             // one disagree; naming the reason is the only way to fix a layout
             // from a live system.
-            tracing::warn!(seq, error = ?error, "hybrid event batch rejected");
+            match error {
+                HybridEventError::IntBlockHashes => {
+                    // The engine's default event encoding, so the fix belongs to
+                    // the engine invocation and the operator has to be told once.
+                    if !source.reported_int_hashes {
+                        source.reported_int_hashes = true;
+                        tracing::error!(
+                            seq,
+                            "hybrid event source publishes integer block hashes, which the sha256 \
+                             index cannot address; no prefix will be credited for this engine. \
+                             Start it with VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0."
+                        );
+                    }
+                }
+                _ => tracing::warn!(seq, error = ?error, "hybrid event batch rejected"),
+            }
             source.phase = Phase::Replaying;
             return Err(HybridStreamError::Index(error));
         }
@@ -537,6 +557,39 @@ mod tests {
             .unwrap();
         }
         wait_for(&index, &prompt, 528).await;
+        let workers: Vec<Arc<dyn crate::core::Worker>> = (0..2)
+            .map(|i| {
+                Arc::new(crate::core::BasicWorker::new(
+                    format!("http://worker-{i}"),
+                    crate::core::WorkerType::Regular,
+                )) as Arc<dyn crate::core::Worker>
+            })
+            .collect();
+        let policy = crate::policies::KvAwarePolicy::default();
+        policy.register_target(
+            workers[0].url(),
+            RoutableTarget {
+                instance_id: Arc::from("cold"),
+                dp_rank: 0,
+            },
+        );
+        policy.register_target_with_cache_identity(
+            workers[1].url(),
+            RoutableTarget {
+                instance_id: Arc::from("worker"),
+                dp_rank: 0,
+            },
+            crate::kv_index::CacheKey {
+                model: Arc::from("qwen"),
+                hash_mode: crate::kv_index::HashMode::Sha256,
+                block_size: 528,
+            },
+            index.clone(),
+        );
+        assert_eq!(
+            policy.select_worker_with_token_ids(&workers, Some(&prompt)),
+            Some(1)
+        );
         let clear = rmp_serde::to_vec_named(&(
             2.0_f64,
             vec![KVEvent::AllBlocksCleared(AllBlocksCleared::default())],
@@ -547,6 +600,10 @@ mod tests {
             .send_multipart([b"epoch-1".as_slice(), &1_i64.to_be_bytes(), &clear], 0)
             .unwrap();
         wait_for(&index, &prompt, 0).await;
+        assert_eq!(
+            policy.select_worker_with_token_ids(&workers, Some(&prompt)),
+            Some(0)
+        );
         publisher
             .send_multipart(
                 [
