@@ -1,0 +1,541 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>C16 Progress 对照</title><style>body{font:16px/1.65 system-ui,sans-serif;max-width:1120px;margin:2rem auto;padding:0 1rem;color:#1b2638}table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:14px}th,td{border:1px solid #d5deea;padding:.45rem;text-align:right}th:first-child,td:first-child{text-align:left}th{background:#edf3fb}h1,h2,h3{line-height:1.3}code{overflow-wrap:anywhere}</style><body><h1>C16：混部 Progress 候选场景</h1>
+<p>本报告包含一轮独立的带埋点诊断及 3 轮不带逐请求埋点的性能对照。结果是单次探索，不能代表全部 AgentX 场景；变化比例为新值相对基准的变化，负数不一定是收益。</p>
+<h2>实验条件</h2>
+<ul>
+<li>AgentX 原始结构筛选子集：32 个 session、128 个请求，4,620,928 input 和 55,699 output tokens；C16，4 × B300。</li>
+<li>Qwen3-4B-Instruct-2507、BF16、TP1，单 worker HBM KV 96 GiB，HOST 关闭；max model length 196,608、最大批处理 token 数 8,192、每个 worker 最多 16 个运行序列。</li>
+<li>每个 session 的前 4 个原始请求；按固定规则选 16 个首请求较长的 session 和 16 个较短的 session，C16 首批 16 个中 8 个较长；C32 可同时开始全部 32 个。筛选规则在运行前固定，没有按性能结果筛选。</li>
+<li>AgentInfer 回放；同 agent 间隔缩放为 0，异 agent 间隔沿用回放配置。token ID 根据 session 内的源 hash 重建，不保留跨 session 前缀共享，因而不是对真实 AgentX 整体的代表性测量。</li>
+<li>3 组各运行一次；Cache 使用默认阈值（cache 0.3，绝对负载差 64，相对 1.5）。每轮重启 worker、预热 Router 和 worker，再清理 worker 前缀缓存；性能测量不启用诊断日志。</li>
+<li>Cache 为 cache-aware；KV 为 kv-aware；P 表示开启 prefill progress（stale-after 5 秒），A 表示开启 session affinity（TTL 1,800 秒）。未标记 P 或 A 的组关闭对应功能。</li>
+<li>数据子集 SHA-256：<code>fff1352d3bb7959272a9f5cc31f8bd16c34fad7b8426a7b57cf8e7c76753599f</code>；Router <code>b2a1f411d5bb</code>，vLLM <code>d16847dafe12</code>。</li>
+</ul>
+<h2>端到端吞吐</h2>
+<table>
+<thead>
+<tr>
+<th>配置／变化</th>
+<th>input token/s</th>
+<th>output token/s</th>
+<th>total token/s</th>
+<th>总耗时 s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>122,349.16</td>
+<td>1,474.75</td>
+<td>123,823.91</td>
+<td>37.77</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>124,164.11</td>
+<td>1,496.63</td>
+<td>125,660.74</td>
+<td>37.22</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>115,202.28</td>
+<td>1,388.61</td>
+<td>116,590.89</td>
+<td>40.11</td>
+</tr>
+<tr>
+<td>Progress 增量</td>
+<td>-7.22%</td>
+<td>-7.22%</td>
+<td>-7.22%</td>
+<td>+7.78%</td>
+</tr>
+<tr>
+<td>KV+P 对 Cache</td>
+<td>-5.84%</td>
+<td>-5.84%</td>
+<td>-5.84%</td>
+<td>+6.20%</td>
+</tr>
+</tbody>
+</table>
+<p>吞吐按回放总 token 数除以回放总时长计算，包含缓存复用的 input token，不等于实际计算 token/s。</p>
+<h2>端到端时延</h2>
+<h3>TTFT（ms）</h3>
+<table>
+<thead>
+<tr>
+<th>配置／变化</th>
+<th>mean</th>
+<th>P50</th>
+<th>P95</th>
+<th>P99</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>324.57</td>
+<td>88.46</td>
+<td>1,241.96</td>
+<td>1,965.38</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>313.32</td>
+<td>90.14</td>
+<td>1,264.67</td>
+<td>2,179.21</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>316.24</td>
+<td>90.64</td>
+<td>1,262.92</td>
+<td>2,144.28</td>
+</tr>
+<tr>
+<td>Progress 增量</td>
+<td>+0.93%</td>
+<td>+0.56%</td>
+<td>-0.14%</td>
+<td>-1.60%</td>
+</tr>
+<tr>
+<td>KV+P 对 Cache</td>
+<td>-2.57%</td>
+<td>+2.47%</td>
+<td>+1.69%</td>
+<td>+9.10%</td>
+</tr>
+</tbody>
+</table>
+<h3>TPOT（ms/token）</h3>
+<table>
+<thead>
+<tr>
+<th>配置／变化</th>
+<th>mean</th>
+<th>P50</th>
+<th>P95</th>
+<th>P99</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>11.39</td>
+<td>6.86</td>
+<td>41.38</td>
+<td>81.18</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>10.27</td>
+<td>7.41</td>
+<td>26.38</td>
+<td>60.15</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>9.85</td>
+<td>7.23</td>
+<td>38.56</td>
+<td>47.77</td>
+</tr>
+<tr>
+<td>Progress 增量</td>
+<td>-4.14%</td>
+<td>-2.46%</td>
+<td>+46.16%</td>
+<td>-20.57%</td>
+</tr>
+<tr>
+<td>KV+P 对 Cache</td>
+<td>-13.55%</td>
+<td>+5.34%</td>
+<td>-6.81%</td>
+<td>-41.15%</td>
+</tr>
+</tbody>
+</table>
+<h3>Session JCT（s）</h3>
+<table>
+<thead>
+<tr>
+<th>配置／变化</th>
+<th>mean</th>
+<th>P50</th>
+<th>P95</th>
+<th>P99</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>13.89</td>
+<td>11.61</td>
+<td>30.12</td>
+<td>32.74</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>14.61</td>
+<td>12.54</td>
+<td>26.31</td>
+<td>33.40</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>14.27</td>
+<td>12.70</td>
+<td>27.80</td>
+<td>37.00</td>
+</tr>
+<tr>
+<td>Progress 增量</td>
+<td>-2.34%</td>
+<td>+1.26%</td>
+<td>+5.65%</td>
+<td>+10.79%</td>
+</tr>
+<tr>
+<td>KV+P 对 Cache</td>
+<td>+2.71%</td>
+<td>+9.42%</td>
+<td>-7.70%</td>
+<td>+13.03%</td>
+</tr>
+</tbody>
+</table>
+<p>TPOT 为单请求 <code>(总时延 − TTFT) / (输出 token 数 − 1)</code>，仅统计输出超过 1 个 token 的请求，然后计算分位数；短输出请求可能放大均值。JCT 是一个 session 的全部回放时长，可能包含请求之间的间隔。</p>
+<h2>Worker 指标与 Progress 机制</h2>
+<table>
+<thead>
+<tr>
+<th>配置／变化</th>
+<th>本地 KV 命中 %</th>
+<th>实际新算 input tokens</th>
+<th>iteration tokens</th>
+<th>排队均值 ms</th>
+<th>prefill 均值 ms</th>
+<th>抢占</th>
+<th>各 worker 请求数</th>
+<th>接受进度数</th>
+<th>Affinity 命中数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>64.57</td>
+<td>1,637,296</td>
+<td>1,692,995</td>
+<td>36.72</td>
+<td>269.14</td>
+<td>0</td>
+<td>31/29/40/28</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>63.13</td>
+<td>1,703,712</td>
+<td>1,759,411</td>
+<td>23.88</td>
+<td>270.24</td>
+<td>0</td>
+<td>30/32/33/33</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>64.57</td>
+<td>1,637,296</td>
+<td>1,692,995</td>
+<td>30.27</td>
+<td>263.60</td>
+<td>0</td>
+<td>32/36/33/27</td>
+<td>503</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Progress 增量</td>
+<td>+1.44 pp</td>
+<td>-3.90%</td>
+<td>-3.77%</td>
+<td>+26.77%</td>
+<td>-2.46%</td>
+<td>+0</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>KV+P 对 Cache</td>
+<td>+0.00 pp</td>
+<td>+0.00%</td>
+<td>+0.00%</td>
+<td>-17.56%</td>
+<td>-2.06%</td>
+<td>+0</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>排队和 prefill 是 worker 侧请求均值；prefill 时长还受批处理和调度影响。iteration tokens 包括 prefill 与 decode，是工作量代理，不能当作 FLOPs。这里只列有直接口径的均值，未用 Prometheus 直方图桶边界冒充分位数。混部的 P 和 D 共用 worker 与 KV，因此不能单独拆分两侧命中率或抢占，也不存在 P→D KV 传输。</p>
+<h3>TTFT 均值如何变化</h3>
+<table>
+<thead>
+<tr>
+<th>对照</th>
+<th>TTFT 变化 ms</th>
+<th>worker 排队变化 ms</th>
+<th>worker prefill 变化 ms</th>
+<th>差值的残余 ms</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KV → KV+P</td>
+<td>+2.92</td>
+<td>+6.39</td>
+<td>-6.64</td>
+<td>+3.17</td>
+</tr>
+</tbody>
+</table>
+<p>残余是客户端 TTFT 均值减去两个 worker 均值后再相减的结果，包含 Router、网络、输出处理等影响；它不是单独采集的阶段耗时，也不证明变化由某一阶段引起。</p>
+<p>Router 使用 <code>(新请求预估 prefill tokens + 在途剩余 prefill tokens) × (在途请求数 + 1)</code> 作为节点成本；Progress 更新第二项。</p>
+<p>诊断组：128 个请求关联成功，账本事件不一致 0 次。在 423 个已确认缓存对账的调度采样点，保留初始预留的剩余量绝对误差均值为 9,305.72 token，使用 Progress 的误差为 3,702.49 token（变化 -60.21%）。
+同一条 Progress 开启轨迹中，128 次无绑定候选决策中，38 次的候选剩余量与保留初始预留不同；0 次出现严格排序变化，0 次最低分节点集合改变，10 次旧账本最低分存在并列。该影子计算复用开启 Progress 的实际轨迹，不能当作真实关闭 Progress 的选路或时延。</p>
+<p>事件解析／回放相关告警行数（匹配关键词）：Cache 0，KV 0，KV+P 0。原始日志、逐请求数据、环境采样与完整分位数见各运行目录。</p>
+<p>本次使用共享主机；运行期间监控选定 GPU 的外来进程和其他设备活动，单次结果仍可能受共享 CPU、I/O 等因素影响。</p>
+<h2>吞吐和平均 JCT 的差异</h2>
+<p>KV 和 KV+P 最后一个 session 的完成时间分别是 37.22 s 和 40.11 s；对于 KV+P 中最后完成的那个 session，其在 KV 中完成于 36.55 s。总吞吐使用整轮耗时，而 JCT 均值对 32 个 session 分别取平均，二者可以朝不同方向变化。
+该 session 中输出 4,169 token 的请求，TTFT 为 0.58 → 0.37 s，首 token 后到请求完成的时间为 29.56 → 34.70 s（+5.14 s）。这是相同请求的观测值；仅凭这几组数据不能判断变化的具体原因，也不能把变化全部归因于 Progress。</p>
+<h2>不同输出长度的 TPOT</h2>
+<p>下表按输出长度对同一 workload 事后分组，帮助解释逐请求 TPOT 均值；它不是对调度原因的证明。</p>
+<table>
+<thead>
+<tr>
+<th>输出 token 数</th>
+<th>请求数</th>
+<th>KV 均值 ms/token</th>
+<th>KV+P 均值 ms/token</th>
+<th>变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2–32</td>
+<td>28</td>
+<td>18.90</td>
+<td>18.90</td>
+<td>-0.04%</td>
+</tr>
+<tr>
+<td>&gt;32</td>
+<td>100</td>
+<td>7.86</td>
+<td>7.31</td>
+<td>-6.90%</td>
+</tr>
+</tbody>
+</table>
+<h2>各 worker 指标</h2>
+<p>waiting、running 和 KV 使用率是时间加权采样；waiting 的 P95 是队列长度，而不是单请求排队时间分位数。</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>worker</th>
+<th>请求数</th>
+<th>本地命中 %</th>
+<th>新算 input</th>
+<th>排队均值 ms</th>
+<th>prefill 均值 ms</th>
+<th>waiting 均值</th>
+<th>waiting P95</th>
+<th>running 均值</th>
+<th>KV 使用均值 %</th>
+<th>抢占</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache</td>
+<td>0</td>
+<td>31</td>
+<td>64.26</td>
+<td>504,784</td>
+<td>85.84</td>
+<td>428.18</td>
+<td>0.11</td>
+<td>1.00</td>
+<td>3.04</td>
+<td>24.56</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Cache</td>
+<td>1</td>
+<td>29</td>
+<td>64.33</td>
+<td>391,216</td>
+<td>57.04</td>
+<td>270.63</td>
+<td>0.08</td>
+<td>0.00</td>
+<td>2.74</td>
+<td>17.57</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Cache</td>
+<td>2</td>
+<td>40</td>
+<td>59.68</td>
+<td>382,960</td>
+<td>0.01</td>
+<td>147.57</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>2.73</td>
+<td>10.47</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Cache</td>
+<td>3</td>
+<td>28</td>
+<td>69.16</td>
+<td>358,336</td>
+<td>13.73</td>
+<td>265.19</td>
+<td>0.03</td>
+<td>0.00</td>
+<td>2.54</td>
+<td>16.97</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>0</td>
+<td>30</td>
+<td>55.46</td>
+<td>354,208</td>
+<td>0.01</td>
+<td>197.51</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>3.67</td>
+<td>17.32</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>1</td>
+<td>32</td>
+<td>60.67</td>
+<td>360,352</td>
+<td>2.88</td>
+<td>229.98</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>3.04</td>
+<td>15.92</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>2</td>
+<td>33</td>
+<td>66.23</td>
+<td>545,024</td>
+<td>33.85</td>
+<td>361.13</td>
+<td>0.06</td>
+<td>0.00</td>
+<td>2.64</td>
+<td>21.89</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV</td>
+<td>3</td>
+<td>33</td>
+<td>65.72</td>
+<td>444,128</td>
+<td>55.97</td>
+<td>284.50</td>
+<td>0.06</td>
+<td>0.00</td>
+<td>2.67</td>
+<td>18.86</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>0</td>
+<td>32</td>
+<td>54.29</td>
+<td>392,128</td>
+<td>13.80</td>
+<td>254.11</td>
+<td>0.05</td>
+<td>1.00</td>
+<td>2.76</td>
+<td>15.04</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>1</td>
+<td>36</td>
+<td>66.94</td>
+<td>452,352</td>
+<td>40.04</td>
+<td>234.15</td>
+<td>0.05</td>
+<td>0.00</td>
+<td>2.45</td>
+<td>12.93</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>2</td>
+<td>33</td>
+<td>68.44</td>
+<td>375,584</td>
+<td>60.35</td>
+<td>241.78</td>
+<td>0.08</td>
+<td>1.00</td>
+<td>2.22</td>
+<td>14.56</td>
+<td>0</td>
+</tr>
+<tr>
+<td>KV+P</td>
+<td>3</td>
+<td>27</td>
+<td>65.37</td>
+<td>417,232</td>
+<td>0.01</td>
+<td>340.77</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>3.35</td>
+<td>23.22</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+</body></html>

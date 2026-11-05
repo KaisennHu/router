@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="370" viewBox="0 0 1000 370">
+<rect width="1000" height="370" fill="white"/>
+<text x="30" y="38" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="23">Progress effect: KV → KV+P at C32</text>
+<text x="30" y="64" fill="#475569" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="13">Positive = improvement; negative = regression. One selected AgentX run per arm.</text>
+<line x1="530" y1="85" x2="530" y2="315" stroke="#64748b" stroke-width="1"/>
+<text x="35" y="118" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="16">Worker queue</text>
+<rect x="530.00" y="99" width="260.47" height="24" rx="3" fill="#16805a"/>
+<text x="800.4665856110589" y="117" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">+20.0%</text>
+<text x="35" y="162" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="16">Worker prefill</text>
+<rect x="530.00" y="143" width="49.38" height="24" rx="3" fill="#16805a"/>
+<text x="589.3848080503316" y="161" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">+3.8%</text>
+<text x="35" y="206" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="16">TTFT mean</text>
+<rect x="530.00" y="187" width="129.02" height="24" rx="3" fill="#16805a"/>
+<text x="669.0238780686132" y="205" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">+9.9%</text>
+<text x="35" y="250" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="16">TPOT mean</text>
+<rect x="353.64" y="231" width="176.36" height="24" rx="3" fill="#c74646"/>
+<text x="343.64282066226536" y="249" fill="#172033" text-anchor="end" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">-13.6%</text>
+<text x="35" y="294" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="16">Total token/s</text>
+<rect x="530.00" y="275" width="105.20" height="24" rx="3" fill="#16805a"/>
+<text x="645.1952904734445" y="293" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">+8.1%</text>
+<text x="30" y="350" fill="#475569" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="12">P = prefill progress; latency improvements use a lower-is-better sign.</text>
+</svg>

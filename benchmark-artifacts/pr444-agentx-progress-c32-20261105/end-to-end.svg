@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="430" viewBox="0 0 1100 430">
+<rect width="1100" height="430" fill="white"/>
+<text x="30" y="38" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="23">C32 end-to-end comparison</text>
+<text x="30" y="64" fill="#475569" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="13">Same 32 sessions / 128 requests; each policy measured once.</text>
+<text x="250" y="100" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="16">TTFT mean (ms; lower is better)</text>
+<text x="685" y="100" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="16">Total token/s (higher is better)</text>
+<text x="35" y="142" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">Cache</text>
+<rect x="250" y="125" width="265.06" height="23" rx="3" fill="#64748b"/>
+<text x="523.0578151751931" y="142" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">621</text>
+<rect x="685" y="125" width="276.49" height="23" rx="3" fill="#64748b"/>
+<text x="969.4914428177984" y="142" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">138,246</text>
+<text x="35" y="191" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">KV</text>
+<rect x="250" y="174" width="273.79" height="23" rx="3" fill="#386cb0"/>
+<text x="531.7901881538953" y="191" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">642</text>
+<rect x="685" y="174" width="214.46" height="23" rx="3" fill="#386cb0"/>
+<text x="907.4550912441165" y="191" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">107,228</text>
+<text x="35" y="240" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">KV+P</text>
+<rect x="250" y="223" width="246.62" height="23" rx="3" fill="#16805a"/>
+<text x="504.61674826716387" y="240" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">578</text>
+<rect x="685" y="223" width="231.81" height="23" rx="3" fill="#16805a"/>
+<text x="924.8086801802194" y="240" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">115,904</text>
+<text x="35" y="289" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">KV+A</text>
+<rect x="250" y="272" width="253.67" height="23" rx="3" fill="#6e58a5"/>
+<text x="511.66524666082114" y="289" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">595</text>
+<rect x="685" y="272" width="227.56" height="23" rx="3" fill="#6e58a5"/>
+<text x="920.5565520335542" y="289" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">113,778</text>
+<text x="35" y="338" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="bold" font-size="15">KV+A+P</text>
+<rect x="250" y="321" width="252.56" height="23" rx="3" fill="#a65c2b"/>
+<text x="510.5559350242838" y="338" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">592</text>
+<rect x="685" y="321" width="217.25" height="23" rx="3" fill="#a65c2b"/>
+<text x="910.2517198259654" y="338" fill="#172033" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="14">108,626</text>
+<text x="30" y="405" fill="#475569" text-anchor="start" font-family="DejaVu Sans,sans-serif" font-weight="normal" font-size="12">A = session affinity; P = prefill progress. Total throughput includes cached input tokens.</text>
+</svg>
