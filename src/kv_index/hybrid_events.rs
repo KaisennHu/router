@@ -23,6 +23,9 @@ pub enum HybridEventError {
     Untrusted,
     Sequence,
     InvalidBatch,
+    /// The source publishes integer block hashes, which the sha256 index cannot
+    /// address; no batch from it can ever be applied.
+    IntBlockHashes,
     Capacity,
 }
 
@@ -193,6 +196,14 @@ impl HybridEventIndex {
         {
             return Self::fail(&mut state, HybridEventError::InvalidBatch);
         }
+        // vLLM can encode block hashes as integers instead of 32-byte digests
+        // (VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES, which is on by default). The
+        // hybrid index is built on the sha256 chain, so such a source can never
+        // be indexed; naming the cause keeps an unindexable engine from looking
+        // like an ordinary layout mismatch.
+        if batch.events.iter().any(publishes_int_hash) {
+            return Self::fail(&mut state, HybridEventError::IntBlockHashes);
+        }
         for event in &batch.events {
             let result = match event {
                 KVEvent::BlockStored(store) => {
@@ -357,6 +368,20 @@ fn sequence_hash(hash: &ExternalBlockHash) -> Option<SequenceHash> {
     match hash {
         ExternalBlockHash::Bytes(bytes) => bytes.as_slice().try_into().ok(),
         ExternalBlockHash::Int(_) => None,
+    }
+}
+
+/// Whether any hash this event names is an integer rather than a digest.
+fn publishes_int_hash(event: &KVEvent) -> bool {
+    fn any_int<'a>(hashes: impl Iterator<Item = &'a ExternalBlockHash>) -> bool {
+        hashes.into_iter().any(|hash| matches!(hash, ExternalBlockHash::Int(_)))
+    }
+    match event {
+        KVEvent::BlockStored(store) => {
+            any_int(store.block_hashes.iter().chain(store.parent_block_hash.iter()))
+        }
+        KVEvent::BlockRemoved(remove) => any_int(remove.block_hashes.iter()),
+        KVEvent::AllBlocksCleared(_) => false,
     }
 }
 
@@ -613,11 +638,13 @@ pub(crate) mod tests {
         let KVEvent::BlockStored(last) = &mut batch.events[3] else {
             panic!("expected store")
         };
+        // An integer hash is the engine's default event encoding, so it gets its
+        // own error rather than the generic shape mismatch.
         last.block_hashes = vec![ExternalBlockHash::Int(42)];
         index.begin_empty(0);
         assert_eq!(
             index.apply_batch(0, &batch),
-            Err(HybridEventError::InvalidBatch)
+            Err(HybridEventError::IntBlockHashes)
         );
         assert_eq!(index.reusable_tokens(&prompt(), usize::MAX), 0);
         assert_eq!(
@@ -633,6 +660,21 @@ pub(crate) mod tests {
             Err(HybridEventError::InvalidBatch)
         );
         assert_eq!(index.reusable_tokens(&prompt(), usize::MAX), 0);
+    }
+
+    #[test]
+    fn an_int_parent_hash_is_reported_as_int_block_hashes() {
+        let index = index(8);
+        let mut batch = qwen_batch();
+        let KVEvent::BlockStored(last) = &mut batch.events[3] else {
+            panic!("expected store")
+        };
+        last.parent_block_hash = Some(ExternalBlockHash::Int(7));
+        index.begin_empty(0);
+        assert_eq!(
+            index.apply_batch(0, &batch),
+            Err(HybridEventError::IntBlockHashes)
+        );
     }
 
     #[test]
