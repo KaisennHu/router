@@ -1,0 +1,459 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>两卡回放顺序对照</title><style>body{font:16px/1.6 system-ui,sans-serif;max-width:1250px;margin:2rem auto;padding:0 1rem;color:#172033}table{border-collapse:collapse;width:100%;font-size:13px;margin:1rem 0}th,td{border:1px solid #d5deea;padding:.4rem;text-align:right}th:first-child,td:first-child{text-align:left}th{background:#edf3fb}code{overflow-wrap:anywhere}</style><body><h1>两卡 C16：回放顺序对照</h1>
+<p>两组使用同一对 B300、同一批 32 个 AgentX session 和同一软件版本，每种策略各运行一次。改变 AgentInfer sample seed 会改变任务顺序和其他 seed 派生输入；它不是同一到达轨迹的重复实验。</p>
+<p>128 个请求、5,296,896 input / 39,508 output tokens；最长原始输出 847 token、无裁剪。两个 worker 每个 96 GiB HBM KV，HOST 关闭，C16；相同模型、批处理配置和 Cache 默认阈值。token ID 根据 session 内源 hash 重建，不含跨 session 共享。</p>
+<p>seed 0 的首批 16 个 session 中 4 个首请求是长 prefill，seed 1 中为 6 个。seed 1 在运行前固定，目的是观察初始长请求重叠较多时的表现；这些结果不可代表全部 AgentX 场景。</p>
+<h2>六组数据</h2>
+<table>
+<thead>
+<tr>
+<th>seed</th>
+<th>策略</th>
+<th>total token/s</th>
+<th>TTFT 均值 ms</th>
+<th>TTFT P95 ms</th>
+<th>TPOT 均值 ms/token</th>
+<th>JCT 均值 s</th>
+<th>本地命中 %</th>
+<th>新算 input</th>
+<th>P queue ms</th>
+<th>P prefill ms</th>
+<th>抢占</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Cache</td>
+<td>109,721</td>
+<td>545.91</td>
+<td>2,693.53</td>
+<td>20.99</td>
+<td>20.97</td>
+<td>67.17</td>
+<td>1,738,832</td>
+<td>216.16</td>
+<td>305.24</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV</td>
+<td>111,921</td>
+<td>498.42</td>
+<td>2,521.10</td>
+<td>21.86</td>
+<td>20.98</td>
+<td>67.17</td>
+<td>1,738,832</td>
+<td>168.41</td>
+<td>302.87</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV+P</td>
+<td>110,235</td>
+<td>554.77</td>
+<td>3,173.64</td>
+<td>18.18</td>
+<td>21.30</td>
+<td>65.43</td>
+<td>1,831,056</td>
+<td>213.17</td>
+<td>317.81</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Cache</td>
+<td>111,546</td>
+<td>513.08</td>
+<td>2,746.71</td>
+<td>21.46</td>
+<td>20.41</td>
+<td>67.17</td>
+<td>1,738,832</td>
+<td>160.53</td>
+<td>325.12</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV</td>
+<td>113,739</td>
+<td>520.36</td>
+<td>3,352.27</td>
+<td>20.60</td>
+<td>20.64</td>
+<td>66.30</td>
+<td>1,784,976</td>
+<td>187.32</td>
+<td>308.75</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV+P</td>
+<td>111,176</td>
+<td>540.41</td>
+<td>3,362.20</td>
+<td>20.51</td>
+<td>20.75</td>
+<td>66.38</td>
+<td>1,780,816</td>
+<td>197.47</td>
+<td>314.81</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>总吞吐 = input + output token 数 / 回放时间，包含缓存复用。</p>
+<h2>Progress 的增量</h2>
+<table>
+<thead>
+<tr>
+<th>seed</th>
+<th>新算 input</th>
+<th>P queue</th>
+<th>P prefill</th>
+<th>TTFT 均值</th>
+<th>TTFT P95</th>
+<th>TPOT 均值</th>
+<th>JCT 均值</th>
+<th>total token/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>+5.30%</td>
+<td>+26.57%</td>
+<td>+4.93%</td>
+<td>+11.31%</td>
+<td>+25.88%</td>
+<td>-16.83%</td>
+<td>+1.54%</td>
+<td>-1.51%</td>
+</tr>
+<tr>
+<td>1</td>
+<td>-0.23%</td>
+<td>+5.42%</td>
+<td>+1.96%</td>
+<td>+3.85%</td>
+<td>+0.30%</td>
+<td>-0.43%</td>
+<td>+0.56%</td>
+<td>-2.25%</td>
+</tr>
+</tbody>
+</table>
+<p>变化为 KV+P 相对 KV；时延下降和吞吐上升代表改善。</p>
+<h2>与 Cache 对比</h2>
+<table>
+<thead>
+<tr>
+<th>seed</th>
+<th>策略</th>
+<th>TTFT 均值</th>
+<th>TTFT P95</th>
+<th>TPOT 均值</th>
+<th>JCT 均值</th>
+<th>total token/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>KV</td>
+<td>-8.70%</td>
+<td>-6.40%</td>
+<td>+4.12%</td>
+<td>+0.06%</td>
+<td>+2.01%</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV+P</td>
+<td>+1.62%</td>
+<td>+17.82%</td>
+<td>-13.41%</td>
+<td>+1.60%</td>
+<td>+0.47%</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV</td>
+<td>+1.42%</td>
+<td>+22.05%</td>
+<td>-4.02%</td>
+<td>+1.13%</td>
+<td>+1.97%</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV+P</td>
+<td>+5.33%</td>
+<td>+22.41%</td>
+<td>-4.43%</td>
+<td>+1.69%</td>
+<td>-0.33%</td>
+</tr>
+</tbody>
+</table>
+<h2>完整端到端分位数</h2>
+<p>TTFT 和 TPOT 是逐请求分布，JCT 是 session 分布；顺序为 mean / P50 / P95 / P99。TPOT = (请求时延 − TTFT) / (输出 tokens − 1)。</p>
+<table>
+<thead>
+<tr>
+<th>seed</th>
+<th>策略</th>
+<th>input / output / total token/s</th>
+<th>TTFT ms</th>
+<th>TPOT ms/token</th>
+<th>JCT s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Cache</td>
+<td>108,908 / 812 / 109,721</td>
+<td>545.91 / 94.85 / 2,693.53 / 6,196.22</td>
+<td>20.99 / 15.11 / 53.45 / 124.78</td>
+<td>20.97 / 20.87 / 35.91 / 39.17</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV</td>
+<td>111,093 / 829 / 111,921</td>
+<td>498.42 / 99.21 / 2,521.10 / 4,578.59</td>
+<td>21.86 / 14.83 / 85.23 / 97.08</td>
+<td>20.98 / 20.50 / 37.87 / 38.77</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV+P</td>
+<td>109,419 / 816 / 110,235</td>
+<td>554.77 / 97.18 / 3,173.64 / 5,030.18</td>
+<td>18.18 / 15.65 / 41.98 / 50.31</td>
+<td>21.30 / 19.62 / 38.52 / 39.15</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Cache</td>
+<td>110,720 / 826 / 111,546</td>
+<td>513.08 / 100.84 / 2,746.71 / 3,873.20</td>
+<td>21.46 / 14.61 / 78.49 / 140.72</td>
+<td>20.41 / 19.66 / 37.00 / 37.68</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV</td>
+<td>112,897 / 842 / 113,739</td>
+<td>520.36 / 100.51 / 3,352.27 / 4,382.83</td>
+<td>20.60 / 14.77 / 85.71 / 98.27</td>
+<td>20.64 / 19.92 / 37.31 / 38.02</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV+P</td>
+<td>110,352 / 823 / 111,176</td>
+<td>540.41 / 106.15 / 3,362.20 / 4,514.53</td>
+<td>20.51 / 14.75 / 81.18 / 95.06</td>
+<td>20.75 / 19.98 / 37.84 / 38.05</td>
+</tr>
+</tbody>
+</table>
+<h2>各 worker</h2>
+<table>
+<thead>
+<tr>
+<th>seed</th>
+<th>策略</th>
+<th>worker</th>
+<th>请求数</th>
+<th>命中 %</th>
+<th>新算 input</th>
+<th>P queue ms</th>
+<th>P prefill ms</th>
+<th>waiting 均值</th>
+<th>waiting P95</th>
+<th>KV 使用均值 %</th>
+<th>抢占</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Cache</td>
+<td>0</td>
+<td>69</td>
+<td>68.84</td>
+<td>953,088</td>
+<td>290.64</td>
+<td>312.31</td>
+<td>0.43</td>
+<td>4.00</td>
+<td>49.84</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>Cache</td>
+<td>1</td>
+<td>59</td>
+<td>64.90</td>
+<td>785,744</td>
+<td>129.06</td>
+<td>296.96</td>
+<td>0.17</td>
+<td>1.00</td>
+<td>39.12</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV</td>
+<td>0</td>
+<td>67</td>
+<td>65.36</td>
+<td>888,272</td>
+<td>127.59</td>
+<td>289.24</td>
+<td>0.17</td>
+<td>1.00</td>
+<td>42.54</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV</td>
+<td>1</td>
+<td>61</td>
+<td>68.87</td>
+<td>850,560</td>
+<td>213.26</td>
+<td>317.84</td>
+<td>0.29</td>
+<td>2.00</td>
+<td>47.57</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV+P</td>
+<td>0</td>
+<td>59</td>
+<td>65.58</td>
+<td>875,456</td>
+<td>225.84</td>
+<td>325.86</td>
+<td>0.24</td>
+<td>2.00</td>
+<td>43.59</td>
+<td>0</td>
+</tr>
+<tr>
+<td>0</td>
+<td>KV+P</td>
+<td>1</td>
+<td>69</td>
+<td>65.29</td>
+<td>955,600</td>
+<td>202.33</td>
+<td>310.92</td>
+<td>0.29</td>
+<td>3.00</td>
+<td>47.51</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Cache</td>
+<td>0</td>
+<td>62</td>
+<td>68.74</td>
+<td>835,600</td>
+<td>174.79</td>
+<td>324.06</td>
+<td>0.28</td>
+<td>1.00</td>
+<td>43.04</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Cache</td>
+<td>1</td>
+<td>66</td>
+<td>65.58</td>
+<td>903,232</td>
+<td>147.14</td>
+<td>326.12</td>
+<td>0.22</td>
+<td>3.00</td>
+<td>44.54</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV</td>
+<td>0</td>
+<td>62</td>
+<td>67.53</td>
+<td>907,264</td>
+<td>257.62</td>
+<td>320.19</td>
+<td>0.34</td>
+<td>3.00</td>
+<td>45.52</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV</td>
+<td>1</td>
+<td>66</td>
+<td>64.93</td>
+<td>877,712</td>
+<td>121.29</td>
+<td>298.01</td>
+<td>0.16</td>
+<td>1.00</td>
+<td>43.61</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV+P</td>
+<td>0</td>
+<td>62</td>
+<td>68.42</td>
+<td>893,504</td>
+<td>270.81</td>
+<td>324.70</td>
+<td>0.36</td>
+<td>3.00</td>
+<td>45.19</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>KV+P</td>
+<td>1</td>
+<td>66</td>
+<td>64.04</td>
+<td>887,312</td>
+<td>128.58</td>
+<td>305.52</td>
+<td>0.20</td>
+<td>2.00</td>
+<td>42.64</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>waiting 是时间加权采样的等待请求数，P95 不是单请求排队时延分位数。两次种子下每组均只运行一次，共享主机上的到达、缓存竞争和其他资源活动可能影响结果。</p>
+<p>Workload SHA-256：<code>ea8b16ba0488c3defa19405ffdd7a021b82e51557d6abe155230b2c6fe4e1868</code>。</p>
+</body></html>
