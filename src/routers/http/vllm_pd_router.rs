@@ -5,7 +5,9 @@ use super::logprobs_merge;
 use super::pd_cached_tokens;
 use super::pd_program_adapter::{self, PdProgramRuntime};
 use super::pd_router::PdRouterBase;
-use super::pd_types::{error_chain, PDRouterError, PdAttempt, PdEndpoint, PdRequestContext};
+use super::pd_types::{
+    error_chain, requested_sequences, PDRouterError, PdAttempt, PdEndpoint, PdRequestContext,
+};
 use super::router::{hold_request_load_until_body_done, prepare_error_status, RequestLoadGuard};
 use super::usage_merge;
 use super::vllm_service_discovery::{MoriIOTransferMode, ServiceRegistry, ServiceType};
@@ -1048,6 +1050,7 @@ impl VllmPDRouter {
             headers: policy_headers.as_ref(),
             affinity_key,
             cache_salt,
+            decode_sequences: requested_sequences(request),
             route: path,
         };
         // Existing deployments configure a common connector. Discovery parses

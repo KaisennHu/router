@@ -120,6 +120,17 @@ fn select_stage(
 ) -> Option<StageDecision> {
     let policy_input = context.legacy_policy_input;
     let kv_aware = kv_aware_ops(policy).is_some();
+    // Decode ranks candidates by the logical context tokens they hold instead of
+    // by request counts. The comparison needs one unit across the whole eligible
+    // pool, so any candidate with an unknown prompt length falls back to counts
+    // for every candidate rather than mixing the two.
+    let decode_context_requested = stage == Stage::Decode && kv_aware;
+    let decode_context_load = decode_context_requested
+        && indices.iter().all(|&index| {
+            loads
+                .get(&(stage, endpoints[index].clone()))
+                .is_none_or(|load| load.decode_tokens().is_some())
+        });
     // Keep the caller slice order. Static pools pass registry registration
     // order, which is the --prefill / --decode order. Sorting by endpoint URL
     // made round-robin follow port text instead of that order.
@@ -129,11 +140,14 @@ fn select_stage(
         .map(|&index| {
             let inner = workers[index].clone();
             let endpoint = endpoints[index].clone();
-            let load = loads
-                .get(&(stage, endpoint))
-                .copied()
-                .unwrap_or_default()
-                .occupancy(stage);
+            let sample = loads.get(&(stage, endpoint)).copied().unwrap_or_default();
+            let load = if decode_context_load {
+                // `decode_context_load` proved the token accounting known for
+                // the whole eligible pool.
+                usize::try_from(sample.decode_tokens().unwrap_or_default()).unwrap_or(usize::MAX)
+            } else {
+                sample.occupancy(stage)
+            };
             Arc::new(PolicyWorker { inner, load }) as Arc<dyn Worker>
         })
         .collect();
@@ -277,6 +291,10 @@ fn select_stage(
             "sticky_hit"
         } else if stage == Stage::Prefill {
             "load_fallback"
+        } else if decode_context_load {
+            "context_tokens"
+        } else if decode_context_requested {
+            "occupancy_unknown_tokens"
         } else {
             "occupancy"
         };
@@ -322,9 +340,11 @@ fn select_stage(
         worker_index,
         endpoint: endpoints[worker_index].clone(),
         // Unknown P token work falls back to occupancy; D includes the
-        // incoming request, which does not change candidate ranking.
+        // incoming request, which does not change candidate ranking. A
+        // token-based D score is already a context total, so no `+ 1` applies.
         score: kv_aware.then_some(match stage {
             Stage::Prefill => worker.load() as f64,
+            Stage::Decode if decode_context_load => worker.load() as f64,
             Stage::Decode => (worker.load() + 1) as f64,
         }),
         new_prefill_tokens: selected_tokens,
@@ -568,21 +588,24 @@ impl PdRouterBase {
     ) -> Option<(PdSelection, PdAttempt)> {
         let prefill_policy = self.policy_registry.get_prefill_policy();
         let decode_policy = self.policy_registry.get_decode_policy();
-        let admitted = self.pd_load.admit(|loads| {
-            if let Some(kv) =
-                kv_aware_ops(decode_policy.as_ref()).filter(|kv| kv.session_affinity_enabled())
-            {
-                kv.reconcile_decode_workers(decode_workers);
-            }
-            select_pd_pair(
-                loads,
-                prefill_workers,
-                decode_workers,
-                prefill_policy.as_ref(),
-                decode_policy.as_ref(),
-                context,
-            )
-        });
+        let admitted = self.pd_load.admit_sequences(
+            |loads| {
+                if let Some(kv) =
+                    kv_aware_ops(decode_policy.as_ref()).filter(|kv| kv.session_affinity_enabled())
+                {
+                    kv.reconcile_decode_workers(decode_workers);
+                }
+                select_pd_pair(
+                    loads,
+                    prefill_workers,
+                    decode_workers,
+                    prefill_policy.as_ref(),
+                    decode_policy.as_ref(),
+                    context,
+                )
+            },
+            context.decode_sequences,
+        );
         if let Some((selection, attempt)) = &admitted {
             if kv_aware_ops(prefill_policy.as_ref()).is_some() {
                 crate::metrics::RouterMetrics::record_pd_kv_decision(
@@ -1350,6 +1373,7 @@ impl PdRouterBase {
             headers: None,
             affinity_key: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
         let (selection, _attempt) =
@@ -1879,6 +1903,7 @@ mod tests {
             headers: None,
             affinity_key: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
         let (selection, attempt) = router
@@ -1907,6 +1932,7 @@ mod tests {
             headers: None,
             affinity_key: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
         assert!(router.select_and_admit(&empty, &empty, &context).is_none());
@@ -2650,6 +2676,169 @@ mod admission_tests {
         assert!(manager.snapshot().is_empty());
     }
 
+    /// The design table from #504: D0 holds two 64K sequences, D1 holds four 4K
+    /// ones. Request counts prefer D0, logical context tokens prefer D1.
+    fn decode_context_loads(d: &[Arc<dyn Worker>]) -> Loads {
+        let mut loads = Loads::new();
+        loads.insert(
+            (Stage::Decode, PdEndpoint::for_worker(d[0].as_ref())),
+            PdLoadSample {
+                active_decode_requests: 2,
+                active_decode_tokens: 2 * 64 * 1024,
+                ..Default::default()
+            },
+        );
+        loads.insert(
+            (Stage::Decode, PdEndpoint::for_worker(d[1].as_ref())),
+            PdLoadSample {
+                active_decode_requests: 4,
+                active_decode_tokens: 4 * 4 * 1024,
+                ..Default::default()
+            },
+        );
+        loads
+    }
+
+    #[test]
+    fn decode_ranks_by_context_tokens() {
+        let p = pool("p", 1);
+        let d = pool("d", 2);
+        let loads = decode_context_loads(&d);
+        let policy = KvAwarePolicy::default();
+        // Two 64K sequences hold 131,072 tokens; four 4K sequences hold 16,384.
+        // Request counts would prefer the first decoder, context tokens the second.
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context()).unwrap();
+        assert_eq!(
+            selection.decode.worker_index, 1,
+            "context tokens prefer the four short sequences"
+        );
+        assert_eq!(selection.decode.score, Some(16_384.0));
+    }
+
+    #[test]
+    fn unknown_decode_requests_fall_back_to_counts_for_the_whole_pool() {
+        let p = pool("p", 1);
+        let d = pool("d", 2);
+        let mut loads = decode_context_loads(&d);
+        loads
+            .entry((Stage::Decode, PdEndpoint::for_worker(d[0].as_ref())))
+            .or_default()
+            .unknown_decode_requests = 1;
+        let policy = KvAwarePolicy::default();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context()).unwrap();
+        assert_eq!(
+            selection.decode.worker_index, 0,
+            "one unknown prompt length keeps the pool on request counts"
+        );
+        assert_eq!(selection.decode.score, Some(3.0));
+    }
+
+    #[test]
+    fn decode_tokens_move_from_pending_to_active_and_are_released_once() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        let tokens: Vec<u32> = (0..100).collect();
+        let policy = KvAwarePolicy::default();
+        let inputs = token_inputs(&p, &tokens, &policy);
+        let mut ctx = context();
+        ctx.prefill_inputs = Some(&inputs);
+        let (selection, attempt) = admit_with(&manager, &p, &d, &policy, &ctx);
+        let endpoint = selection.decode.endpoint.clone();
+        assert_eq!(selection.prefill.new_prefill_tokens, Some(100));
+        assert_eq!(selection.prefill.credited_prefix_tokens, Some(0));
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_requests, 1);
+        assert_eq!(pending.pending_decode_tokens, 100);
+        assert_eq!(pending.active_decode_tokens, 0);
+        assert_eq!(pending.unknown_decode_requests, 0);
+
+        attempt.begin_decode();
+        let active = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(active.pending_decode_tokens, 0);
+        assert_eq!(active.active_decode_tokens, 100);
+        assert_eq!(active.active_decode_requests, 1);
+
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn decode_reservation_scales_with_sampling_sequences() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        let tokens: Vec<u32> = (0..100).collect();
+        let policy = KvAwarePolicy::default();
+        let inputs = token_inputs(&p, &tokens, &policy);
+        let mut ctx = context();
+        ctx.prefill_inputs = Some(&inputs);
+        ctx.decode_sequences = 4;
+        let (selection, attempt) = manager
+            .admit_sequences(
+                |loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx),
+                ctx.decode_sequences,
+            )
+            .unwrap();
+        let endpoint = selection.decode.endpoint.clone();
+        assert_eq!(selection.prefill.new_prefill_tokens, Some(100));
+        // Four sampling sequences each attend over the 100-token prompt.
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_tokens, 400);
+        attempt.begin_decode();
+        let active = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(active.active_decode_tokens, 400);
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn requested_sequences_reads_n_and_defaults_to_one() {
+        let json = |value: &str| serde_json::from_str::<serde_json::Value>(value).unwrap();
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi"}"#)),
+            1
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi","n":3}"#)),
+            3
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(
+                r#"{"sampling_params":{"n":2}}"#
+            )),
+            2
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi","n":0}"#)),
+            1
+        );
+    }
+
+    #[test]
+    fn decode_reservation_without_a_rendered_prompt_counts_as_unknown() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        // No tokenized prompt: the request-count fallback must stay reachable.
+        let (selection, attempt) =
+            admit_with(&manager, &p, &d, &KvAwarePolicy::default(), &context());
+        let endpoint = selection.decode.endpoint.clone();
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_requests, 1);
+        assert_eq!(pending.pending_decode_tokens, 0);
+        assert_eq!(pending.unknown_decode_requests, 1);
+        assert_eq!(pending.decode_tokens(), None);
+
+        attempt.begin_decode();
+        assert_eq!(
+            sample(&manager, Stage::Decode, &endpoint).unknown_decode_requests,
+            1
+        );
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
     fn pool(prefix: &str, count: usize) -> Vec<Arc<dyn Worker>> {
         (0..count)
             .map(|i| {
@@ -2671,6 +2860,7 @@ mod admission_tests {
             headers: None,
             affinity_key: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/v1/completions",
         }
     }
@@ -2696,6 +2886,7 @@ mod admission_tests {
             headers: None,
             affinity_key: Some(affinity_key(session)),
             cache_salt: None,
+            decode_sequences: 1,
             route: "/v1/completions",
         }
     }
@@ -3250,6 +3441,7 @@ mod admission_tests {
                 headers: None,
                 affinity_key: None,
                 cache_salt: None,
+                decode_sequences: 1,
                 route: "/v1/completions",
             }
         }
