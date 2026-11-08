@@ -14,13 +14,19 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot, OnceCell};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::convert::{chat_to_generate_request_with_progress, requires_worker_output_text};
+// Used by legacy paths until both regular and P/D progress are enabled.
+#[allow(unused_imports)]
+use super::convert::chat_to_generate_request;
+use super::convert::{
+    chat_to_generate_request_with_progress, limit_to_prefill, proto_struct_to_json,
+    requires_worker_output_text, set_kv_transfer_params,
+};
 use super::detect::{grpc_connect_uri, parse_dp_rank};
 use super::frontend::{PreparedRequest, ResponseShape};
 use super::openai::{
@@ -28,6 +34,7 @@ use super::openai::{
     sse_usage_chunk, SSE_DONE,
 };
 use super::pb::control_client::ControlClient;
+use super::pb::finish_info::FinishReason;
 use super::pb::inference_client::InferenceClient;
 use super::pb::AbortRequest;
 use super::stream_output::{output_frame_tracking, OutputFrameConsumer, OutputFrameProducer};
@@ -225,7 +232,7 @@ fn grpc_status_code(status: &tonic::Status) -> StatusCode {
 
 #[derive(Clone)]
 pub struct GrpcEngineBackend {
-    clients: Arc<DashMap<String, InferenceClient<Channel>>>,
+    clients: Arc<DashMap<String, Channel>>,
     prefill_progress_capabilities: PrefillProgressCapabilityCache,
     connect_timeout: Duration,
     request_timeout: Duration,
@@ -387,6 +394,7 @@ impl GrpcEngineBackend {
         on_first_output: Option<FirstOutputCallback>,
         on_generated_tokens: Option<GeneratedTokensCallback>,
         on_prefill_progress: Option<PrefillProgressCallback>,
+        handoff: KvHandoff,
     ) -> Response {
         let PreparedRequest {
             request,
@@ -419,10 +427,16 @@ impl GrpcEngineBackend {
         let skip_special = request.skip_special_tokens;
         let detok_tokenizer = handle.tokenizer();
         let detok_prompt_ids = tokenized.token_ids.clone();
+        let abort_request_id = handoff.engine_request_id.clone();
+        // Progress snapshots echo the engine request id, which a P/D leg sets
+        // apart from the OpenAI response id.
+        let engine_request_id = handoff
+            .engine_request_id
+            .unwrap_or_else(|| request_id.clone());
         let mut proto = match chat_to_generate_request_with_progress(
             request,
             tokenized.token_ids.as_ref().to_vec(),
-            request_id.clone(),
+            engine_request_id.clone(),
             include_prefill_progress,
         ) {
             Ok(proto) => proto,
@@ -435,8 +449,7 @@ impl GrpcEngineBackend {
         }
 
         let t_connect = Instant::now();
-        let mut client = match tokio::time::timeout_at(deadline, self.client_for(worker_url)).await
-        {
+        let channel = match tokio::time::timeout_at(deadline, self.channel_for(worker_url)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 error!(error = %e, "grpc backend connect failed");
@@ -483,7 +496,10 @@ impl GrpcEngineBackend {
         let t_invoke = Instant::now();
         let stream =
             match tokio::time::timeout_at(deadline, client.generate_stream(tonic_req)).await {
-                Ok(Ok(s)) => s.into_inner(),
+                Ok(Ok(s)) => {
+                    abort.answered();
+                    s.into_inner()
+                }
                 Ok(Err(status)) => {
                     abort.disarm();
                     warn!(code = ?status.code(), msg = %status.message(), "GenerateStream failed");
@@ -540,6 +556,8 @@ impl GrpcEngineBackend {
             on_first_output,
             on_generated_tokens,
             prefill_progress,
+            fail_on_abort: abort_request_id.is_some(),
+            abort,
         };
         if request.stream {
             stream_openai(stream, reply, n_prompt_tokens).await
@@ -570,6 +588,10 @@ struct ChatReply {
     on_first_output: Option<FirstOutputCallback>,
     on_generated_tokens: Option<GeneratedTokensCallback>,
     prefill_progress: PrefillProgressState,
+    /// A P/D decode leg reports an `abort` finish as an error, so the push
+    /// path can cancel P instead of returning an aborted reply as success.
+    fail_on_abort: bool,
+    abort: EngineAbortGuard,
 }
 
 struct PrefillProgressState {
@@ -726,12 +748,15 @@ async fn stream_openai(
         on_first_output,
         on_generated_tokens,
         mut prefill_progress,
+        fail_on_abort: _,
+        abort,
     } = reply;
     let header_stages = stages.clone();
     let stages_on = crate::backend::stages_enabled();
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(STREAM_BUFFER_CAPACITY);
     let (failure_tx, failure_rx) = oneshot::channel();
     let (mut producer_output_frame, output_frame) = output_frame_tracking();
+    let (failed_tx, failed_rx) = watch::channel(false);
     let emit = async move {
         let mut detok = tok
             .as_ref()
@@ -754,7 +779,7 @@ async fn stream_openai(
                         false,
                     )
                     .await;
-                    return;
+                    return false;
                 }
             };
             match item {
@@ -783,7 +808,7 @@ async fn stream_openai(
                                     false,
                                 )
                                 .await;
-                                return;
+                                return false;
                             }
                         };
                     let generated_output = has_generated_output(&msg, &text);
@@ -866,12 +891,11 @@ async fn stream_openai(
                         let _ = send_stream_chunk(
                             &tx,
                             &mut producer_output_frame,
-                            "data: {\"error\":\"gRPC stream exceeded request timeout\"}\n\n"
-                                .to_string(),
+                            SSE_DONE.to_string(),
                             false,
                         )
                         .await;
-                        return;
+                        return finish.as_deref() != Some("abort");
                     }
                 }
                 Err(status) => {
@@ -885,22 +909,9 @@ async fn stream_openai(
                         false,
                     )
                     .await;
-                    return;
+                    return false;
                 }
             }
-            let _ = send_stream_chunk(
-                &tx,
-                &mut producer_output_frame,
-                "data: {\"error\":\"gRPC stream closed before finish_info\"}\n\n".to_string(),
-                false,
-            );
-            false
-        }
-        .await;
-        if finished {
-            abort.disarm();
-        } else {
-            failed_tx.send_replace(true);
         }
         let _ = send_stream_chunk(
             &tx,
@@ -909,13 +920,23 @@ async fn stream_openai(
             false,
         )
         .await;
+        false
     };
     let producer = tokio::spawn(async move {
-        if tokio::time::timeout_at(deadline, emit).await.is_err() {
-            let _ = failure_tx.send(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "gRPC response delivery exceeded request deadline",
-            ));
+        let finished = match tokio::time::timeout_at(deadline, emit).await {
+            Ok(finished) => finished,
+            Err(_) => {
+                let _ = failure_tx.send(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "gRPC response delivery exceeded request deadline",
+                ));
+                false
+            }
+        };
+        if finished {
+            abort.disarm();
+        } else {
+            failed_tx.send_replace(true);
         }
     });
 
@@ -961,6 +982,8 @@ async fn collect_openai(
         on_first_output,
         on_generated_tokens,
         mut prefill_progress,
+        fail_on_abort,
+        abort,
     } = reply;
     let mut detok = tok
         .as_ref()
@@ -1428,7 +1451,7 @@ mod tests {
     async fn stale_progress_retains_work_until_the_absolute_deadline() {
         let (manager, slot, target) = request_slot();
         let callback_slot = slot.clone();
-        let callback: PrefillProgressCallback = Arc::new(move |sequence, remaining| {
+        let callback: PrefillProgressCallback = Arc::new(move |sequence, remaining, _| {
             callback_slot.update_prefill_progress(sequence, remaining);
         });
         let mut state = PrefillProgressState::new(
@@ -1580,7 +1603,7 @@ mod tests {
                 on_generated_tokens: None,
                 prefill_progress: PrefillProgressState::new(
                     "request".into(),
-                    Some(Arc::new(move |sequence, remaining| {
+                    Some(Arc::new(move |sequence, remaining, _| {
                         progress_slot.update_prefill_progress(sequence, remaining);
                         if sequence == 2 {
                             progress_queue_full.notify_one();
@@ -1588,6 +1611,12 @@ mod tests {
                     })),
                     Some(Duration::from_secs(2)),
                 ),
+                fail_on_abort: false,
+                abort: EngineAbortGuard {
+                    target: None,
+                    timeout: Duration::ZERO,
+                    answered: false,
+                },
             };
             let response = if streaming {
                 stream_openai(stream, reply, 100).await

@@ -89,7 +89,7 @@ fn emit_http_first_sse<E>(
     let comment = bytes::Bytes::from(format!(": router-stages {stages}\n\n"));
     info!(%stages, "http proxy stages");
     match output_frame {
-        Some(output_frame) => output_frame.send(tx, comment, false),
+        Some(output_frame) => output_frame.send_unbounded(tx, comment, false),
         None => tx.send(Ok(comment)).is_ok(),
     }
 }
@@ -360,6 +360,26 @@ impl Router {
         {
             return Err("Prefill progress requires a gRPC worker pool".into());
         }
+        let default_policy = ctx.policy_registry.get_default_policy();
+        let pending_kv_supervisor = if kv_aware_ops(default_policy.as_ref()).is_some() {
+            let (mut supervisor, signals) =
+                crate::kv_index::KvIndexSupervisor::new_http_full_attention(
+                    ctx.client.clone(),
+                    crate::kv_index::HashMode::Sha256,
+                );
+            supervisor.set_api_key(ctx.router_config.api_key.clone());
+            let static_sources = match &ctx.router_config.policy {
+                crate::config::PolicyConfig::KvAware {
+                    static_kv_event_sources,
+                    ..
+                } => static_kv_event_sources.as_ref().clone(),
+                _ => HashMap::new(),
+            };
+            let supervisor = supervisor.with_static_sources(static_sources);
+            Some((supervisor, signals))
+        } else {
+            None
+        };
         let request_timeout = Duration::from_secs(ctx.router_config.request_timeout_secs);
         let frontend = if pool_kind == Some(crate::backend::WorkerPoolKind::Http) {
             crate::backend::frontend::warn_ignored_encoding_caches();
@@ -2139,7 +2159,9 @@ impl Router {
                                 .as_mut()
                                 .is_some_and(|observer| observer.observe(&bytes));
                             let sent = match producer_output_frame.as_mut() {
-                                Some(output_frame) => output_frame.send(&tx, bytes, has_output),
+                                Some(output_frame) => {
+                                    output_frame.send_unbounded(&tx, bytes, has_output)
+                                }
                                 None => tx.send(Ok(bytes)).is_ok(),
                             };
                             if !sent {
@@ -6245,7 +6267,7 @@ mod tests {
             &serde_json::json!({}),
             Some(&mut producer)
         ));
-        assert!(producer.send(
+        assert!(producer.send_unbounded(
             &tx,
             bytes::Bytes::from_static(b"data: {\"choices\":[{\"text\":\"output\"}]}\n\n"),
             true

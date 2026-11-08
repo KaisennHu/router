@@ -24,7 +24,7 @@ vllm-router --worker-urls grpc://worker:50051 \
   --policy kv_aware --prefill-progress-stale-after-secs 5
 ```
 
-- Supported for regular gRPC pools; P/D mode is not supported.
+- Supported for regular gRPC pools.
 - Disabled by default. Workers without progress support continue using estimated load.
 - Worker support is rechecked on the first request after 30 seconds, so in-place
   upgrades and downgrades are detected.

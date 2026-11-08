@@ -73,7 +73,7 @@ pub(crate) mod stream_output {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use tokio::sync::mpsc::Sender;
+    use tokio::sync::mpsc::{Sender, UnboundedSender};
 
     pub(crate) struct OutputFrameProducer {
         first_output: Arc<AtomicUsize>,
@@ -102,6 +102,17 @@ pub(crate) mod stream_output {
     }
 
     impl OutputFrameProducer {
+        fn mark_output(&self, next: usize, has_generated_output: bool) {
+            if has_generated_output {
+                let _ = self.first_output.compare_exchange(
+                    0,
+                    next,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                );
+            }
+        }
+
         /// Reserve bounded capacity before publishing a frame's output marker.
         pub(crate) async fn send<T, E>(
             &mut self,
@@ -113,15 +124,24 @@ pub(crate) mod stream_output {
                 return false;
             };
             let next = self.emitted.saturating_add(1);
-            if has_generated_output {
-                let _ = self.first_output.compare_exchange(
-                    0,
-                    next,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                );
-            }
+            self.mark_output(next, has_generated_output);
             permit.send(Ok(chunk));
+            self.emitted = next;
+            true
+        }
+
+        /// Preserve HTTP stream ordering when forwarding through an unbounded channel.
+        pub(crate) fn send_unbounded<T, E>(
+            &mut self,
+            tx: &UnboundedSender<Result<T, E>>,
+            chunk: T,
+            has_generated_output: bool,
+        ) -> bool {
+            let next = self.emitted.saturating_add(1);
+            self.mark_output(next, has_generated_output);
+            if tx.send(Ok(chunk)).is_err() {
+                return false;
+            }
             self.emitted = next;
             true
         }

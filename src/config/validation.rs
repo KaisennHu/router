@@ -26,7 +26,10 @@ impl ConfigValidator {
                 }
             );
 
+        let mut progress_supported = false;
         Self::validate_mode(&config.mode, has_service_discovery)?;
+        progress_supported |= matches!(config.mode, RoutingMode::Regular { .. })
+            && matches!(config.policy, PolicyConfig::KvAware { .. });
         Self::validate_policy(&config.policy)?;
         Self::validate_server_settings(config)?;
         if let Some(stale_after) = config.prefill_progress_stale_after_secs {
@@ -37,11 +40,9 @@ impl ConfigValidator {
                     reason: "Must be at least 2 seconds and less than request_timeout_secs".into(),
                 });
             }
-            if !matches!(config.mode, RoutingMode::Regular { .. })
-                || !matches!(config.policy, PolicyConfig::KvAware { .. })
-            {
+            if !progress_supported {
                 return Err(ConfigError::IncompatibleConfig {
-                    reason: "Prefill progress requires regular kv_aware routing".into(),
+                    reason: "Prefill progress requires kv_aware gRPC routing".into(),
                 });
             }
         }
