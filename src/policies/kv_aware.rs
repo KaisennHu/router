@@ -1313,7 +1313,34 @@ impl KvAwarePolicy {
                 .as_ref()
                 .and_then(|digest| self.affinity.acquire(digest));
             let (acquired, from_advisory) = match exact {
-                Some(record) => (Some(record), false),
+                Some(record) => {
+                    // A failover turn without exact tokens rebinds the session
+                    // in the advisory namespace and leaves the exact record on
+                    // the old worker. Follow that advisory binding instead of
+                    // dropping the session onto a cost-chosen worker.
+                    let usable = self
+                        .affinity_position(&plan, &record)
+                        .is_some_and(|position| !excluded(position));
+                    if usable {
+                        (Some(record), false)
+                    } else if let Some(advisory_record) = advisory_digest
+                        .as_ref()
+                        .and_then(|digest| self.affinity.acquire(digest))
+                    {
+                        let advisory_usable = self
+                            .affinity_position(&plan, &advisory_record)
+                            .is_some_and(|position| !excluded(position));
+                        if advisory_usable {
+                            record.release_ref();
+                            (Some(advisory_record), true)
+                        } else {
+                            advisory_record.release_ref();
+                            (Some(record), false)
+                        }
+                    } else {
+                        (Some(record), false)
+                    }
+                }
                 // Multi-turn affinity survives a turn that had no exact
                 // tokens (tools, reasoning, a backend that cannot render):
                 // a later turn may follow that advisory binding, but the

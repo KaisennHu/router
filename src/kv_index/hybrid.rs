@@ -30,6 +30,10 @@ pub struct HybridGroupView<'a> {
     pub block_size: u32,
     pub kind: HybridGroupKind,
     pub matches: &'a [TierMatch],
+    /// Whether the engine ever published pages for this group. A group that
+    /// publishes key-only stores reports no addressable page, so it cannot
+    /// constrain the boundary; the layout's other groups do.
+    pub page_evidence: bool,
 }
 
 /// Round `tokens` down to `block_size`.
@@ -66,50 +70,60 @@ pub fn common_reusable_tokens(
         return 0;
     }
 
-    // Every group reports its own hit; the smallest one is what the engine
-    // restores. A group that proves nothing drops the whole prefix, because the
-    // engine takes the minimum across all groups.
-    let mut boundary = max_reusable_tokens;
-    for group in groups {
-        let available = longest_supported(group, target, u64::MAX);
-        let hit = align_down(available.min(max_reusable_tokens), group.block_size);
-        if hit == 0 {
-            return 0;
-        }
-        boundary = boundary.min(hit);
+    // A group that never published pages cannot contradict another group's
+    // evidence: V4-class layouts store sliding state only as key-only events
+    // next to the compressed group that names the pages.
+    let constraining: Vec<&HybridGroupView<'_>> =
+        groups.iter().filter(|group| group.page_evidence).collect();
+    if constraining.is_empty() {
+        return 0;
     }
 
-    // Re-check every group at the reduced boundary until it stops moving, as
-    // the engine's coordinator does.
+    // Reproduce the engine's coordinator: every group reports the longest
+    // boundary it can restore under the current cap, the smallest one wins, and
+    // the loop repeats because that smaller cap can invalidate a sliding
+    // group's window.
+    let mut boundary = max_reusable_tokens;
+    let unit = constraining
+        .iter()
+        .map(|group| group.block_size)
+        .min()
+        .unwrap_or(1);
     loop {
         let mut next = boundary;
-        for group in groups {
-            next = next.min(supported_at(group, target, boundary));
+        for group in &constraining {
+            next = next.min(align_down(
+                supported_at(group, target, boundary),
+                group.block_size,
+            ));
         }
         if next == 0 {
             return 0;
         }
         if next == boundary {
-            return boundary;
+            return align_down(boundary, unit);
         }
         boundary = next;
     }
 }
 
-/// Whether one group can still restore `boundary` (in tokens). A sliding
-/// window needs `ceil((window - 1) / block_size)` contiguous blocks below the
-/// boundary, as the engine's sliding lookup does.
+/// The largest boundary at or below `boundary` this group can still restore.
+///
+/// Dense and compressed groups restore a prefix from the root, so the cap is
+/// their only limit. A sliding group does not: it can only restore a boundary
+/// whose trailing window is resident, and the credit never exceeds the end of
+/// the run that covers it.
 fn supported_at(group: &HybridGroupView<'_>, target: &RoutableTarget, boundary: u64) -> u64 {
+    let size = u64::from(group.block_size);
+    if size == 0 {
+        return 0;
+    }
     let HybridGroupKind::SlidingWindow { window_tokens } = group.kind else {
         return longest_supported(group, target, boundary);
     };
-    let size = u64::from(group.block_size);
-    if size == 0 || window_tokens == 0 {
-        return 0;
-    }
     let cap_blocks = boundary / size;
     let needed = window_tokens.saturating_sub(1).div_ceil(size);
-    let mut fallback = 0;
+    let mut best = 0;
     for hit in group.matches.iter().filter(|hit| eligible(hit, target)) {
         for &(start, end) in &hit.segments {
             if start >= end {
@@ -119,15 +133,16 @@ fn supported_at(group: &HybridGroupView<'_>, target: &RoutableTarget, boundary: 
             if end <= start {
                 continue;
             }
-            if end - start >= needed {
-                return cap_blocks * size;
-            }
+            // A run anchored at the root has no earlier state the window could
+            // be missing, so any boundary up to its end is restorable.
             if start == 0 {
-                fallback = fallback.max(end * size);
+                best = best.max(end * size);
+            } else if end - start >= needed {
+                best = best.max(end * size);
             }
         }
     }
-    fallback
+    best
 }
 
 fn eligible(hit: &TierMatch, target: &RoutableTarget) -> bool {
@@ -156,37 +171,40 @@ fn longest_supported(group: &HybridGroupView<'_>, target: &RoutableTarget, cap: 
                 // Dense and compressed state cover every block from the root.
                 HybridGroupKind::FullAttention => {
                     if start == 0 {
-                        end
+                        end * size
                     } else {
                         0
                     }
                 }
                 HybridGroupKind::CompressedFullAttention { tokens_per_state } => {
-                    if start != 0
-                        || tokens_per_state == 0
-                        || !group.block_size.is_multiple_of(tokens_per_state)
-                    {
+                    if start != 0 || tokens_per_state == 0 {
                         0
                     } else {
-                        end
+                        // A compressed group restores whole states. When the
+                        // page size is not a state multiple the state-aligned
+                        // prefix is still restorable, so align the boundary
+                        // down instead of dropping the group's evidence.
+                        align_down(end * size, tokens_per_state)
                     }
                 }
                 // A checkpoint is restorable on its own.
-                HybridGroupKind::Checkpoint => end,
+                HybridGroupKind::Checkpoint => end * size,
                 // The window that ends at the boundary has to fit inside the
                 // resident run, except below block zero: a run anchored at the
                 // root has no earlier state the window could be missing, so the
                 // engine restores it even when it is shorter than the window.
+                // Credit stops at the run's end: the engine trims to the run,
+                // never to the requested boundary.
                 HybridGroupKind::SlidingWindow { window_tokens } => {
                     let needed = window_tokens.saturating_sub(1).div_ceil(size);
                     if start == 0 || end - start >= needed {
-                        end
+                        end * size
                     } else {
                         0
                     }
                 }
             };
-            best = best.max(candidate * size);
+            best = best.max(candidate);
         }
     }
     best
@@ -226,6 +244,7 @@ mod tests {
             block_size,
             kind,
             matches,
+            page_evidence: true,
         }
     }
 

@@ -324,6 +324,7 @@ impl KvIndexSupervisor {
                             worker_url,
                             self.api_key.as_deref(),
                             &source,
+                            None,
                         )
                         .await
                         {
@@ -389,6 +390,7 @@ impl KvIndexSupervisor {
                         worker_url,
                         self.api_key.as_deref(),
                         config,
+                        None,
                     )
                     .await
                     {
@@ -708,6 +710,22 @@ impl KvIndexSupervisor {
             self.retire_worker(previous);
         }
         let indexer = self.acquire_identity(&key);
+        // Endpoints the subscribers are about to attach to, so the freshness
+        // task can notice a publisher that moves while keeping its identity.
+        let bound_sources: Arc<BoundSources> = Arc::new(
+            event_sources
+                .iter()
+                .map(|ev| {
+                    (
+                        ev.dp_rank,
+                        BoundSource {
+                            endpoint: ev.pub_endpoint.clone(),
+                            replay_endpoint: ev.replay_endpoint.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        );
         let mut ranks = Vec::with_capacity(event_sources.len());
         let mut handles = Vec::with_capacity(event_sources.len());
         let mut hybrid_handles = Vec::new();
@@ -759,6 +777,7 @@ impl KvIndexSupervisor {
             let worker = worker_url.to_owned();
             let api_key = self.api_key.clone();
             let static_config = self.static_sources.get(worker_url).cloned();
+            let bound = bound_sources.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -784,7 +803,8 @@ impl KvIndexSupervisor {
                                 &client,
                                 &worker,
                                 api_key.as_deref(),
-                                config
+                                config,
+                                Some(&bound),
                             )
                             .await,
                             StaticHybridMatch::Matches | StaticHybridMatch::Unavailable(_)
@@ -1017,7 +1037,7 @@ async fn discover_worker(
                 "HTTP worker model and block-size metadata must be configured statically"
                     .to_string(),
             ),
-            sources: query_kv_event_sources(client, worker_url).await,
+            sources: query_kv_event_sources(client, worker_url, api_key).await,
             model_id: Ok(Some(worker_url.to_string())),
             hybrid: None,
         };
@@ -1166,11 +1186,22 @@ enum StaticHybridMatch {
     Unavailable(SourcesProbe),
 }
 
+#[derive(Clone, Debug)]
+struct BoundSource {
+    endpoint: String,
+    replay_endpoint: Option<String>,
+}
+
+/// The publisher endpoints a worker's hybrid subscribers are attached to, by
+/// rank. Used to notice a publisher that moved while keeping its identity.
+type BoundSources = HashMap<u32, BoundSource>;
+
 async fn static_hybrid_sources_match(
     client: &reqwest::Client,
     worker_url: &str,
     api_key: Option<&str>,
     config: &StaticKvEventSources,
+    bound: Option<&BoundSources>,
 ) -> StaticHybridMatch {
     // A rank-pinned worker URL (`base@1`) still queries the engine's HTTP
     // control plane on the base URL.
@@ -1223,6 +1254,27 @@ async fn static_hybrid_sources_match(
         }
         if layout_topic_mismatch(config, &observed).is_some() {
             return StaticHybridMatch::Differs;
+        }
+        // The subscribers stay attached to the endpoints captured when the
+        // layout was installed, so a publisher that moved or disabled events
+        // while keeping its rank and topic has to retire the provider.
+        if let Some(bound) = bound {
+            let same_endpoint = |left: &str, right: &str| {
+                resolve_endpoint(left, &host)
+                    .ok()
+                    .zip(resolve_endpoint(right, &host).ok())
+                    .is_some_and(|(left, right)| left == right)
+            };
+            let moved = bound.iter().any(|(rank, installed)| {
+                observed.get(&rank.to_string()).is_none_or(|actual| {
+                    !events_enabled(actual)
+                        || !same_endpoint(&actual.endpoint, &installed.endpoint)
+                        || actual.replay_endpoint != installed.replay_endpoint
+                })
+            });
+            if moved {
+                return StaticHybridMatch::Differs;
+            }
         }
         let missing_rank = config.hybrid.as_ref().is_some_and(|layout| {
             layout.ranks.iter().any(|rank| {
@@ -1410,8 +1462,9 @@ async fn fetch_kv_event_sources(
 async fn query_kv_event_sources(
     client: &reqwest::Client,
     worker_url: &str,
+    api_key: Option<&str>,
 ) -> Result<KvEventSourcesResponse, SourcesUnavailable> {
-    fetch_kv_event_sources(client, worker_url, None).await
+    fetch_kv_event_sources(client, worker_url, api_key).await
 }
 
 impl From<crate::backend::control::KvEventSourcesError> for SourcesUnavailable {
@@ -2024,12 +2077,12 @@ mod tests {
         };
         let client = reqwest::Client::new();
         assert_eq!(
-            static_hybrid_sources_match(&client, &worker, None, &config).await,
+            static_hybrid_sources_match(&client, &worker, None, &config, None).await,
             StaticHybridMatch::Matches
         );
         sources.write().await["1"]["topic"] = serde_json::json!("boot-2-rank-1");
         assert_eq!(
-            static_hybrid_sources_match(&client, &worker, None, &config).await,
+            static_hybrid_sources_match(&client, &worker, None, &config, None).await,
             StaticHybridMatch::Differs
         );
         task.abort();
@@ -2077,19 +2130,19 @@ mod tests {
         };
         let client = reqwest::Client::new();
         assert_eq!(
-            static_hybrid_sources_match(&client, &worker, None, &config).await,
+            static_hybrid_sources_match(&client, &worker, None, &config, None).await,
             StaticHybridMatch::Matches
         );
         // A restarted engine that advertises a new topic belongs to another boot.
         sources.write().await["0"]["topic"] = serde_json::json!("kv-hybrid-boot-2");
         assert_eq!(
-            static_hybrid_sources_match(&client, &worker, None, &config).await,
+            static_hybrid_sources_match(&client, &worker, None, &config, None).await,
             StaticHybridMatch::Differs
         );
         // An engine that advertises nothing cannot keep the old binding alive.
         *sources.write().await = serde_json::json!({});
         assert_eq!(
-            static_hybrid_sources_match(&client, &worker, None, &config).await,
+            static_hybrid_sources_match(&client, &worker, None, &config, None).await,
             StaticHybridMatch::Differs
         );
         task.abort();
