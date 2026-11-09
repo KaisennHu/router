@@ -101,7 +101,7 @@ async-channel = "2"
 tonic = { version = "0.14", features = ["transport"] }
 tonic-health = "0.14"
 # Use the companion vLLM PR until vllm-proto 0.7 is published.
-vllm-proto = { git = "https://github.com/vllm-project/vllm", rev = "5c6350c5ac2577edec4bfef82932cb6664ca150d" }
+vllm-proto = { git = "https://github.com/vllm-project/vllm", rev = "28df758f0db1ca04c97889beee8757234529fed5" }
 # `kv_transfer_params` is a protobuf `Struct`.
 prost-types = "0.14"
 # Rust crates in the vLLM tree (not pip). Unpublished on crates.io; Cargo
