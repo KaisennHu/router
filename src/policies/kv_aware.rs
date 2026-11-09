@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -202,11 +202,8 @@ pub struct KvRequestSlot {
 
 struct KvSlotAccounting {
     prefill_tokens: u64,
-    context: InflightContext,
-    /// Affinity binding reference acquired with this reservation, if any.
     affinity: Option<Arc<AffinityRecord>>,
     sequence: u64,
-    // 0 = prefill, 1 = decode, 2 = freed.
     state: u8,
 }
 
@@ -215,17 +212,13 @@ impl KvRequestSlot {
         manager: Arc<dyn SlotManager>,
         target: RoutableTarget,
         prefill_tokens: u64,
-        context_tokens: Option<u64>,
         affinity: Option<Arc<AffinityRecord>>,
     ) -> Self {
-        let context = InflightContext::from_length(context_tokens);
-        manager.adjust_inflight_context(&target, InflightContext::Inactive, context);
         Self {
             manager,
             target,
             accounting: Arc::new(Mutex::new(KvSlotAccounting {
                 prefill_tokens,
-                context,
                 affinity,
                 sequence: 0,
                 state: 0,
@@ -233,18 +226,17 @@ impl KvRequestSlot {
         }
     }
 
-    /// Replace this request's remaining prefill work with a newer worker snapshot.
     pub fn update_prefill_progress(&self, sequence: u64, remaining_tokens: u64) {
         let mut accounting = self.accounting.lock();
         if accounting.state == 2 || sequence <= accounting.sequence {
             return;
         }
-        let previous = accounting.prefill_tokens;
-        accounting.prefill_tokens = remaining_tokens;
         accounting.sequence = sequence;
-        self.manager
-            .adjust_prefill(&self.target, previous, remaining_tokens);
-        self.trace_ledger("progress", previous, remaining_tokens);
+        if accounting.prefill_tokens != remaining_tokens {
+            self.manager
+                .adjust_prefill(&self.target, accounting.prefill_tokens, remaining_tokens);
+            accounting.prefill_tokens = remaining_tokens;
+        }
     }
 
     pub fn begin_decode(&self) {
@@ -253,33 +245,7 @@ impl KvRequestSlot {
             accounting.state = 1;
             let prefill_tokens = std::mem::take(&mut accounting.prefill_tokens);
             self.manager.adjust_prefill(&self.target, prefill_tokens, 0);
-            self.trace_ledger("first_output", prefill_tokens, 0);
         }
-    }
-
-    /// Account for generated tokens observed on the worker stream.
-    pub fn record_generated_tokens(&self, tokens: Option<u64>) {
-        let mut accounting = self.accounting.lock();
-        if accounting.state == 2 {
-            return;
-        }
-        let context = match (accounting.context, tokens) {
-            (InflightContext::Known(length), Some(tokens)) => {
-                InflightContext::from_length(length.checked_add(tokens))
-            }
-            _ => InflightContext::Unknown,
-        };
-        self.manager
-            .adjust_inflight_context(&self.target, accounting.context, context);
-        accounting.context = context;
-        tracing::trace!(
-            target: "kv_ledger",
-            instance = %self.target.instance_id,
-            dp_rank = self.target.dp_rank,
-            generated_tokens = ?tokens,
-            inflight_context = ?context,
-            "in-flight context updated"
-        );
     }
 
     pub fn release(&self) {
@@ -288,36 +254,10 @@ impl KvRequestSlot {
             accounting.state = 2;
             let prefill_tokens = std::mem::take(&mut accounting.prefill_tokens);
             self.manager.adjust_prefill(&self.target, prefill_tokens, 0);
-            self.manager.adjust_inflight_context(
-                &self.target,
-                accounting.context,
-                InflightContext::Inactive,
-            );
-            accounting.context = InflightContext::Inactive;
             self.manager.free(&self.target);
             if let Some(record) = &accounting.affinity {
                 record.release_ref();
             }
-            self.trace_ledger("release", prefill_tokens, 0);
-        }
-    }
-
-    /// Debug-only view of the per-target ledger after a transition. Disabled
-    /// by default; carries no request identity.
-    fn trace_ledger(&self, event: &'static str, old_tokens: u64, new_tokens: u64) {
-        if tracing::enabled!(target: "kv_ledger", tracing::Level::DEBUG) {
-            let sample = self.manager.sample(&self.target);
-            tracing::debug!(
-                target: "kv_ledger",
-                event,
-                instance = %self.target.instance_id,
-                dp_rank = self.target.dp_rank,
-                old_tokens,
-                new_tokens,
-                active_prefill_tokens = sample.active_prefill_tokens,
-                active_requests = sample.active_requests,
-                "kv slot ledger"
-            );
         }
     }
 }
@@ -342,25 +282,6 @@ pub struct LoadSample {
 
 pub trait LoadProvider: Send + Sync {
     fn sample(&self, target: &RoutableTarget) -> LoadSample;
-
-    /// Sum of in-flight request contexts, or `None` if any length is unknown.
-    fn inflight_context_tokens(&self, _target: &RoutableTarget) -> Option<u64> {
-        None
-    }
-}
-
-/// One request's contribution to a worker's in-flight context total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InflightContext {
-    Inactive,
-    Unknown,
-    Known(u64),
-}
-
-impl InflightContext {
-    fn from_length(length: Option<u64>) -> Self {
-        length.map_or(Self::Unknown, Self::Known)
-    }
 }
 
 pub trait SlotManager: LoadProvider {
@@ -372,13 +293,6 @@ pub trait SlotManager: LoadProvider {
         decode_target: &RoutableTarget,
         prefill_tokens: u64,
     );
-    fn adjust_inflight_context(
-        &self,
-        _target: &RoutableTarget,
-        _old: InflightContext,
-        _new: InflightContext,
-    ) {
-    }
     fn free(&self, target: &RoutableTarget);
 
     /// Drop idle state for a target that is no longer registered. Implementers
@@ -387,20 +301,9 @@ pub trait SlotManager: LoadProvider {
 }
 
 #[derive(Debug, Default)]
-struct InflightTotals {
-    tokens: u128,
-    known: usize,
-    unknown: usize,
-}
-
-#[derive(Debug, Default)]
 struct SlotCounters {
     active_prefill_tokens: AtomicU64,
     active_requests: AtomicUsize,
-    inflight: Mutex<InflightTotals>,
-    // Legacy callers cannot supply a context length. Until the target drains,
-    // retain this conservative marker rather than treating the length as zero.
-    legacy_context_unknown: AtomicBool,
 }
 
 /// Router-local, bracket-based load view keyed at the index's `(worker, rank)`
@@ -426,15 +329,9 @@ impl InMemorySlotManager {
     fn prune_if_idle(&self, target: &RoutableTarget) {
         if let dashmap::mapref::entry::Entry::Occupied(entry) = self.slots.entry(target.clone()) {
             let slot = entry.get();
-            let idle = {
-                let inflight = slot.inflight.lock();
-                slot.active_requests.load(Ordering::Acquire) == 0
-                    && slot.active_prefill_tokens.load(Ordering::Acquire) == 0
-                    && inflight.tokens == 0
-                    && inflight.known == 0
-                    && inflight.unknown == 0
-            };
-            if idle {
+            if slot.active_requests.load(Ordering::Acquire) == 0
+                && slot.active_prefill_tokens.load(Ordering::Acquire) == 0
+            {
                 // The occupied entry keeps the shard locked between checking
                 // the counters and removal, so a concurrent begin cannot be
                 // detached from the map.
@@ -466,47 +363,6 @@ impl LoadProvider for InMemorySlotManager {
             active_requests: slot.active_requests.load(Ordering::Acquire),
         }
     }
-
-    fn inflight_context_tokens(&self, target: &RoutableTarget) -> Option<u64> {
-        let Some(slot) = self.slots.get(target) else {
-            return Some(0);
-        };
-        let inflight = slot.inflight.lock();
-        // A legacy or concurrently admitted request can be active without a
-        // context reservation. Do not compare a partial or overflowing sum.
-        if inflight.unknown != 0
-            || slot.legacy_context_unknown.load(Ordering::Acquire)
-            || inflight.known != slot.active_requests.load(Ordering::Acquire)
-        {
-            return None;
-        }
-        u64::try_from(inflight.tokens).ok()
-    }
-}
-
-fn replace_inflight_context(slot: &SlotCounters, old: InflightContext, new: InflightContext) {
-    if old == new {
-        return;
-    }
-    let mut inflight = slot.inflight.lock();
-    match old {
-        InflightContext::Inactive => {}
-        InflightContext::Unknown => inflight.unknown = inflight.unknown.saturating_sub(1),
-        InflightContext::Known(tokens) => {
-            inflight.tokens = inflight.tokens.saturating_sub(u128::from(tokens));
-            inflight.known = inflight.known.saturating_sub(1);
-        }
-    }
-    match new {
-        InflightContext::Inactive => {}
-        InflightContext::Unknown => {
-            inflight.unknown += 1;
-        }
-        InflightContext::Known(tokens) => {
-            inflight.known += 1;
-            inflight.tokens += u128::from(tokens);
-        }
-    }
 }
 
 impl SlotManager for InMemorySlotManager {
@@ -536,31 +392,18 @@ impl SlotManager for InMemorySlotManager {
         prefill_tokens: u64,
     ) {
         if prefill_target == decode_target {
-            self.update_or_insert(prefill_target, |slot| {
-                atomic_saturating_sub_u64(&slot.active_prefill_tokens, prefill_tokens);
-                slot.legacy_context_unknown.store(true, Ordering::Release);
+            self.update_or_insert(prefill_target, |prefill| {
+                atomic_saturating_sub_u64(&prefill.active_prefill_tokens, prefill_tokens);
             });
         } else {
-            self.update_or_insert(prefill_target, |slot| {
-                atomic_saturating_sub_u64(&slot.active_prefill_tokens, prefill_tokens);
-                atomic_saturating_sub_usize(&slot.active_requests, 1);
+            self.update_or_insert(prefill_target, |prefill| {
+                atomic_saturating_sub_u64(&prefill.active_prefill_tokens, prefill_tokens);
+                atomic_saturating_sub_usize(&prefill.active_requests, 1);
             });
-            self.update_or_insert(decode_target, |slot| {
-                slot.active_requests.fetch_add(1, Ordering::AcqRel);
-                slot.legacy_context_unknown.store(true, Ordering::Release);
+            self.update_or_insert(decode_target, |decode| {
+                decode.active_requests.fetch_add(1, Ordering::AcqRel);
             });
             self.prune_if_idle(prefill_target);
-        }
-    }
-
-    fn adjust_inflight_context(
-        &self,
-        target: &RoutableTarget,
-        old: InflightContext,
-        new: InflightContext,
-    ) {
-        if old != new {
-            self.update_or_insert(target, |slot| replace_inflight_context(slot, old, new));
         }
     }
 
@@ -645,22 +488,6 @@ pub struct CostComponents {
     pub ptoken: u64,
     /// Current active request count (max of the slot-manager sample and worker load).
     pub batchsize: usize,
-}
-
-fn choose_minimum_tie<R: Rng + ?Sized>(
-    candidates: &[(usize, u64)],
-    rng: &mut R,
-) -> Option<(usize, usize)> {
-    let minimum = candidates.iter().map(|(_, context)| *context).min()?;
-    let eligible: Vec<usize> = candidates
-        .iter()
-        .filter(|(_, context)| *context == minimum)
-        .map(|(position, _)| *position)
-        .collect();
-    Some((
-        eligible[rng.random_range(0..eligible.len())],
-        eligible.len(),
-    ))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1116,7 +943,6 @@ struct SelectionPlan {
     bindings: Vec<TargetBinding>,
     grouped: Vec<Vec<TierMatch>>,
     input_tokens: Vec<usize>,
-    context_tokens: Vec<Option<u64>>,
     prefill_tokens: Vec<Option<u64>>,
     has_tokens: bool,
 }
@@ -1373,7 +1199,7 @@ impl KvAwarePolicy {
         )?;
         let candidates = self.candidate_views(workers, &plan);
         let (costs, components) = self.score_candidates(&plan, &candidates)?;
-        let position = self.pick_position(&costs, &candidates, None)?;
+        let position = self.pick_position(plan.has_tokens, &costs, &components, None)?;
         let (worker_index, _, decision) =
             self.decision_for_position(&plan, &candidates, &costs, &components, position);
         Some((worker_index, decision))
@@ -1447,7 +1273,6 @@ impl KvAwarePolicy {
                     bindings,
                     grouped: vec![Vec::new(); count],
                     input_tokens: vec![0; count],
-                    context_tokens: vec![None; count],
                     prefill_tokens: vec![None; count],
                     has_tokens: false,
                 }
@@ -1499,7 +1324,12 @@ impl KvAwarePolicy {
                         record.release_ref();
                     }
                     let eligible = Self::eligible_positions(workers, &plan, excluded_workers);
-                    let position = self.pick_position(&costs, &candidates, eligible.as_deref())?;
+                    let position = self.pick_position(
+                        plan.has_tokens,
+                        &costs,
+                        &components,
+                        eligible.as_deref(),
+                    )?;
                     let binding = &plan.bindings[position];
                     // Retry exclusions preserve a valid binding; unregistered
                     // targets cannot establish one without a generation.
@@ -1543,18 +1373,7 @@ impl KvAwarePolicy {
             // Reserve the actual target's slot and worker load before unlocking.
             let slot = self.slot_manager.as_ref().map(|manager| {
                 manager.begin_prefill(&target, new_prefill_tokens);
-                let context = if crate::backend::is_grpc_url(workers[worker_index].url()) {
-                    plan.context_tokens[position]
-                } else {
-                    None
-                };
-                KvRequestSlot::new(
-                    manager.clone(),
-                    target,
-                    new_prefill_tokens,
-                    context,
-                    record.take(),
-                )
+                KvRequestSlot::new(manager.clone(), target, new_prefill_tokens, record.take())
             });
             // No slot guard will run; release the reference inline.
             if slot.is_none() {
@@ -1657,7 +1476,6 @@ impl KvAwarePolicy {
         let mut query_cache: HashMap<(Option<CacheKey>, &[u32]), Vec<TierMatch>> = HashMap::new();
         let mut grouped = Vec::with_capacity(bindings.len());
         let mut input_tokens = Vec::with_capacity(bindings.len());
-        let mut context_tokens = Vec::with_capacity(bindings.len());
         let mut prefill_tokens = Vec::with_capacity(bindings.len());
         for ((binding, prompts), &worker_index) in bindings.iter().zip(prompts).zip(&healthy) {
             let mut total_input = 0usize;
@@ -1723,13 +1541,11 @@ impl KvAwarePolicy {
                     }
                 }
             }
-            let known_context = !prompts.is_empty();
-            if !known_context {
+            if prompts.is_empty() {
                 total_input = known_input_tokens;
             }
             grouped.push(single_matches);
             input_tokens.push(total_input);
-            context_tokens.push(known_context.then_some(total_input as u64));
             prefill_tokens.push((has_tokens && prompts.len() > 1).then_some(total_prefill));
         }
         Some(SelectionPlan {
@@ -1737,7 +1553,6 @@ impl KvAwarePolicy {
             bindings,
             grouped,
             input_tokens,
-            context_tokens,
             prefill_tokens,
             has_tokens,
         })
@@ -1831,77 +1646,54 @@ impl KvAwarePolicy {
 
     fn pick_position(
         &self,
+        has_tokens: bool,
         costs: &[f64],
-        candidates: &[CandidateView<'_>],
+        components: &[CostComponents],
         eligible: Option<&[usize]>,
     ) -> Option<usize> {
-        self.pick_position_with_rng(costs, candidates, eligible, &mut rand::rng())
+        let Some(eligible) = eligible else {
+            return self.pick_among(has_tokens, costs, components);
+        };
+        let eligible_costs: Vec<f64> = eligible.iter().map(|&index| costs[index]).collect();
+        let eligible_components: Vec<CostComponents> =
+            eligible.iter().map(|&index| components[index]).collect();
+        let offset = self.pick_among(has_tokens, &eligible_costs, &eligible_components)?;
+        eligible.get(offset).copied()
     }
 
-    fn pick_position_with_rng<R: Rng + ?Sized>(
+    fn pick_among(
         &self,
+        has_tokens: bool,
         costs: &[f64],
-        candidates: &[CandidateView<'_>],
-        eligible: Option<&[usize]>,
-        rng: &mut R,
+        components: &[CostComponents],
     ) -> Option<usize> {
-        let positions: Vec<usize> =
-            eligible.map_or_else(|| (0..costs.len()).collect(), |indices| indices.to_vec());
-        let eligible_costs: Vec<f64> = positions.iter().map(|&index| costs[index]).collect();
-        let selected = self.picker.pick(&eligible_costs)?;
-        let chosen_cost = *eligible_costs.get(selected)?;
-        let tied: Vec<usize> = positions
-            .into_iter()
-            .filter(|&position| costs[position] == chosen_cost)
-            .collect();
-        if tied.len() == 1 {
-            return tied.first().copied();
+        // Zero work remains possible for token-less requests.
+        // Preserve KV preference, breaking equal-work ties by projected load.
+        if costs.iter().all(|cost| *cost == 0.0)
+            || (self.params.router_temperature <= 0.0 && costs.contains(&0.0))
+        {
+            let rank = |component: &CostComponents| {
+                (
+                    if has_tokens { component.ptoken } else { 0 },
+                    component.batchsize,
+                )
+            };
+            let best = components
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| costs[*index] == 0.0)
+                .min_by_key(|(_, component)| rank(component))
+                .map(|(_, component)| rank(component))?;
+            let tied: Vec<usize> = components
+                .iter()
+                .enumerate()
+                .filter(|(index, component)| costs[*index] == 0.0 && rank(component) == best)
+                .map(|(index, _)| index)
+                .collect();
+            pick_tied(&tied)
+        } else {
+            self.picker.pick(costs)
         }
-
-        let contexts: Vec<(usize, Option<u64>)> = tied
-            .iter()
-            .copied()
-            .map(|position| {
-                let candidate = &candidates[position];
-                let tracked = self.load.sample(candidate.target).active_requests;
-                let context = if candidate.load.active_requests == 0 {
-                    Some(0)
-                } else if tracked < candidate.load.active_requests {
-                    None
-                } else {
-                    self.load.inflight_context_tokens(candidate.target)
-                };
-                (position, context)
-            })
-            .collect();
-        let unknown = contexts.iter().any(|(_, context)| context.is_none());
-        let values: Vec<(usize, u64)> = if unknown {
-            tied.iter()
-                .map(|&position| (position, candidates[position].load.active_requests as u64))
-                .collect()
-        } else {
-            contexts
-                .into_iter()
-                .filter_map(|(position, context)| context.map(|context| (position, context)))
-                .collect()
-        };
-        let (position, equal_minima) = choose_minimum_tie(&values, rng)?;
-        let outcome = if unknown {
-            if equal_minima == 1 {
-                "active_requests"
-            } else {
-                "active_random"
-            }
-        } else if equal_minima == values.len() {
-            "random"
-        } else if equal_minima > 1 {
-            "context_random"
-        } else {
-            "context"
-        };
-        metrics::counter!("vllm_router_kv_aware_inflight_context_tie_break_total", "outcome" => outcome)
-            .increment(1);
-        Some(position)
     }
 
     fn decision_for_position(
@@ -2242,7 +2034,6 @@ mod tests {
     use super::*;
     use crate::request_identity::{resolve_affinity_identity, IdentityFields};
     use http::HeaderMap;
-    use rand::{rngs::StdRng, SeedableRng};
     use serde_json::Value as JsonValue;
 
     fn affinity_from_request(
@@ -2381,10 +2172,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{case}: no worker selected for {mask:?}"))
             };
             let receipt = select(&mask, &[]);
-            assert!(
-                receipt.worker_index < count.saturating_sub(1).max(1),
-                "{case}: an eligible cache hit should win"
-            );
+            assert!(mask[receipt.worker_index], "{case}: ineligible worker");
             assert_eq!(receipt.new_prefill_tokens, 1, "{case}");
             assert_eq!(provider.queries.load(Ordering::Relaxed), 1, "{case}");
             assert_eq!(provider.blocks.load(Ordering::Relaxed), 3, "{case}");
@@ -2535,420 +2323,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_decode_context_stays_unknown_until_the_target_drains() {
-        let slots = InMemorySlotManager::new();
-        let worker = target("worker", 0);
-        slots.begin_prefill(&worker, 10);
-        slots.begin_prefill(&worker, 20);
-        slots.begin_decode(&worker, &worker, 10);
-        assert_eq!(slots.inflight_context_tokens(&worker), None);
-        slots.free(&worker);
-        assert_eq!(slots.inflight_context_tokens(&worker), None);
-        slots.adjust_prefill(&worker, 20, 0);
-        slots.free(&worker);
-        assert_eq!(slots.inflight_context_tokens(&worker), Some(0));
-    }
-
-    #[test]
-    fn inflight_context_tracks_admission_output_reprefill_and_cleanup() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 64);
-        let slot = KvRequestSlot::new(manager.clone(), worker.clone(), 64, Some(1000), None);
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(1000));
-
-        slot.record_generated_tokens(Some(1));
-        slot.begin_decode(); // The consumer can also observe the first frame.
-        slot.record_generated_tokens(Some(3));
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(1004));
-        assert_eq!(manager.sample(&worker).active_prefill_tokens, 0);
-
-        slot.update_prefill_progress(1, 20);
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(1004));
-        assert_eq!(manager.sample(&worker).active_prefill_tokens, 20);
-        slot.record_generated_tokens(Some(2));
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(1006));
-        assert_eq!(manager.sample(&worker).active_prefill_tokens, 20);
-        slot.update_prefill_progress(2, 0);
-        assert_eq!(manager.sample(&worker).active_prefill_tokens, 0);
-
-        slot.release();
-        slot.release();
-        slot.record_generated_tokens(Some(4));
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-        assert_eq!(manager.sample(&worker), LoadSample::default());
-    }
-
-    #[test]
-    fn unknown_inflight_context_does_not_hide_known_requests() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 8);
-        manager.begin_prefill(&worker, 16);
-        let known = KvRequestSlot::new(manager.clone(), worker.clone(), 8, Some(80), None);
-        let unknown = KvRequestSlot::new(manager.clone(), worker.clone(), 16, None, None);
-        known.record_generated_tokens(Some(2));
-        unknown.record_generated_tokens(Some(1));
-        assert_eq!(manager.inflight_context_tokens(&worker), None);
-        unknown.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(82));
-        known.record_generated_tokens(None);
-        assert_eq!(manager.inflight_context_tokens(&worker), None);
-        known.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-    }
-
-    #[test]
-    fn incomplete_context_reservations_are_not_compared() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 0);
-        let tracked = KvRequestSlot::new(manager.clone(), worker.clone(), 0, Some(80), None);
-        manager.begin_prefill(&worker, 0); // A legacy request without a slot.
-        assert_eq!(manager.inflight_context_tokens(&worker), None);
-        manager.free(&worker);
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(80));
-        tracked.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-    }
-
-    #[test]
-    fn concurrent_output_updates_and_release_do_not_leak_context() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 8);
-        let slot = KvRequestSlot::new(manager.clone(), worker.clone(), 8, Some(80), None);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                let slot = slot.clone();
-                scope.spawn(move || {
-                    for _ in 0..100 {
-                        slot.record_generated_tokens(Some(1));
-                    }
-                });
-            }
-        });
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(480));
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                let slot = slot.clone();
-                scope.spawn(move || {
-                    slot.release();
-                    slot.record_generated_tokens(Some(1));
-                });
-            }
-        });
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-        assert_eq!(manager.sample(&worker), LoadSample::default());
-    }
-
-    #[test]
-    fn concurrent_context_reads_never_observe_a_partial_update() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 1);
-        let slot = KvRequestSlot::new(manager.clone(), worker.clone(), 1, Some(100), None);
-        std::thread::scope(|scope| {
-            let writer = slot.clone();
-            scope.spawn(move || {
-                for _ in 0..10_000 {
-                    writer.record_generated_tokens(Some(1));
-                }
-            });
-            for _ in 0..10_000 {
-                let observed = manager.inflight_context_tokens(&worker).unwrap();
-                assert!((100..=10_100).contains(&observed));
-            }
-        });
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(10_100));
-        slot.release();
-    }
-
-    #[test]
-    fn overflowing_context_sum_falls_back_and_recovers_after_release() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 0);
-        manager.begin_prefill(&worker, 0);
-        let large = KvRequestSlot::new(manager.clone(), worker.clone(), 0, Some(u64::MAX), None);
-        let small = KvRequestSlot::new(manager.clone(), worker.clone(), 0, Some(1), None);
-        assert_eq!(manager.inflight_context_tokens(&worker), None);
-        small.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(u64::MAX));
-        large.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-    }
-
-    #[test]
-    fn equal_score_tie_prefers_smaller_context_and_randomizes_equal_contexts() {
-        let mut rng = StdRng::seed_from_u64(123);
-        let candidates = [(0, 500), (1, 100), (2, 100)];
-        let mut counts = [0; 3];
-        for _ in 0..100 {
-            let (selected, equal_minima) = choose_minimum_tie(&candidates, &mut rng).unwrap();
-            assert_eq!(equal_minima, 2);
-            counts[selected] += 1;
-        }
-        assert_eq!(counts[0], 0);
-        assert!(counts[1] > 0 && counts[2] > 0);
-    }
-
-    #[test]
-    fn inflight_context_is_only_a_tie_breaker_for_the_primary_score() {
-        let policy = KvAwarePolicy::new(CostParams::default());
-        let manager = policy.slot_manager().unwrap();
-        let first = target("first", 0);
-        let second = target("second", 0);
-        let slots: Vec<_> = [(&first, 500), (&second, 100)]
-            .into_iter()
-            .map(|(worker, context)| {
-                manager.begin_prefill(worker, 1);
-                KvRequestSlot::new(manager.clone(), worker.clone(), 1, Some(context), None)
-            })
-            .collect();
-        let candidates = [&first, &second].map(|worker| CandidateView {
-            target: worker,
-            matches: &[],
-            load: manager.sample(worker),
-            input_tokens: 1,
-            prefill_tokens: None,
-        });
-        assert_eq!(
-            policy.pick_position(&[1.0, 1.0], &candidates, None),
-            Some(1)
-        );
-        assert_eq!(
-            policy.pick_position(&[1.0, 2.0], &candidates, None),
-            Some(0)
-        );
-        assert_eq!(
-            policy.pick_position(&[1.0, 1.0], &candidates, Some(&[0])),
-            Some(0)
-        );
-        for slot in slots {
-            slot.release();
-        }
-    }
-
-    #[test]
-    fn context_tie_break_keeps_the_pickers_selected_score_group() {
-        #[derive(Debug)]
-        struct PickSecond;
-        impl Picker for PickSecond {
-            fn pick(&self, _: &[f64]) -> Option<usize> {
-                Some(1)
-            }
-        }
-        let manager = Arc::new(InMemorySlotManager::new());
-        let policy = KvAwarePolicy::with_components(
-            Arc::new(EmptyMatchProvider),
-            manager.clone(),
-            vec![],
-            Arc::new(PickSecond),
-            CostParams {
-                router_temperature: 1.0,
-                ..CostParams::default()
-            },
-        );
-        let workers = [target("first", 0), target("second", 0), target("third", 0)];
-        let mut slots = Vec::new();
-        for (worker, context) in workers.iter().zip([1, 500, 100]) {
-            manager.begin_prefill(worker, 0);
-            slots.push(KvRequestSlot::new(
-                manager.clone(),
-                worker.clone(),
-                0,
-                Some(context),
-                None,
-            ));
-        }
-        let candidates: Vec<_> = workers
-            .iter()
-            .map(|worker| CandidateView {
-                target: worker,
-                matches: &[],
-                load: manager.sample(worker),
-                input_tokens: 0,
-                prefill_tokens: None,
-            })
-            .collect();
-        // The picker chose the score-2 group. Context ranking must not pull
-        // the selection into the score-1 group when temperature is enabled.
-        assert_eq!(
-            policy.pick_position(&[1.0, 2.0, 2.0], &candidates, None),
-            Some(2)
-        );
-        for slot in slots {
-            slot.release();
-        }
-    }
-
-    #[test]
-    fn mixed_prefill_and_decode_reservations_share_the_same_tie_break() {
-        let policy = KvAwarePolicy::new(CostParams::default());
-        let manager = policy.slot_manager().unwrap();
-        let first = target("first", 0);
-        let second = target("second", 0);
-        let mut slots = Vec::new();
-        for (worker, prompt, output) in [
-            (&first, 1000, None),
-            (&first, 2000, None),
-            (&first, 500, Some(100)),
-            (&second, 100, None),
-            (&second, 200, None),
-            (&second, 700, Some(1)),
-        ] {
-            manager.begin_prefill(worker, 1);
-            let slot = KvRequestSlot::new(manager.clone(), worker.clone(), 1, Some(prompt), None);
-            if let Some(output) = output {
-                slot.record_generated_tokens(Some(output));
-                slot.begin_decode();
-            }
-            slots.push(slot);
-        }
-        assert_eq!(manager.inflight_context_tokens(&first), Some(3600));
-        assert_eq!(manager.inflight_context_tokens(&second), Some(1001));
-        let candidates = [&first, &second].map(|worker| CandidateView {
-            target: worker,
-            matches: &[],
-            load: manager.sample(worker),
-            input_tokens: 1,
-            prefill_tokens: None,
-        });
-        // The first worker has the smaller observed decode context (600),
-        // but the second has the smaller total in-flight context (1001).
-        assert_eq!(
-            policy.pick_position(&[1.0, 1.0], &candidates, None),
-            Some(1)
-        );
-        for slot in slots {
-            slot.release();
-        }
-    }
-
-    #[test]
-    fn unknown_context_ties_prefer_fewer_active_requests() {
-        let policy = KvAwarePolicy::new(CostParams::default());
-        let manager = policy.slot_manager().unwrap();
-        let first = target("first", 0);
-        let second = target("second", 0);
-        let views = || {
-            [&first, &second].map(|worker| CandidateView {
-                target: worker,
-                matches: &[],
-                load: manager.sample(worker),
-                input_tokens: 0,
-                prefill_tokens: None,
-            })
-        };
-
-        manager.begin_prefill(&first, 0);
-        manager.begin_prefill(&first, 0);
-        manager.begin_prefill(&second, 0);
-        let grpc_a = KvRequestSlot::new(manager.clone(), first.clone(), 0, Some(100), None);
-        let grpc_b = KvRequestSlot::new(manager.clone(), first.clone(), 0, Some(200), None);
-        let http = KvRequestSlot::new(manager.clone(), second.clone(), 0, None, None);
-        assert_eq!(manager.inflight_context_tokens(&first), Some(300));
-        assert_eq!(manager.inflight_context_tokens(&second), None);
-        for costs in [[0.0, 0.0], [5.0, 5.0]] {
-            assert_eq!(policy.pick_position(&costs, &views(), None), Some(1));
-        }
-        grpc_a.release();
-        grpc_b.release();
-        http.release();
-        assert_eq!(manager.inflight_context_tokens(&first), Some(0));
-        assert_eq!(manager.inflight_context_tokens(&second), Some(0));
-    }
-
-    #[test]
-    fn equal_active_counts_randomize_when_context_is_unknown() {
-        let policy = KvAwarePolicy::new(CostParams::default());
-        let manager = policy.slot_manager().unwrap();
-        let workers = [target("first", 0), target("second", 0), target("third", 0)];
-        let mut slots = Vec::new();
-        for (worker, count) in workers.iter().zip([1, 1, 2]) {
-            for _ in 0..count {
-                manager.begin_prefill(worker, 0);
-                slots.push(KvRequestSlot::new(
-                    manager.clone(),
-                    worker.clone(),
-                    0,
-                    None,
-                    None,
-                ));
-            }
-        }
-        let candidates: Vec<_> = workers
-            .iter()
-            .map(|worker| CandidateView {
-                target: worker,
-                matches: &[],
-                load: manager.sample(worker),
-                input_tokens: 0,
-                prefill_tokens: None,
-            })
-            .collect();
-        let mut rng = StdRng::seed_from_u64(123);
-        let mut counts = [0; 3];
-        for _ in 0..100 {
-            let selected = policy
-                .pick_position_with_rng(&[5.0, 5.0, 5.0], &candidates, None, &mut rng)
-                .unwrap();
-            counts[selected] += 1;
-        }
-        assert!(counts[0] > 0 && counts[1] > 0);
-        assert_eq!(counts[2], 0);
-        for slot in slots {
-            slot.release();
-        }
-    }
-
-    #[test]
-    fn equal_idle_contexts_are_randomized() {
-        let policy = KvAwarePolicy::new(CostParams::default());
-        let manager = policy.slot_manager().unwrap();
-        let workers = [target("first", 0), target("second", 0)];
-        let candidates: Vec<_> = workers
-            .iter()
-            .map(|worker| CandidateView {
-                target: worker,
-                matches: &[],
-                load: manager.sample(worker),
-                input_tokens: 0,
-                prefill_tokens: None,
-            })
-            .collect();
-        let mut rng = StdRng::seed_from_u64(123);
-        let mut counts = [0; 2];
-        for _ in 0..100 {
-            let selected = policy
-                .pick_position_with_rng(&[0.0, 0.0], &candidates, None, &mut rng)
-                .unwrap();
-            counts[selected] += 1;
-        }
-        assert!(counts[0] > 0 && counts[1] > 0);
-    }
-
-    #[test]
-    fn zero_inflight_context_is_known_before_output() {
-        let manager = Arc::new(InMemorySlotManager::new());
-        let worker = target("worker", 0);
-        manager.begin_prefill(&worker, 0);
-        let slot = KvRequestSlot::new(manager.clone(), worker.clone(), 0, Some(0), None);
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-        slot.begin_decode();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-        slot.release();
-        assert_eq!(manager.inflight_context_tokens(&worker), Some(0));
-    }
-
-    #[test]
     fn request_slot_tracks_reprefill_after_first_output_until_release() {
         let manager = Arc::new(InMemorySlotManager::new());
         let target = target("worker", 0);
         manager.begin_prefill(&target, 100);
         manager.begin_prefill(&target, 50);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None, None);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
 
         slot.update_prefill_progress(1, 60);
         slot.begin_decode();
@@ -2976,7 +2356,7 @@ mod tests {
         let manager = Arc::new(InMemorySlotManager::new());
         let target = target("worker", 0);
         manager.begin_prefill(&target, 100);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None, None);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 100, None);
 
         slot.update_prefill_progress(2, 60);
         slot.update_prefill_progress(1, 90);
@@ -3151,8 +2531,7 @@ mod tests {
         let slots = policy.slot_manager().unwrap();
         let decode = policy.target_for_worker(workers[0].as_ref());
         slots.begin_prefill(&decode, 8);
-        let decode_slot = KvRequestSlot::new(slots.clone(), decode, 8, Some(100), None);
-        decode_slot.begin_decode();
+        slots.begin_decode(&decode, &decode, 8);
         assert_eq!(
             policy.select_worker_with_token_ids(&workers[..2], None),
             Some(1)
@@ -3167,7 +2546,6 @@ mod tests {
         assert_eq!(receipt.decision.components.batchsize, 0);
         assert!(receipt.slot.is_some());
         release_receipt(&workers, &receipt);
-        decode_slot.release();
     }
 
     #[test]
@@ -3405,36 +2783,6 @@ mod tests {
         workers[1].increment_load();
 
         assert_eq!(policy.select_worker_with_token_ids(&workers, None), Some(1));
-    }
-
-    #[test]
-    fn missing_worker_tokenization_does_not_become_a_known_context() {
-        let policy = KvAwarePolicy::default();
-        let workers: Vec<Arc<dyn Worker>> = ["grpc://known", "grpc://missing"]
-            .iter()
-            .map(|url| {
-                Arc::new(BasicWorker::new((*url).into(), WorkerType::Regular)) as Arc<dyn Worker>
-            })
-            .collect();
-        let inputs = WorkerTokenInputs::from([(
-            workers[0].base_url().into(),
-            Arc::from(vec![vec![1, 2, 3, 4]]),
-        )]);
-        let plan = policy
-            .prepare_selection(
-                &workers,
-                QualifiedKvInput {
-                    tokens: KvRequestTokens::PerWorker(&inputs),
-                    eligibility: None,
-                },
-                None,
-                None,
-            )
-            .unwrap();
-        // The P estimate conservatively uses the other worker's input length;
-        // the context tie-break must not treat that estimate as observed.
-        assert_eq!(plan.input_tokens, [4, 4]);
-        assert_eq!(plan.context_tokens, [Some(4), None]);
     }
 
     #[test]
@@ -3973,8 +3321,8 @@ mod tests {
         let urls = ["http://a", "http://b"];
         let key = affinity_key("session-a");
 
-        // First placement binds to the idle worker a.
-        workers[1].increment_load();
+        // The idle pair is an exact tie, so the first placement may bind
+        // either worker; keep the rest of the test relative to that choice.
         let bound = policy
             .select_worker_with_receipt(&workers, None, None, None, Some(&key), &[])
             .unwrap();
@@ -3982,7 +3330,6 @@ mod tests {
         let second = 1 - first;
         assert_eq!(bound.decision.target, targets[first]);
         release_receipt(&workers, &bound);
-        workers[1].decrement_load();
 
         // Removal invalidates the binding; under load the next request rebinds.
         workers[first].increment_load();

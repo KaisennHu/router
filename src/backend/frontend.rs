@@ -9,10 +9,7 @@ use std::time::{Duration, Instant};
 
 use axum::response::Response;
 
-use super::grpc::{
-    FirstOutputCallback, GeneratedTokensCallback, GrpcEngineBackend, KvHandoff,
-    PrefillProgressCallback,
-};
+use super::grpc::{FirstOutputCallback, GrpcEngineBackend, KvHandoff, PrefillProgressCallback};
 use super::l1_encode_cache::{L1CacheConfig, L1CacheStats};
 use super::preprocess::{tokenize_chat_request_timed, FrontendHandle, TokenizeOut, TokenizerCache};
 use crate::protocols::spec::ChatCompletionRequest;
@@ -215,7 +212,7 @@ impl EngineFrontend {
 
     /// Convert + GenerateStream + detok on the selected worker URL.
     pub async fn dispatch(&self, worker_url: &str, prepared: PreparedRequest) -> Response {
-        self.dispatch_with_first_output(worker_url, prepared, None, None, None)
+        self.dispatch_with_first_output(worker_url, prepared, None, None)
             .await
     }
 
@@ -224,7 +221,6 @@ impl EngineFrontend {
         worker_url: &str,
         prepared: PreparedRequest,
         on_first_output: Option<FirstOutputCallback>,
-        on_generated_tokens: Option<GeneratedTokensCallback>,
         on_prefill_progress: Option<PrefillProgressCallback>,
     ) -> Response {
         self.grpc
@@ -232,7 +228,6 @@ impl EngineFrontend {
                 worker_url,
                 prepared,
                 on_first_output,
-                on_generated_tokens,
                 on_prefill_progress,
                 KvHandoff::default(),
             )
@@ -271,7 +266,7 @@ impl EngineFrontend {
             kv_transfer_params,
         };
         self.grpc
-            .dispatch_prepared(worker_url, prepared, None, None, None, handoff)
+            .dispatch_prepared(worker_url, prepared, None, None, handoff)
             .await
     }
 }

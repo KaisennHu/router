@@ -162,11 +162,6 @@ impl RequestLoadGuard {
         Some(Arc::new(move || slot.begin_decode()))
     }
 
-    fn generated_tokens_callback(&self) -> Option<crate::backend::grpc::GeneratedTokensCallback> {
-        let slot = self.state.kv_slot.clone()?;
-        Some(Arc::new(move |tokens| slot.record_generated_tokens(tokens)))
-    }
-
     fn prefill_progress_callback(&self) -> Option<crate::backend::grpc::PrefillProgressCallback> {
         // The backend may drop this callback before dispatch (for example,
         // when progress is disabled). Only the request guard releases load.
@@ -1929,7 +1924,7 @@ impl Router {
                     .into_response();
             };
             let on_first_output = load.first_output_callback();
-            let on_generated_tokens = load.generated_tokens_callback();
+
             let on_prefill_progress = load.prefill_progress_callback();
             let mut response = self
                 .frontend
@@ -1937,7 +1932,6 @@ impl Router {
                     worker_url,
                     prepared,
                     on_first_output,
-                    on_generated_tokens,
                     on_prefill_progress,
                 )
                 .await;
@@ -3457,7 +3451,7 @@ mod tests {
             dp_rank: 0,
         };
         manager.begin_prefill(&target, 16);
-        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None, None);
+        let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None);
         let load = RequestLoadGuard::new(None, Some(slot));
         let callback = load.prefill_progress_callback().unwrap();
         assert_eq!(manager.sample(&target).active_prefill_tokens, 16);
@@ -4272,7 +4266,6 @@ mod tests {
                 manager.clone(),
                 second_target.clone(),
                 64,
-                None,
                 None,
             )),
         );
@@ -6030,7 +6023,7 @@ mod tests {
         worker.increment_load();
         RequestLoadGuard::new(
             Some(worker),
-            Some(KvRequestSlot::new(manager, target, 64, None, None)),
+            Some(KvRequestSlot::new(manager, target, 64, None)),
         )
     }
 
@@ -6128,13 +6121,7 @@ mod tests {
         worker.increment_load();
         let unrelated = RequestLoadGuard::new(
             Some(worker.clone()),
-            Some(KvRequestSlot::new(
-                manager.clone(),
-                target.clone(),
-                7,
-                None,
-                None,
-            )),
+            Some(KvRequestSlot::new(manager.clone(), target.clone(), 7, None)),
         );
         let load = admitted_kv_load(worker.clone(), manager.clone(), target.clone());
         let request: CompletionRequest = serde_json::from_value(serde_json::json!({
@@ -6305,13 +6292,7 @@ mod tests {
         fixture.worker.increment_load();
         let unrelated = RequestLoadGuard::new(
             Some(fixture.worker.clone()),
-            Some(KvRequestSlot::new(
-                manager.clone(),
-                target.clone(),
-                7,
-                None,
-                None,
-            )),
+            Some(KvRequestSlot::new(manager.clone(), target.clone(), 7, None)),
         );
         for (case, echo, fail_body, status) in [
             ("cancel", false, false, StatusCode::OK),
@@ -6899,7 +6880,6 @@ mod tests {
                 manager.clone(),
                 target.clone(),
                 64,
-                None,
                 None,
             )),
         );
