@@ -167,9 +167,7 @@ mod prefill_progress_regressions {
                     prefill_progress: Some(PrefillProgress {
                         request_id: self.server.captured()[0].request_id.clone(),
                         sequence,
-                        prompt_tokens: 100,
                         remaining_compute_tokens: remaining,
-                        ..Default::default()
                     }),
                     ..Default::default()
                 }))
@@ -392,52 +390,20 @@ mod prefill_progress_regressions {
     }
 
     #[tokio::test]
-    async fn grpc_progress_keeps_cached_admission_while_unconfirmed_queue_is_stale() {
+    async fn grpc_progress_keeps_cached_admission_until_first_snapshot() {
         let h = Harness::with_cached_prefix(true, Some(true), true, 2).await;
         let task = h.dispatch(true).await;
         let response = task.await.unwrap();
         assert!(response.status().is_success());
         h.assert_load(20, 1);
 
-        let mut queued = PrefillProgress {
+        let snapshot = PrefillProgress {
             request_id: h.server.captured()[0].request_id.clone(),
             sequence: 1,
-            phase: vllm_router_rs::backend::pb::PrefillPhase::Queued as i32,
-            prompt_tokens: 100,
-            total_compute_tokens: 100,
-            remaining_compute_tokens: 100,
-            ..Default::default()
+            remaining_compute_tokens: 8,
         };
         h.tx.send(Ok(GenerateResponse {
-            prefill_progress: Some(queued.clone()),
-            ..Default::default()
-        }))
-        .await
-        .unwrap();
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-        h.assert_load(20, 1);
-
-        queued.sequence = 4;
-        queued.local_cached_tokens = 10;
-        queued.total_compute_tokens = 90;
-        queued.remaining_compute_tokens = 90;
-        h.tx.send(Ok(GenerateResponse {
-            prefill_progress: Some(queued.clone()),
-            ..Default::default()
-        }))
-        .await
-        .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        h.assert_load(20, 1);
-
-        queued.sequence = 5;
-        queued.phase = vllm_router_rs::backend::pb::PrefillPhase::Prefill as i32;
-        queued.cache_accounting_final = true;
-        queued.local_cached_tokens = 80;
-        queued.total_compute_tokens = 20;
-        queued.remaining_compute_tokens = 8;
-        h.tx.send(Ok(GenerateResponse {
-            prefill_progress: Some(queued),
+            prefill_progress: Some(snapshot),
             ..Default::default()
         }))
         .await

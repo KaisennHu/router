@@ -171,10 +171,8 @@ impl RequestLoadGuard {
         // The backend may drop this callback before dispatch (for example,
         // when progress is disabled). Only the request guard releases load.
         let slot = self.state.kv_slot.clone()?;
-        Some(Arc::new(move |sequence, remaining, kind| {
-            if kind != crate::backend::grpc::PrefillProgressKind::InitialUnconfirmedQueue {
-                slot.update_prefill_progress(sequence, remaining);
-            }
+        Some(Arc::new(move |sequence, remaining| {
+            slot.update_prefill_progress(sequence, remaining);
         }))
     }
 
@@ -3450,8 +3448,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn colocated_progress_retains_estimate_until_queue_is_reconciled() {
-        use crate::backend::grpc::PrefillProgressKind;
+    fn colocated_progress_updates_remaining_work() {
         use crate::policies::{LoadProvider, SlotManager};
 
         let manager = Arc::new(crate::policies::InMemorySlotManager::new());
@@ -3463,13 +3460,10 @@ mod tests {
         let slot = KvRequestSlot::new(manager.clone(), target.clone(), 16, None, None);
         let load = RequestLoadGuard::new(None, Some(slot));
         let callback = load.prefill_progress_callback().unwrap();
-        callback(1, 100, PrefillProgressKind::InitialUnconfirmedQueue);
         assert_eq!(manager.sample(&target).active_prefill_tokens, 16);
-        callback(4, 100, PrefillProgressKind::InitialUnconfirmedQueue);
-        assert_eq!(manager.sample(&target).active_prefill_tokens, 16);
-        callback(5, 8, PrefillProgressKind::Snapshot);
+        callback(5, 8);
         assert_eq!(manager.sample(&target).active_prefill_tokens, 8);
-        callback(6, 80, PrefillProgressKind::Snapshot);
+        callback(6, 80);
         assert_eq!(manager.sample(&target).active_prefill_tokens, 80);
         load.release();
         assert_eq!(manager.sample(&target).active_prefill_tokens, 0);
@@ -3511,7 +3505,6 @@ mod tests {
 
     #[test]
     fn first_output_and_late_callbacks_preserve_request_lifetime() {
-        use crate::backend::grpc::PrefillProgressKind;
         use crate::policies::LoadProvider;
 
         let worker: Arc<dyn Worker> = Arc::new(BasicWorker::new(
@@ -3539,7 +3532,7 @@ mod tests {
         );
 
         drop(load);
-        progress(1, 32, PrefillProgressKind::Snapshot);
+        progress(1, 32);
         assert_eq!(worker.load(), 0);
         assert_eq!(
             manager.sample(&target),

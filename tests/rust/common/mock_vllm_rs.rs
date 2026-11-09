@@ -357,9 +357,7 @@ impl Inference for MockVllmRs {
                     prefill_progress: Some(pb::PrefillProgress {
                         request_id: progress_request_id.clone(),
                         sequence: index as u64 + 1,
-                        prompt_tokens: n_prompt,
                         remaining_compute_tokens: remaining,
-                        ..Default::default()
                     }),
                     ..Default::default()
                 };
