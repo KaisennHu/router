@@ -50,6 +50,7 @@ pub struct MockVllmRs {
     pub reply_text: String,
     /// Model a worker without capability discovery.
     pub server_info_unimplemented: bool,
+    pub server_info_delay_ms: Arc<AtomicUsize>,
     /// Optional externally driven stream for lifecycle and progress tests.
     pub scripted_stream: Arc<Mutex<Option<ResponseStream>>>,
     /// `(text, token_ids)` per streamed frame; the last one carries
@@ -127,6 +128,7 @@ impl Default for MockVllmRs {
             captured: Arc::new(Mutex::new(Vec::new())),
             reply_text: "hello from worker".to_string(),
             server_info_unimplemented: false,
+            server_info_delay_ms: Arc::new(AtomicUsize::new(0)),
             scripted_stream: Arc::new(Mutex::new(None)),
             frames: None,
             capture_limit: usize::MAX,
@@ -255,6 +257,20 @@ impl Inference for MockVllmRs {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let req = request.into_inner();
+        if req
+            .stopping
+            .as_ref()
+            .is_some_and(|s| !s.stop_strings.is_empty())
+            && !req
+                .response
+                .as_ref()
+                .and_then(|r| r.output_text)
+                .unwrap_or(false)
+        {
+            return Err(Status::invalid_argument(
+                "stop strings require detokenization",
+            ));
+        }
         let include_prefill_progress = req.include_prefill_progress;
         let progress_request_id = req.request_id.clone();
         let (token_ids, had_text_prompt) = match req.prompt {
@@ -324,11 +340,11 @@ impl Inference for MockVllmRs {
         };
         let fail_stream = self
             .stream_failures_remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok();
         let finish_reason = if self
             .aborted_finishes_remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok()
         {
             finish_info::FinishReason::Aborted
@@ -438,6 +454,10 @@ macro_rules! mock_control {
                 &self,
                 _request: Request<pb::GetServerInfoRequest>,
             ) -> Result<Response<pb::ServerInfo>, Status> {
+                let delay = self.server_info_delay_ms.load(Ordering::Relaxed);
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay as u64)).await;
+                }
                 if self.server_info_unimplemented {
                     return Err(Status::unimplemented("GetServerInfo"));
                 }

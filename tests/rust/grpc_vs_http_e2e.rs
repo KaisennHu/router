@@ -453,6 +453,21 @@ mod prefill_progress_regressions {
     }
 
     #[tokio::test]
+    async fn grpc_slow_capability_probe_falls_back_without_delaying_inference() {
+        let h = Harness::new(true, Some(true)).await;
+        h.server
+            .state
+            .server_info_delay_ms
+            .store(2000, std::sync::atomic::Ordering::Relaxed);
+        let task = tokio::time::timeout(Duration::from_secs(1), h.dispatch(false))
+            .await
+            .expect("capability probing must leave time for inference");
+        assert!(!h.server.captured()[0].include_prefill_progress);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
     async fn grpc_progress_cancellation_releases_latest_balance() {
         for stream in [false, true] {
             let h = Harness::new(true, Some(true)).await;
@@ -697,6 +712,42 @@ async fn grpc_kv_reservations_survive_disabled_or_unsupported_progress() {
         assert_eq!(worker.load(), 0, "{case}: worker load must be released");
         assert_eq!(manager.sample(&target), LoadSample::default(), "{case}");
     }
+}
+
+#[tokio::test]
+async fn grpc_visible_stop_string_is_accepted_and_retained() {
+    let grpc = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        reply_text: "answer END".to_string(),
+        ..Default::default()
+    })
+    .await;
+    let config = test_config(vec![grpc.grpc_url.clone()]);
+    let ctx = create_test_context(config.clone());
+    let router = Router::new(vec![grpc.grpc_url.clone()], &ctx)
+        .await
+        .unwrap();
+    router.pin_test_token_ids(vec![1, 2, 3]);
+    let app = create_test_app(Arc::new(router), reqwest::Client::new(), &config);
+    let mut body: serde_json::Value = serde_json::from_str(CHAT_BODY).unwrap();
+    body["stop"] = json!(["END"]);
+    body["no_stop_trim"] = json!(true);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["choices"][0]["message"]["content"], "answer END");
 }
 
 #[tokio::test]

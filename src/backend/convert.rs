@@ -46,11 +46,11 @@ fn ensure_supported_other<'a>(
 }
 
 pub fn requires_worker_output_text(request: &ChatCompletionRequest) -> bool {
-    !request.no_stop_trim
-        && (request.stop.as_ref().is_some_and(|stop| match stop {
-            StringOrArray::String(value) => !value.is_empty(),
-            StringOrArray::Array(values) => !values.is_empty(),
-        }) || request
+    request.stop.as_ref().is_some_and(|stop| match stop {
+        StringOrArray::String(value) => !value.is_empty(),
+        StringOrArray::Array(values) => !values.is_empty(),
+    }) || (!request.no_stop_trim
+        && request
             .stop_token_ids
             .as_ref()
             .is_some_and(|ids| !ids.is_empty()))
@@ -694,7 +694,8 @@ mod tests {
             "no_stop_trim": true
         }));
         let proto = chat_to_generate_request(&visible, vec![1], "r".into()).unwrap();
-        assert_eq!(proto.response.unwrap().output_text, Some(false));
+        assert_eq!(proto.response.unwrap().output_text, Some(true));
+        assert!(proto.stopping.unwrap().include_stop_strings);
     }
 
     #[test]

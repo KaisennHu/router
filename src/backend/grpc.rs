@@ -466,8 +466,9 @@ impl GrpcEngineBackend {
         let grpc_connect_ms = t_connect.elapsed().as_secs_f64() * 1000.0;
 
         if include_prefill_progress {
-            let supported = tokio::time::timeout_at(
-                deadline,
+            let supported = tokio::time::timeout(
+                Duration::from_millis(250)
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now()) / 4),
                 self.supports_prefill_progress(worker_url, channel.clone()),
             )
             .await
