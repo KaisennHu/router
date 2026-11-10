@@ -344,9 +344,12 @@ pub struct InMemorySlotManager {
 
 impl InMemorySlotManager {
     pub fn new() -> Self {
+        let mode = progress_mode_from_env();
+        // Experiment marker: makes the active accounting mode provable from the router log.
+        eprintln!("vllm-router: prefill progress accounting mode: {mode:?}");
         Self {
             slots: DashMap::new(),
-            mode: progress_mode_from_env(),
+            mode,
         }
     }
 
