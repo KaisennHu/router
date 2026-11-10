@@ -39,13 +39,15 @@ struct Discovery {
     worker: WorkerDiscovery,
 }
 
-/// The most recent P pool and effective policy seen on the request path.
-/// The background refresh loop binds from it; recording it is a few Arc
-/// clones, so requests never wait for control-plane probes.
+/// The most recent P and D pools and effective policies seen on the request
+/// path. The background refresh loop binds from them; recording them is a few
+/// Arc clones, so requests never wait for control-plane probes.
 #[derive(Clone, Default)]
 struct RefreshInputs {
-    workers: Arc<[Arc<dyn Worker>]>,
-    policy: Option<Arc<dyn LoadBalancingPolicy>>,
+    prefill: Arc<[Arc<dyn Worker>]>,
+    decode: Arc<[Arc<dyn Worker>]>,
+    prefill_policy: Option<Arc<dyn LoadBalancingPolicy>>,
+    decode_policy: Option<Arc<dyn LoadBalancingPolicy>>,
 }
 
 /// Consecutive failed probes before a previously healthy binding is treated as
@@ -125,8 +127,9 @@ impl PdKvState {
         state.api_key = api_key;
         state.supervisor.set_api_key(state.api_key.clone());
         state.refresh_inputs = Mutex::new(RefreshInputs {
-            workers: workers.iter().cloned().collect(),
-            policy: Some(policy.clone()),
+            prefill: workers.iter().cloned().collect(),
+            prefill_policy: Some(policy.clone()),
+            ..RefreshInputs::default()
         });
         let state = Arc::new(state);
         // Bind during startup; unavailable metadata falls back to load until refresh.
@@ -183,40 +186,59 @@ impl PdKvState {
                 interval.tick().await;
                 let Some(state) = weak.upgrade() else { break };
                 let inputs = state.refresh_inputs.lock().await.clone();
-                let Some(policy) = inputs.policy else {
-                    continue;
-                };
-                let Some(kv) = kv_aware_ops(policy.as_ref()) else {
-                    continue;
-                };
-                if !inputs.workers.is_empty() {
-                    state.bind(&inputs.workers, kv).await;
+                // One subscriber per configured base, whatever role it serves:
+                // a Decode engine that publishes KV events is bound exactly like
+                // a Prefill one, and its blocks become the credit its own
+                // marginal-context estimate needs.
+                for (workers, policy) in [
+                    (&inputs.prefill, inputs.prefill_policy.as_ref()),
+                    (&inputs.decode, inputs.decode_policy.as_ref()),
+                ] {
+                    let Some(policy) = policy else { continue };
+                    let Some(kv) = kv_aware_ops(policy.as_ref()) else {
+                        continue;
+                    };
+                    if !workers.is_empty() {
+                        state.bind(&workers[..], kv).await;
+                    }
                 }
             }
         });
     }
 
-    /// Reconcile static/discovered P pools, including incarnation and publisher
+    /// Reconcile the pool of one role, including incarnation and publisher
     /// changes. Binds serialize on `bind_lock`; refresh probes and subscriber
-    /// handshakes run outside every map lock so an unresponsive P engine can
+    /// handshakes run outside every map lock so an unresponsive engine can
     /// only delay its own refresh, never the request path. Never hold the
     /// admission load lock.
     async fn bind(&self, workers: &[Arc<dyn Worker>], policy: &dyn KvAwareOps) {
         let _bind_guard = self.bind_lock.lock().await;
-        let bases: HashSet<_> = workers
-            .iter()
-            .map(|worker| worker.base_url().to_owned())
-            .collect();
+        // Bindings outlive the pool that installed them: another role's pool
+        // keeps its base registered, so removal is decided by every live pool
+        // rather than by this one.
+        let current_bases: HashSet<String> = {
+            let inputs = self.refresh_inputs.lock().await;
+            inputs
+                .prefill
+                .iter()
+                .chain(inputs.decode.iter())
+                .map(|worker| worker.base_url().to_owned())
+                .collect()
+        };
         let refresh: Vec<String> = {
             let mut bindings = self.bindings.lock().await;
             bindings.retain(|base, _| {
-                if bases.contains(base) {
+                if current_bases.contains(base) {
                     return true;
                 }
                 self.supervisor.on_worker_removed(base);
                 false
             });
-            bases
+            let targets: HashSet<String> = workers
+                .iter()
+                .map(|worker| worker.base_url().to_owned())
+                .collect();
+            targets
                 .iter()
                 .filter(|base| {
                     bindings.get(*base).is_none_or(|binding| {
@@ -233,10 +255,17 @@ impl PdKvState {
         };
         {
             let mut targets = self.targets.lock().await;
-            let current: HashSet<_> = workers
-                .iter()
-                .map(|worker| worker.url().to_owned())
-                .collect();
+            // Every live pool, not just this one: one role's bind must not
+            // unregister the other role's targets.
+            let current: HashSet<_> = {
+                let inputs = self.refresh_inputs.lock().await;
+                inputs
+                    .prefill
+                    .iter()
+                    .chain(inputs.decode.iter())
+                    .map(|worker| worker.url().to_owned())
+                    .collect()
+            };
             targets.retain(|target, _| {
                 if current.contains(target) {
                     return true;
@@ -410,6 +439,110 @@ impl PdKvState {
         })
     }
 
+    /// Record the Decode pool the request path saw, so the refresh loop binds
+    /// its KV event subscriptions too. A Decode engine that enables prefix
+    /// caching holds blocks of its own; without them the Router cannot price
+    /// what a candidate must newly allocate.
+    pub(super) async fn record_decode_pool(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        policy: &Arc<dyn LoadBalancingPolicy>,
+    ) {
+        let mut inputs = self.refresh_inputs.lock().await;
+        inputs.decode = workers.iter().cloned().collect();
+        inputs.decode_policy = Some(policy.clone());
+    }
+
+    /// Marginal Decode context per candidate for the request's prompt stream.
+    ///
+    /// Mirrors [`Self::prepare`] for the D pool: the same control-plane
+    /// bindings decide whether a candidate's cache identity is verified, and an
+    /// unverified candidate returns `None` so the caller can fall back to plain
+    /// occupancy instead of comparing a credited figure with a full-price one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn prepare_decode_context(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        policy: &Arc<dyn LoadBalancingPolicy>,
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        sequences: u32,
+    ) -> Option<HashMap<String, u64>> {
+        let kv = kv_aware_ops(policy.as_ref())?;
+        let bases: Vec<_> = workers
+            .iter()
+            .map(|worker| worker.base_url().to_owned())
+            .collect();
+        let allow_credit: HashMap<_, _> = self
+            .bindings
+            .lock()
+            .await
+            .iter()
+            .map(|(base, binding)| {
+                let model = request.get("model").and_then(Value::as_str);
+                let allowed = model.is_some_and(|model| {
+                    binding.base_models.contains(model)
+                        || binding
+                            .info
+                            .as_ref()
+                            .and_then(|info| info.cache_key.as_ref())
+                            .is_some_and(|key| key.model.as_ref() == model)
+                });
+                (base.clone(), allowed)
+            })
+            .collect();
+        let results = match router_prompts {
+            Some(prompts) => router_token_inputs(bases, request, prompts),
+            None => {
+                prepare_http_token_inputs(
+                    &self.client,
+                    bases,
+                    request,
+                    route,
+                    headers,
+                    self.api_key.as_deref(),
+                    Duration::from_secs(1),
+                )
+                .await
+            }
+        };
+        let inputs: Vec<_> = workers
+            .iter()
+            .filter_map(|worker| {
+                let result = results.get(worker.base_url())?;
+                match result {
+                    Ok(input) => Some((
+                        worker.as_ref(),
+                        input.prompts.as_ref(),
+                        allow_credit
+                            .get(worker.base_url())
+                            .copied()
+                            .unwrap_or(false),
+                    )),
+                    Err(reason) => {
+                        crate::metrics::RouterMetrics::record_kv_routing_input("pd_decode", reason);
+                        None
+                    }
+                }
+            })
+            .collect();
+        if inputs.len() != workers.len() {
+            // One unpriced candidate would compare different units across the
+            // pool, which is exactly what the token ranking must never do.
+            crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unpriced");
+            return None;
+        }
+        let work = kv.estimate_decode_work(&inputs, sequences);
+        let mut context = HashMap::with_capacity(work.len());
+        for ((worker, _, _), estimate) in inputs.iter().zip(work) {
+            let additional = estimate.additional_tokens?;
+            context.insert(worker.url().to_owned(), additional);
+        }
+        Some(context)
+    }
+
     /// `router_prompts` are the router's own token ids for `grpc://` pools;
     /// HTTP pools pass `None` and render through each backend.
     pub(super) async fn prepare(
@@ -422,10 +555,11 @@ impl PdKvState {
         router_prompts: Option<&Arc<[Vec<u32>]>>,
     ) -> HashMap<String, PdPrefillInput> {
         let started = Instant::now();
-        *self.refresh_inputs.lock().await = RefreshInputs {
-            workers: workers.iter().cloned().collect(),
-            policy: Some(policy.clone()),
-        };
+        {
+            let mut inputs = self.refresh_inputs.lock().await;
+            inputs.prefill = workers.iter().cloned().collect();
+            inputs.prefill_policy = Some(policy.clone());
+        }
         let bases: Vec<_> = workers
             .iter()
             .map(|worker| worker.base_url().to_owned())

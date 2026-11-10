@@ -968,6 +968,13 @@ impl VllmPDRouter {
 
     /// `router_prompts` replaces backend rendering with the router's own
     /// token ids, which is what `grpc://` workers receive.
+    /// Whether the Decode pool can be priced from its own KV index: without
+    /// registered workers there is nothing to subscribe to, and every candidate
+    /// would be unverified anyway.
+    fn decode_pool_publishes_kv(workers: &[Arc<dyn Worker>]) -> bool {
+        !workers.is_empty()
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn admit_pair_with_tokens(
         &self,
@@ -989,7 +996,12 @@ impl VllmPDRouter {
         let needs_headers = forward_policy_headers
             && (prefill_policy.needs_headers() || decode_policy.needs_headers());
         let policy_headers = header_utils::to_policy_headers(headers.filter(|_| needs_headers));
-        let (prefill_inputs, decode_inputs) = tokio::join!(
+        let sequences = requested_sequences(request);
+        // Decode context pricing runs before admission: it queries the KV index
+        // and tokenizes, neither of which may happen under the selection lock.
+        // The D pool is recorded here too, so the refresh loop subscribes to a
+        // Decode engine's own KV events when that engine publishes them.
+        let (prefill_inputs, decode_inputs, decode_context) = tokio::join!(
             self.pd_router.prepare_prefill_inputs(
                 prefill_workers,
                 request,
@@ -1004,6 +1016,26 @@ impl VllmPDRouter {
                 headers,
                 router_prompts
             ),
+            async {
+                let state = self.pd_router.kv_state.as_ref()?;
+                if !Self::decode_pool_publishes_kv(decode_workers) {
+                    return None;
+                }
+                state
+                    .record_decode_pool(decode_workers, &decode_policy)
+                    .await;
+                state
+                    .prepare_decode_context(
+                        decode_workers,
+                        &decode_policy,
+                        request,
+                        path,
+                        headers,
+                        router_prompts,
+                        sequences,
+                    )
+                    .await
+            },
         );
         let model_id = request.get("model").and_then(Value::as_str);
         let cache_salt = request
@@ -1050,14 +1082,18 @@ impl VllmPDRouter {
             headers: policy_headers.as_ref(),
             affinity_key,
             cache_salt,
-            decode_sequences: requested_sequences(request),
+            decode_sequences: sequences,
             route: path,
         };
         // Existing deployments configure a common connector. Discovery parses
         // registrations with that connector; no new pair compatibility is
         // inferred from KV overlap or DP rank equality.
-        self.pd_router
-            .select_and_admit(prefill_workers, decode_workers, &context)
+        self.pd_router.select_and_admit(
+            prefill_workers,
+            decode_workers,
+            &context,
+            decode_context.as_ref(),
+        )
     }
 
     /// Cheap opt-in gate: only Program-capable requests are serialized twice.

@@ -889,19 +889,33 @@ impl ConfigValidator {
         // Static KV event sources are only meaningful with a KV-aware
         // prefill policy; anything else would silently ignore them.
         if !config.pd_kv_event_sources.is_empty() {
-            if let RoutingMode::VllmPrefillDecode { prefill_urls, .. } = &config.mode {
+            if let RoutingMode::VllmPrefillDecode {
+                prefill_urls,
+                decode_urls,
+                ..
+            } = &config.mode
+            {
                 for (url, sources) in &config.pd_kv_event_sources {
                     // Static sources are looked up by `Worker::base_url()`, which
-                    // drops the `@dp_rank` suffix, so a rank-pinned prefill URL
-                    // must still be keyed by its base URL.
-                    if !prefill_urls
+                    // drops the `@dp_rank` suffix, so a rank-pinned URL must
+                    // still be keyed by its base URL.
+                    //
+                    // Both pools may publish KV events: a Decode engine that
+                    // enables prefix caching holds blocks of its own, and
+                    // without its event stream the Router can only guess what
+                    // a Decode worker already has, which is exactly the credit
+                    // a marginal decode-load estimate needs.
+                    let configured = prefill_urls
                         .iter()
                         .any(|(prefill, _)| base_url_without_rank(prefill) == url)
-                    {
+                        || decode_urls
+                            .iter()
+                            .any(|decode| base_url_without_rank(decode) == url);
+                    if !configured {
                         return Err(ConfigError::IncompatibleConfig {
                             reason: format!(
-                                "pd_kv_event_sources key '{url}' is not a configured prefill URL \
-                                 (use the base URL without the '@rank' suffix)"
+                                "pd_kv_event_sources key '{url}' is not a configured prefill or \
+                                 decode URL (use the base URL without the '@rank' suffix)"
                             ),
                         });
                     }
@@ -941,13 +955,18 @@ impl ConfigValidator {
             }
             // Only kv_aware starts the KV event subscribers; accepting any
             // other policy here would silently drop the configured endpoints.
+            // Either stage may be the kv_aware one: a decode-only subscriber
+            // is what prices a Decode worker's own cached blocks.
             if !matches!(
                 config.mode.get_prefill_policy(&config.policy),
                 PolicyConfig::KvAware { .. }
+            ) && !matches!(
+                config.mode.get_decode_policy(&config.policy),
+                PolicyConfig::KvAware { .. }
             ) {
                 return Err(ConfigError::IncompatibleConfig {
-                    reason: "pd_kv_event_sources requires a kv_aware prefill policy (other \
-                             policies never start KV event subscribers)"
+                    reason: "pd_kv_event_sources requires a kv_aware prefill or decode policy \
+                             (other policies never start KV event subscribers)"
                         .to_string(),
                 });
             }
@@ -1684,7 +1703,49 @@ mod tests {
             .pd_kv_event_sources
             .insert("http://other:8000".to_string(), sources);
         let err = ConfigValidator::validate(&config).unwrap_err().to_string();
-        assert!(err.contains("not a configured prefill URL"), "{err}");
+        assert!(
+            err.contains("not a configured prefill or decode URL"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_pd_kv_event_sources_accept_a_decode_url() {
+        // A Decode engine that publishes KV events is the only way the Router
+        // can see which blocks a candidate already holds.
+        let mut config = pd_config_with_static_kv_sources();
+        let sources = config
+            .pd_kv_event_sources
+            .remove("http://prefill:8000")
+            .unwrap();
+        config
+            .pd_kv_event_sources
+            .insert("http://decode:8000".to_string(), sources);
+        assert!(ConfigValidator::validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_pd_kv_event_sources_accept_a_kv_aware_decode_policy() {
+        // Prefill and Decode may use different policies; a kv_aware Decode alone
+        // is enough to start the subscribers that price its own blocks.
+        let mut config = pd_config_with_static_kv_sources();
+        config.policy = PolicyConfig::CacheAware {
+            cache_threshold: 0.5,
+            balance_abs_threshold: 5,
+            balance_rel_threshold: 1.1,
+            eviction_interval_secs: 60,
+            max_tree_size: 4096,
+        };
+        if let RoutingMode::VllmPrefillDecode { decode_policy, .. } = &mut config.mode {
+            *decode_policy = Some(PolicyConfig::KvAware {
+                router_temperature: 0.0,
+                kv_penalty_host: 0.8,
+                kv_penalty_external: 0.6,
+                kv_penalty_disk: 0.3,
+                static_kv_event_sources: Default::default(),
+            });
+        }
+        assert!(ConfigValidator::validate(&config).is_ok());
     }
 
     #[test]
@@ -1746,7 +1807,10 @@ mod tests {
         let mut config = pd_config_with_static_kv_sources();
         config.policy = PolicyConfig::RoundRobin;
         let err = ConfigValidator::validate(&config).unwrap_err().to_string();
-        assert!(err.contains("requires a kv_aware prefill policy"), "{err}");
+        assert!(
+            err.contains("requires a kv_aware prefill or decode policy"),
+            "{err}"
+        );
 
         let mut config = pd_config_with_static_kv_sources();
         config.policy = PolicyConfig::CacheAware {
@@ -1757,6 +1821,9 @@ mod tests {
             max_tree_size: 4096,
         };
         let err = ConfigValidator::validate(&config).unwrap_err().to_string();
-        assert!(err.contains("requires a kv_aware prefill policy"), "{err}");
+        assert!(
+            err.contains("requires a kv_aware prefill or decode policy"),
+            "{err}"
+        );
     }
 }
