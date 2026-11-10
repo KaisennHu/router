@@ -300,10 +300,55 @@ pub trait SlotManager: LoadProvider {
     fn unregister_target(&self, _target: &RoutableTarget) {}
 }
 
+/// How the slot ledger turns worker snapshots into a load estimate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProgressMode {
+    /// Apply every per-request snapshot to that request's charge (production).
+    #[default]
+    PerRequest,
+    /// Emulate a 1 s aggregate scrape: freeze the worker total between samples
+    /// and account only for this router's admissions and releases in between.
+    Aggregate,
+}
+
+/// Sampling period for [`ProgressMode::Aggregate`].
+const AGGREGATE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Experiment switch, read once at construction so the comparison needs no new
+/// CLI flag: `VLLM_ROUTER_PROGRESS_MODE=aggregate`.
+fn progress_mode_from_env() -> ProgressMode {
+    match std::env::var("VLLM_ROUTER_PROGRESS_MODE").as_deref() {
+        Ok("aggregate") => ProgressMode::Aggregate,
+        _ => ProgressMode::PerRequest,
+    }
+}
+
+/// Last aggregate sample for one worker plus this router's net local change.
+#[derive(Debug)]
+struct AggregateSample {
+    sampled: u64,
+    delta: i64,
+    fresh: bool,
+    at: Instant,
+}
+
+impl Default for AggregateSample {
+    fn default() -> Self {
+        Self {
+            sampled: 0,
+            delta: 0,
+            fresh: false,
+            at: Instant::now(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SlotCounters {
     active_prefill_tokens: AtomicU64,
     active_requests: AtomicUsize,
+    /// Only read in [`ProgressMode::Aggregate`].
+    aggregate: Mutex<AggregateSample>,
 }
 
 /// Router-local, bracket-based load view keyed at the index's `(worker, rank)`
@@ -311,11 +356,15 @@ struct SlotCounters {
 #[derive(Debug, Default)]
 pub struct InMemorySlotManager {
     slots: DashMap<RoutableTarget, Arc<SlotCounters>>,
+    mode: ProgressMode,
 }
 
 impl InMemorySlotManager {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            slots: DashMap::new(),
+            mode: progress_mode_from_env(),
+        }
     }
 
     fn update_or_insert(&self, target: &RoutableTarget, update: impl FnOnce(&SlotCounters)) {
@@ -358,9 +407,23 @@ impl LoadProvider for InMemorySlotManager {
         let Some(slot) = self.slots.get(target) else {
             return LoadSample::default();
         };
+        let active_requests = slot.active_requests.load(Ordering::Acquire);
+        let active_prefill_tokens = match self.mode {
+            ProgressMode::PerRequest => slot.active_prefill_tokens.load(Ordering::Acquire),
+            ProgressMode::Aggregate => {
+                let mut aggregate = slot.aggregate.lock();
+                if !aggregate.fresh || aggregate.at.elapsed() >= AGGREGATE_SAMPLE_INTERVAL {
+                    aggregate.sampled = slot.active_prefill_tokens.load(Ordering::Acquire);
+                    aggregate.delta = 0;
+                    aggregate.at = Instant::now();
+                    aggregate.fresh = true;
+                }
+                (aggregate.sampled as i64 + aggregate.delta).max(0) as u64
+            }
+        };
         LoadSample {
-            active_prefill_tokens: slot.active_prefill_tokens.load(Ordering::Acquire),
-            active_requests: slot.active_requests.load(Ordering::Acquire),
+            active_prefill_tokens,
+            active_requests,
         }
     }
 }
@@ -371,6 +434,9 @@ impl SlotManager for InMemorySlotManager {
             slot.active_prefill_tokens
                 .fetch_add(prefill_tokens, Ordering::AcqRel);
             slot.active_requests.fetch_add(1, Ordering::AcqRel);
+            if self.mode == ProgressMode::Aggregate {
+                slot.aggregate.lock().delta += prefill_tokens as i64;
+            }
         });
     }
 
@@ -394,11 +460,17 @@ impl SlotManager for InMemorySlotManager {
         if prefill_target == decode_target {
             self.update_or_insert(prefill_target, |prefill| {
                 atomic_saturating_sub_u64(&prefill.active_prefill_tokens, prefill_tokens);
+                if self.mode == ProgressMode::Aggregate {
+                    prefill.aggregate.lock().delta -= prefill_tokens as i64;
+                }
             });
         } else {
             self.update_or_insert(prefill_target, |prefill| {
                 atomic_saturating_sub_u64(&prefill.active_prefill_tokens, prefill_tokens);
                 atomic_saturating_sub_usize(&prefill.active_requests, 1);
+                if self.mode == ProgressMode::Aggregate {
+                    prefill.aggregate.lock().delta -= prefill_tokens as i64;
+                }
             });
             self.update_or_insert(decode_target, |decode| {
                 decode.active_requests.fetch_add(1, Ordering::AcqRel);
