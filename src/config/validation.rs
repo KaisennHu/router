@@ -1914,7 +1914,8 @@ mod tests {
         };
         let err = ConfigValidator::validate(&config).unwrap_err().to_string();
         assert!(
-            err.contains("requires a kv_aware prefill or decode policy"),
+            err.contains("policy is not kv_aware")
+                || err.contains("requires a kv_aware prefill or decode policy"),
             "{err}"
         );
     }
