@@ -4103,7 +4103,9 @@ mod tests {
             .unwrap();
         assert_eq!(pick.index, 0);
         pick.binding.unwrap().release_ref();
-        assert!(policy.select_decode(&[], Some(&key), None, None, None).is_none());
+        assert!(policy
+            .select_decode(&[], Some(&key), None, None, None)
+            .is_none());
     }
 
     #[test]
@@ -4143,7 +4145,9 @@ mod tests {
         let policy = KvAwarePolicy::default();
         let workers = decode_pool(&["http://d0", "http://d1"]);
         workers[0].increment_load();
-        let pick = policy.select_decode(&workers, None, None, None, None).unwrap();
+        let pick = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
         assert_eq!((pick.index, pick.outcome), (1, "no_session"));
         assert!(pick.binding.is_none());
         assert!(policy.affinity.is_empty());
@@ -4247,8 +4251,12 @@ mod tests {
 
         // Without the credit both are tied at zero occupancy, so the tie cursor
         // rotates between them instead of always taking the holder.
-        let first = policy.select_decode(&workers, None, None, None, None).unwrap();
-        let second = policy.select_decode(&workers, None, None, None, None).unwrap();
+        let first = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
+        let second = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
         assert_ne!(first.index, second.index);
     }
 
