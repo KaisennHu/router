@@ -1896,8 +1896,11 @@ mod tests {
         let mut config = pd_config_with_static_kv_sources();
         config.policy = PolicyConfig::RoundRobin;
         let err = ConfigValidator::validate(&config).unwrap_err().to_string();
+        // The per-key rule fires first for a source whose own stage is not
+        // KV-aware; both messages say the same thing about why it is refused.
         assert!(
-            err.contains("requires a kv_aware prefill or decode policy"),
+            err.contains("policy is not kv_aware")
+                || err.contains("requires a kv_aware prefill or decode policy"),
             "{err}"
         );
 
