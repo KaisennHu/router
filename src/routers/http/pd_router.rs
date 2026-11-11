@@ -1197,23 +1197,35 @@ impl PdRouterBase {
         // `--prefill-policy cache_aware --decode-policy kv_aware` needs the
         // shared state for the Decode side alone, and creating it from the
         // prefill policy would leave that configuration with no subscribers.
+        //
+        // Both pools are handed over at construction, not on the first request:
+        // a Decode pool recorded lazily has no binding until one refresh tick
+        // after traffic starts, and a burst that arrives inside that tick would
+        // be admitted unpriced, silently losing the credit it was configured for.
         let kv_state = if Self::needs_kv_state(prefill_policy.as_ref(), decode_policy.as_ref()) {
             let prefill_kv = kv_aware_ops(prefill_policy.as_ref()).is_some();
+            let decode_kv = kv_aware_ops(decode_policy.as_ref()).is_some();
             Some(
                 PdKvState::start(
                     ctx.client.clone(),
                     ctx.router_config.api_key.clone(),
                     ctx.router_config.pd_kv_event_sources.clone(),
-                    if prefill_kv {
-                        ctx.worker_registry.get_prefill_workers()
-                    } else {
-                        Vec::new()
-                    },
-                    if prefill_kv {
-                        prefill_policy.clone()
-                    } else {
-                        decode_policy.clone()
-                    },
+                    (
+                        if prefill_kv {
+                            ctx.worker_registry.get_prefill_workers()
+                        } else {
+                            Vec::new()
+                        },
+                        prefill_kv.then(|| prefill_policy.clone()),
+                    ),
+                    (
+                        if decode_kv {
+                            ctx.worker_registry.get_decode_workers()
+                        } else {
+                            Vec::new()
+                        },
+                        decode_kv.then(|| decode_policy.clone()),
+                    ),
                 )
                 .await,
             )

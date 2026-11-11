@@ -92,6 +92,9 @@ fn probe_outcome(existing: Option<&Binding>, signature: Option<&str>) -> ProbeOu
     }
 }
 
+/// A worker pool plus the policy that ranks it, when that policy is KV-aware.
+type PoolInput = (Vec<Arc<dyn Worker>>, Option<Arc<dyn LoadBalancingPolicy>>);
+
 pub(super) struct PdKvState {
     client: reqwest::Client,
     api_key: Option<String>,
@@ -120,28 +123,53 @@ impl std::fmt::Debug for PdKvState {
 }
 
 impl PdKvState {
+    /// `prefill` and `decode` are the pools this state should bind, each paired
+    /// with the policy that ranks it (only when that policy is KV-aware).
+    ///
+    /// Both are registered here rather than on the first request: bindings are
+    /// created by the refresh loop, so a pool recorded from the request path has
+    /// no binding until the next tick, and every request admitted before that
+    /// tick is priced without the credit the configuration asked for.
     pub(super) async fn start(
         client: reqwest::Client,
         api_key: Option<String>,
         sources: HashMap<String, crate::config::types::PdKvEventSources>,
-        workers: Vec<Arc<dyn Worker>>,
-        policy: Arc<dyn LoadBalancingPolicy>,
+        prefill: PoolInput,
+        decode: PoolInput,
     ) -> Arc<Self> {
         let mut state = Self::new_with_statics(client, sources);
         state.api_key = api_key;
         state.supervisor.set_api_key(state.api_key.clone());
+        let prefill_workers = prefill.0.clone();
+        let decode_workers = decode.0.clone();
         state.refresh_inputs = Mutex::new(RefreshInputs {
-            prefill: workers.iter().cloned().collect(),
-            prefill_policy: Some(policy.clone()),
-            ..RefreshInputs::default()
+            prefill: prefill.0.iter().cloned().collect(),
+            prefill_policy: prefill.1,
+            decode: decode.0.iter().cloned().collect(),
+            decode_policy: decode.1,
         });
         let state = Arc::new(state);
-        // Bind during startup; unavailable metadata falls back to load until refresh.
-        if let Some(kv) = kv_aware_ops(policy.as_ref()) {
-            if !workers.is_empty()
-                && tokio::time::timeout(CONTROL_TIMEOUT, state.bind(&workers, kv))
-                    .await
-                    .is_err()
+        // Bind during startup; unavailable metadata falls back to load until
+        // refresh. Both pools are bound here so a burst that arrives before the
+        // first refresh tick is still priced with the credit it configured.
+        let (prefill_policy, decode_policy) = {
+            let inputs = state.refresh_inputs.lock().await;
+            (inputs.prefill_policy.clone(), inputs.decode_policy.clone())
+        };
+        for (pool, policy) in [
+            (&prefill_workers, prefill_policy),
+            (&decode_workers, decode_policy),
+        ] {
+            let Some(policy) = policy else { continue };
+            let Some(kv) = kv_aware_ops(policy.as_ref()) else {
+                continue;
+            };
+            if pool.is_empty() {
+                continue;
+            }
+            if tokio::time::timeout(CONTROL_TIMEOUT, state.bind(pool, kv))
+                .await
+                .is_err()
             {
                 tracing::warn!(
                     "Initial PD KV binding timed out; using no-credit fallback until refresh"
@@ -487,6 +515,12 @@ impl PdKvState {
         let mut inputs = self.refresh_inputs.lock().await;
         inputs.decode = workers.iter().cloned().collect();
         inputs.decode_policy = Some(policy.clone());
+    }
+
+    #[cfg(test)]
+    pub(super) async fn pool_sizes(&self) -> (usize, usize) {
+        let inputs = self.refresh_inputs.lock().await;
+        (inputs.prefill.len(), inputs.decode.len())
     }
 
     /// One snapshot of which bases may be credited, keyed by base URL.
@@ -1132,6 +1166,34 @@ mod kv_input_tests {
             let binding = healthy_binding("sig", failures);
             assert_eq!(probe_outcome(Some(&binding), None), ProbeOutcome::Keep);
         }
+    }
+
+    #[tokio::test]
+    async fn start_registers_the_decode_pool_before_any_request() {
+        // A Decode pool recorded lazily from the request path has no binding for
+        // one refresh tick, and a burst admitted inside that tick loses the
+        // credit its configuration asked for. Both pools must be present from
+        // construction.
+        let policy: Arc<dyn LoadBalancingPolicy> = Arc::new(KvAwarePolicy::default());
+        let prefill: Vec<Arc<dyn Worker>> = vec![Arc::new(BasicWorker::new(
+            "http://p0".to_owned(),
+            WorkerType::Prefill {
+                bootstrap_port: None,
+            },
+        ))];
+        let decode: Vec<Arc<dyn Worker>> = vec![Arc::new(BasicWorker::new(
+            "http://d0".to_owned(),
+            WorkerType::Decode,
+        ))];
+        let state = PdKvState::start(
+            reqwest::Client::new(),
+            None,
+            HashMap::new(),
+            (prefill, Some(policy.clone())),
+            (decode, Some(policy)),
+        )
+        .await;
+        assert_eq!(state.pool_sizes().await, (1, 1));
     }
 
     #[tokio::test]
