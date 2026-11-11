@@ -39,6 +39,7 @@ pub(super) fn select_pd_pair(
     prefill_policy: &dyn LoadBalancingPolicy,
     decode_policy: &dyn LoadBalancingPolicy,
     context: &PdRequestContext<'_>,
+    decode_context: Option<&HashMap<String, u64>>,
 ) -> Option<PdSelection> {
     // Admission must not switch an endpoint between aggregate and per-rank
     // accounting while requests are live. Index existing granularities once
@@ -95,6 +96,9 @@ pub(super) fn select_pd_pair(
         &prefill_indices,
         prefill_policy,
         context,
+        // Marginal Decode context belongs to the Decode stage only; the
+        // Prefill stage never reads it.
+        None,
     )?;
     let decode = select_stage(
         loads,
@@ -104,11 +108,13 @@ pub(super) fn select_pd_pair(
         &decode_indices,
         decode_policy,
         context,
+        decode_context,
     )?;
 
     Some(PdSelection { prefill, decode })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_stage(
     loads: &Loads,
     stage: Stage,
@@ -117,9 +123,29 @@ fn select_stage(
     indices: &[usize],
     policy: &dyn LoadBalancingPolicy,
     context: &PdRequestContext<'_>,
+    decode_context: Option<&HashMap<String, u64>>,
 ) -> Option<StageDecision> {
     let policy_input = context.legacy_policy_input;
     let kv_aware = kv_aware_ops(policy).is_some();
+    // Decode ranks candidates by the logical context tokens they hold instead of
+    // by request counts. The comparison needs one unit across the whole eligible
+    // pool, so any candidate with an unknown prompt length falls back to counts
+    // for every candidate rather than mixing the two.
+    let decode_context_requested = stage == Stage::Decode && kv_aware;
+    let decode_context_load = decode_context_requested
+        && indices.iter().all(|&index| {
+            loads
+                .get(&(stage, endpoints[index].clone()))
+                .is_none_or(|load| load.decode_tokens().is_some())
+        });
+    // A credited figure exists only when the whole pool could be priced, so the
+    // marginal ranking is a stricter condition than the plain token one.
+    let decode_marginal = decode_context_load
+        && decode_context.is_some_and(|context| {
+            indices
+                .iter()
+                .all(|&index| context.contains_key(workers[index].url()))
+        });
     // Keep the caller slice order. Static pools pass registry registration
     // order, which is the --prefill / --decode order. Sorting by endpoint URL
     // made round-robin follow port text instead of that order.
@@ -129,11 +155,14 @@ fn select_stage(
         .map(|&index| {
             let inner = workers[index].clone();
             let endpoint = endpoints[index].clone();
-            let load = loads
-                .get(&(stage, endpoint))
-                .copied()
-                .unwrap_or_default()
-                .occupancy(stage);
+            let sample = loads.get(&(stage, endpoint)).copied().unwrap_or_default();
+            let load = if decode_context_load {
+                // `decode_context_load` proved the token accounting known for
+                // the whole eligible pool.
+                usize::try_from(sample.decode_tokens().unwrap_or_default()).unwrap_or(usize::MAX)
+            } else {
+                sample.occupancy(stage)
+            };
             Arc::new(PolicyWorker { inner, load }) as Arc<dyn Worker>
         })
         .collect();
@@ -226,6 +255,7 @@ fn select_stage(
             context.affinity_key.as_ref(),
             context.lora_name,
             context.cache_salt,
+            decode_marginal.then_some(decode_context).flatten(),
         )?;
         (
             pick.index,
@@ -278,6 +308,12 @@ fn select_stage(
             "sticky_hit"
         } else if stage == Stage::Prefill {
             "load_fallback"
+        } else if decode_marginal {
+            "context_tokens_marginal"
+        } else if decode_context_load {
+            "context_tokens"
+        } else if decode_context_requested {
+            "occupancy_unknown_tokens"
         } else {
             "occupancy"
         };
@@ -323,9 +359,11 @@ fn select_stage(
         worker_index,
         endpoint: endpoints[worker_index].clone(),
         // Unknown P token work falls back to occupancy; D includes the
-        // incoming request, which does not change candidate ranking.
+        // incoming request, which does not change candidate ranking. A
+        // token-based D score is already a context total, so no `+ 1` applies.
         score: kv_aware.then_some(match stage {
             Stage::Prefill => worker.load() as f64,
+            Stage::Decode if decode_context_load => worker.load() as f64,
             Stage::Decode => (worker.load() + 1) as f64,
         }),
         new_prefill_tokens: selected_tokens,
@@ -559,6 +597,16 @@ impl PdRouterBase {
         }
     }
 
+    /// Whether the shared KV state is needed at all: it exists for whichever
+    /// stage ranks by KV, and a mixed policy needs it just as much as a
+    /// kv_aware prefill does.
+    pub(super) fn needs_kv_state(
+        prefill_policy: &dyn LoadBalancingPolicy,
+        decode_policy: &dyn LoadBalancingPolicy,
+    ) -> bool {
+        kv_aware_ops(prefill_policy).is_some() || kv_aware_ops(decode_policy).is_some()
+    }
+
     /// Shared entry point for static and discovered P/D pools. Selection and
     /// reservation are synchronous; no network work runs under admission.
     pub(super) fn select_and_admit(
@@ -566,24 +614,29 @@ impl PdRouterBase {
         prefill_workers: &[Arc<dyn Worker>],
         decode_workers: &[Arc<dyn Worker>],
         context: &PdRequestContext<'_>,
+        decode_context: Option<&HashMap<String, u64>>,
     ) -> Option<(PdSelection, PdAttempt)> {
         let prefill_policy = self.policy_registry.get_prefill_policy();
         let decode_policy = self.policy_registry.get_decode_policy();
-        let admitted = self.pd_load.admit(|loads| {
-            if let Some(kv) =
-                kv_aware_ops(decode_policy.as_ref()).filter(|kv| kv.session_affinity_enabled())
-            {
-                kv.reconcile_decode_workers(decode_workers);
-            }
-            select_pd_pair(
-                loads,
-                prefill_workers,
-                decode_workers,
-                prefill_policy.as_ref(),
-                decode_policy.as_ref(),
-                context,
-            )
-        });
+        let admitted = self.pd_load.admit_sequences(
+            |loads| {
+                if let Some(kv) =
+                    kv_aware_ops(decode_policy.as_ref()).filter(|kv| kv.session_affinity_enabled())
+                {
+                    kv.reconcile_decode_workers(decode_workers);
+                }
+                select_pd_pair(
+                    loads,
+                    prefill_workers,
+                    decode_workers,
+                    prefill_policy.as_ref(),
+                    decode_policy.as_ref(),
+                    context,
+                    decode_context,
+                )
+            },
+            context.decode_sequences,
+        );
         if let Some((selection, attempt)) = &admitted {
             if kv_aware_ops(prefill_policy.as_ref()).is_some() {
                 crate::metrics::RouterMetrics::record_pd_kv_decision(
@@ -1146,14 +1199,27 @@ impl PdRouterBase {
         // Note: Health checking is now handled centrally by RouterManager
         // Individual routers no longer need to manage health checkers
 
-        let kv_state = if kv_aware_ops(prefill_policy.as_ref()).is_some() {
+        // Either stage may be the KV-aware one. A mixed policy such as
+        // `--prefill-policy cache_aware --decode-policy kv_aware` needs the
+        // shared state for the Decode side alone, and creating it from the
+        // prefill policy would leave that configuration with no subscribers.
+        let kv_state = if Self::needs_kv_state(prefill_policy.as_ref(), decode_policy.as_ref()) {
+            let prefill_kv = kv_aware_ops(prefill_policy.as_ref()).is_some();
             Some(
                 PdKvState::start(
                     ctx.client.clone(),
                     ctx.router_config.api_key.clone(),
                     ctx.router_config.pd_kv_event_sources.clone(),
-                    ctx.worker_registry.get_prefill_workers(),
-                    prefill_policy.clone(),
+                    if prefill_kv {
+                        ctx.worker_registry.get_prefill_workers()
+                    } else {
+                        Vec::new()
+                    },
+                    if prefill_kv {
+                        prefill_policy.clone()
+                    } else {
+                        decode_policy.clone()
+                    },
                 )
                 .await,
             )
@@ -1363,10 +1429,11 @@ impl PdRouterBase {
             affinity_key: None,
             lora_name: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
         let (selection, _attempt) =
-            match self.select_and_admit(prefill_workers, decode_workers, &context) {
+            match self.select_and_admit(prefill_workers, decode_workers, &context, None) {
                 Some(admitted) => admitted,
                 None => {
                     return (
@@ -1893,10 +1960,11 @@ mod tests {
             affinity_key: None,
             lora_name: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
         let (selection, attempt) = router
-            .select_and_admit(&prefill_workers, &decode_workers, &context)
+            .select_and_admit(&prefill_workers, &decode_workers, &context, None)
             .unwrap();
         let prefill = &prefill_workers[selection.prefill.worker_index];
 
@@ -1922,9 +1990,12 @@ mod tests {
             affinity_key: None,
             lora_name: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/health_generate",
         };
-        assert!(router.select_and_admit(&empty, &empty, &context).is_none());
+        assert!(router
+            .select_and_admit(&empty, &empty, &context, None)
+            .is_none());
         assert!(router.pd_load.snapshot().is_empty());
     }
 
@@ -2572,14 +2643,14 @@ mod admission_tests {
         let mut context = context();
         context.prefill_inputs = Some(&inputs);
         let (first, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_eq!(first.prefill.worker_index, 1); // Warm P wins over the first idle P.
         assert_eq!(first.prefill.new_prefill_tokens, Some(1));
         assert_eq!(first.prefill.credited_prefix_tokens, Some(32));
         assert_eq!(first.prefill.fallback_reason, None);
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_eq!(second.prefill.worker_index, 1);
         assert_eq!(second.prefill.score, Some(2.0));
@@ -2605,7 +2676,7 @@ mod admission_tests {
                 ..Default::default()
             },
         );
-        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context).unwrap();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context, None).unwrap();
         assert_eq!(selection.prefill.worker_index, 0); // Token backlog outweighs warm residency.
         assert_eq!(selection.prefill.new_prefill_tokens, Some(33));
     }
@@ -2626,11 +2697,11 @@ mod admission_tests {
         context.prefill_inputs = Some(&inputs);
         let manager = Arc::new(PdLoadManager::default());
         let (first, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_eq!(first.prefill.worker_index, 1);
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_eq!(
             second.prefill.worker_index, 0,
@@ -2647,13 +2718,13 @@ mod admission_tests {
         let tokens: Vec<u32> = (0..33).collect();
         let policy = resident_prefix_policy(&p, &tokens);
         let (_, unknown) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context()))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context(), None))
             .unwrap();
         let inputs = token_inputs(&p, &tokens, &policy);
         let mut context = context();
         context.prefill_inputs = Some(&inputs);
         let (selection, known) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_eq!(
             selection.prefill.fallback_reason,
@@ -2662,6 +2733,169 @@ mod admission_tests {
         assert_eq!(selection.prefill.new_prefill_tokens, Some(33));
         assert_eq!(selection.prefill.credited_prefix_tokens, Some(0));
         drop((unknown, known));
+        assert!(manager.snapshot().is_empty());
+    }
+
+    /// The design table from #504: D0 holds two 64K sequences, D1 holds four 4K
+    /// ones. Request counts prefer D0, logical context tokens prefer D1.
+    fn decode_context_loads(d: &[Arc<dyn Worker>]) -> Loads {
+        let mut loads = Loads::new();
+        loads.insert(
+            (Stage::Decode, PdEndpoint::for_worker(d[0].as_ref())),
+            PdLoadSample {
+                active_decode_requests: 2,
+                active_decode_tokens: 2 * 64 * 1024,
+                ..Default::default()
+            },
+        );
+        loads.insert(
+            (Stage::Decode, PdEndpoint::for_worker(d[1].as_ref())),
+            PdLoadSample {
+                active_decode_requests: 4,
+                active_decode_tokens: 4 * 4 * 1024,
+                ..Default::default()
+            },
+        );
+        loads
+    }
+
+    #[test]
+    fn decode_ranks_by_context_tokens() {
+        let p = pool("p", 1);
+        let d = pool("d", 2);
+        let loads = decode_context_loads(&d);
+        let policy = KvAwarePolicy::default();
+        // Two 64K sequences hold 131,072 tokens; four 4K sequences hold 16,384.
+        // Request counts would prefer the first decoder, context tokens the second.
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context(), None).unwrap();
+        assert_eq!(
+            selection.decode.worker_index, 1,
+            "context tokens prefer the four short sequences"
+        );
+        assert_eq!(selection.decode.score, Some(16_384.0));
+    }
+
+    #[test]
+    fn unknown_decode_requests_fall_back_to_counts_for_the_whole_pool() {
+        let p = pool("p", 1);
+        let d = pool("d", 2);
+        let mut loads = decode_context_loads(&d);
+        loads
+            .entry((Stage::Decode, PdEndpoint::for_worker(d[0].as_ref())))
+            .or_default()
+            .unknown_decode_requests = 1;
+        let policy = KvAwarePolicy::default();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context(), None).unwrap();
+        assert_eq!(
+            selection.decode.worker_index, 0,
+            "one unknown prompt length keeps the pool on request counts"
+        );
+        assert_eq!(selection.decode.score, Some(3.0));
+    }
+
+    #[test]
+    fn decode_tokens_move_from_pending_to_active_and_are_released_once() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        let tokens: Vec<u32> = (0..100).collect();
+        let policy = KvAwarePolicy::default();
+        let inputs = token_inputs(&p, &tokens, &policy);
+        let mut ctx = context();
+        ctx.prefill_inputs = Some(&inputs);
+        let (selection, attempt) = admit_with(&manager, &p, &d, &policy, &ctx);
+        let endpoint = selection.decode.endpoint.clone();
+        assert_eq!(selection.prefill.new_prefill_tokens, Some(100));
+        assert_eq!(selection.prefill.credited_prefix_tokens, Some(0));
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_requests, 1);
+        assert_eq!(pending.pending_decode_tokens, 100);
+        assert_eq!(pending.active_decode_tokens, 0);
+        assert_eq!(pending.unknown_decode_requests, 0);
+
+        attempt.begin_decode();
+        let active = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(active.pending_decode_tokens, 0);
+        assert_eq!(active.active_decode_tokens, 100);
+        assert_eq!(active.active_decode_requests, 1);
+
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn decode_reservation_scales_with_sampling_sequences() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        let tokens: Vec<u32> = (0..100).collect();
+        let policy = KvAwarePolicy::default();
+        let inputs = token_inputs(&p, &tokens, &policy);
+        let mut ctx = context();
+        ctx.prefill_inputs = Some(&inputs);
+        ctx.decode_sequences = 4;
+        let (selection, attempt) = manager
+            .admit_sequences(
+                |loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx, None),
+                ctx.decode_sequences,
+            )
+            .unwrap();
+        let endpoint = selection.decode.endpoint.clone();
+        assert_eq!(selection.prefill.new_prefill_tokens, Some(100));
+        // Four sampling sequences each attend over the 100-token prompt.
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_tokens, 400);
+        attempt.begin_decode();
+        let active = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(active.active_decode_tokens, 400);
+        drop(attempt);
+        assert!(manager.snapshot().is_empty());
+    }
+
+    #[test]
+    fn requested_sequences_reads_n_and_defaults_to_one() {
+        let json = |value: &str| serde_json::from_str::<serde_json::Value>(value).unwrap();
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi"}"#)),
+            1
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi","n":3}"#)),
+            3
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(
+                r#"{"sampling_params":{"n":2}}"#
+            )),
+            2
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi","n":0}"#)),
+            1
+        );
+    }
+
+    #[test]
+    fn decode_reservation_without_a_rendered_prompt_counts_as_unknown() {
+        let manager = Arc::new(PdLoadManager::default());
+        let p = pool("p", 1);
+        let d = pool("d", 1);
+        // No tokenized prompt: the request-count fallback must stay reachable.
+        let (selection, attempt) =
+            admit_with(&manager, &p, &d, &KvAwarePolicy::default(), &context());
+        let endpoint = selection.decode.endpoint.clone();
+        let pending = sample(&manager, Stage::Decode, &endpoint);
+        assert_eq!(pending.pending_decode_requests, 1);
+        assert_eq!(pending.pending_decode_tokens, 0);
+        assert_eq!(pending.unknown_decode_requests, 1);
+        assert_eq!(pending.decode_tokens(), None);
+
+        attempt.begin_decode();
+        assert_eq!(
+            sample(&manager, Stage::Decode, &endpoint).unknown_decode_requests,
+            1
+        );
+        drop(attempt);
         assert!(manager.snapshot().is_empty());
     }
 
@@ -2687,6 +2921,7 @@ mod admission_tests {
             affinity_key: None,
             lora_name: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/v1/completions",
         }
     }
@@ -2698,7 +2933,7 @@ mod admission_tests {
     ) -> (PdSelection, PdAttempt) {
         let policy = KvAwarePolicy::default();
         manager
-            .admit(|loads| select_pd_pair(loads, p, d, &policy, &policy, &context()))
+            .admit(|loads| select_pd_pair(loads, p, d, &policy, &policy, &context(), None))
             .unwrap()
     }
 
@@ -2713,6 +2948,7 @@ mod admission_tests {
             affinity_key: Some(affinity_key(session)),
             lora_name: None,
             cache_salt: None,
+            decode_sequences: 1,
             route: "/v1/completions",
         }
     }
@@ -2736,7 +2972,7 @@ mod admission_tests {
         context: &PdRequestContext<'_>,
     ) -> (PdSelection, PdAttempt) {
         manager
-            .admit(|loads| select_pd_pair(loads, p, d, policy, policy, context))
+            .admit(|loads| select_pd_pair(loads, p, d, policy, policy, context, None))
             .unwrap()
     }
 
@@ -2862,7 +3098,7 @@ mod admission_tests {
             .unwrap()
             .active_prefill_tokens = 40;
         let unbound_decode = KvAwarePolicy::default();
-        let next = select_pd_pair(&loads, &p, &d, &policy, &unbound_decode, &ctx).unwrap();
+        let next = select_pd_pair(&loads, &p, &d, &policy, &unbound_decode, &ctx, None).unwrap();
         assert_eq!(next.prefill.worker_index, 0);
         assert_eq!(next.prefill.new_prefill_tokens, Some(33));
         assert_eq!(next.prefill.affinity_outcome, None);
@@ -2997,7 +3233,7 @@ mod admission_tests {
         let d = pool("d", 1);
         let policy = KvAwarePolicy::default();
         assert!(manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &RejectDecode, &context()))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &RejectDecode, &context(), None))
             .is_none());
         assert!(manager.snapshot().is_empty());
     }
@@ -3062,7 +3298,15 @@ mod admission_tests {
         assert_eq!(second.decode.endpoint.dp_rank, Some(1));
         let policy = KvAwarePolicy::default();
         assert!(manager
-            .admit(|loads| select_pd_pair(loads, &p, &pool("d", 1), &policy, &policy, &context()))
+            .admit(|loads| select_pd_pair(
+                loads,
+                &p,
+                &pool("d", 1),
+                &policy,
+                &policy,
+                &context(),
+                None
+            ))
             .is_none());
         drop((a, b));
         let (_, attempt) = admit(&manager, &p, &pool("d", 1));
@@ -3131,7 +3375,7 @@ mod admission_tests {
             manager
                 .admit(|loads| {
                     let mut selection =
-                        select_pd_pair(loads, &p, &d, &policy, &policy, &context())?;
+                        select_pd_pair(loads, &p, &d, &policy, &policy, &context(), None)?;
                     selection.prefill.new_prefill_tokens = Some(tokens);
                     Some(selection)
                 })
@@ -3192,7 +3436,7 @@ mod admission_tests {
         context.headers = Some(&headers);
         let policy = LegacyPolicy;
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
             .unwrap();
         assert_ne!(first.prefill.endpoint, second.prefill.endpoint);
         assert_ne!(first.decode.endpoint, second.decode.endpoint);
@@ -3232,6 +3476,7 @@ mod admission_tests {
                             &prefill_policy,
                             &decode_policy,
                             &context(),
+                            None,
                         )
                     })
                     .unwrap();
@@ -3250,10 +3495,10 @@ mod admission_tests {
         let rr = RoundRobinPolicy::new();
         let kv = KvAwarePolicy::default();
         let (_, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context()))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context(), None))
             .unwrap();
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context()))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context(), None))
             .unwrap();
         assert_eq!(second.prefill.score, None);
         assert_eq!(second.decode.score, Some(2.0));
@@ -3291,6 +3536,7 @@ mod admission_tests {
                 affinity_key: None,
                 lora_name: None,
                 cache_salt: None,
+                decode_sequences: 1,
                 route: "/v1/completions",
             }
         }
@@ -3302,14 +3548,14 @@ mod admission_tests {
             unlabeled("http://p2"),
         ];
         let (selection, attempt) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-b")))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-b"), None))
             .unwrap();
         assert_eq!(selection.prefill.endpoint.http_url, "http://p1");
         drop(attempt);
 
         // Request for model-c: only the unlabeled worker keeps it routable.
         let (selection, attempt) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-c")))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-c"), None))
             .unwrap();
         assert_eq!(selection.prefill.endpoint.http_url, "http://p2");
         drop(attempt);
@@ -3321,7 +3567,15 @@ mod admission_tests {
         ];
         assert!(manager
             .admit(|loads| {
-                select_pd_pair(loads, &only_labeled, &d, &policy, &policy, &ctx("model-c"))
+                select_pd_pair(
+                    loads,
+                    &only_labeled,
+                    &d,
+                    &policy,
+                    &policy,
+                    &ctx("model-c"),
+                    None,
+                )
             })
             .is_none());
         assert!(manager.snapshot().is_empty());

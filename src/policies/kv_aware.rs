@@ -66,6 +66,18 @@ pub struct PrefillWorkEstimate {
     pub placement_verified: bool,
 }
 
+/// Marginal Decode context from one placement snapshot: what the request adds
+/// to a candidate after its own cached blocks are reused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeWorkEstimate {
+    /// Logical context tokens the candidate must newly allocate: the prompt
+    /// once per sampling sequence, less the device blocks it already holds.
+    /// `None` when its cache identity is unverified, so the caller falls back
+    /// to plain occupancy instead of comparing a credited figure against a
+    /// full-price one.
+    pub additional_tokens: Option<u64>,
+}
+
 /// Optional operations used by adapters with tokenized requests and KV discovery.
 pub trait KvAwareOps: Send + Sync {
     /// P/D uses the same placement/credit contract as colocated routing,
@@ -74,6 +86,15 @@ pub trait KvAwareOps: Send + Sync {
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
     ) -> Vec<PrefillWorkEstimate>;
+    /// Marginal Decode context per candidate, from the same placement snapshot
+    /// as [`Self::estimate_prefill_work`]. `inputs` pairs each candidate with
+    /// the prompt stream it will hold and whether its cache identity is
+    /// verified; the returned estimate is `None` for an unverified candidate.
+    fn estimate_decode_work(
+        &self,
+        inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+        sequences: u32,
+    ) -> Vec<DecodeWorkEstimate>;
     fn pick_prefill(&self, costs: &[f64], occupancy: &[usize]) -> Option<usize>;
     /// Decode-side occupancy picker for P/D: deterministic argmin over the
     /// projected stage occupancies, rotating across equal-load targets so
@@ -82,12 +103,24 @@ pub trait KvAwareOps: Send + Sync {
     /// Minimum-occupancy decode selection with optional soft session affinity.
     /// P/D admission serializes selection and reservation; the returned binding
     /// reference remains owned by the attempt until cleanup.
+    ///
+    /// `new_context` is, per candidate, the context the request must newly
+    /// allocate there: its prompt length less the blocks that candidate already
+    /// holds, so a Decode engine that can reuse a cached prefix is charged only
+    /// for what it has to add. It is computed before admission (the KV index is
+    /// never queried under the selection lock) and is `None` unless every
+    /// candidate's figure is known, because a partial list would compare
+    /// candidates in different units.
+    ///
+    /// `new_context` is keyed by worker URL, so it survives the caller
+    /// projecting each candidate onto a load-only handle.
     fn select_decode(
         &self,
         workers: &[Arc<dyn Worker>],
         session: Option<&AffinityKey>,
         lora_name: Option<&str>,
         cache_salt: Option<&str>,
+        new_context: Option<&HashMap<String, u64>>,
     ) -> Option<StagePick>;
     /// Whether the optional session binding is switched on for this policy.
     fn session_affinity_enabled(&self) -> bool;
@@ -1821,6 +1854,71 @@ impl KvAwareOps for KvAwarePolicy {
             .collect()
     }
 
+    /// Marginal Decode context: the prompt, once per sampling sequence, less
+    /// the device blocks this candidate already holds.
+    ///
+    /// The engine's `get_num_new_matched_tokens` subtracts its own block-aligned
+    /// local prefix hit from what it pulls, so a cached prefix costs a Decode
+    /// worker neither a transfer nor new blocks. Charging it full price would
+    /// make a warm decoder look as loaded as a cold one and push continuations
+    /// off the engine that can resume them. Both the last-token rule and the
+    /// block alignment come from [`credited_tokens`], so the Router and the
+    /// engine agree on what counts as reused.
+    fn estimate_decode_work(
+        &self,
+        inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+        sequences: u32,
+    ) -> Vec<DecodeWorkEstimate> {
+        let sequences = u64::from(sequences.max(1));
+        let mut query_cache = HashMap::new();
+        inputs
+            .iter()
+            .map(|&(worker, prompts, credit)| {
+                let binding = self.binding_for_worker(worker);
+                if !credit || binding.cache_key.is_none() {
+                    return DecodeWorkEstimate::default();
+                }
+                let params = CostParams {
+                    block_size: binding.block_size,
+                    ..self.params
+                };
+                let mut additional = 0u64;
+                for tokens in prompts {
+                    let hits = query_cache
+                        .entry((binding.cache_key.clone(), tokens.as_slice()))
+                        .or_insert_with(|| {
+                            Self::placement_matches(&binding, Some(tokens), None, true)
+                        })
+                        .as_slice();
+                    let matches: Vec<_> = hits
+                        .iter()
+                        .filter(|hit| hit.target == binding.target)
+                        .cloned()
+                        .collect();
+                    let context = u64::try_from(tokens.len()).unwrap_or(u64::MAX);
+                    let reused = credited_tokens(
+                        &CandidateView {
+                            target: &binding.target,
+                            matches: &matches,
+                            load: LoadSample::default(),
+                            input_tokens: tokens.len(),
+                            prefill_tokens: None,
+                        },
+                        &params,
+                    );
+                    additional = additional.saturating_add(
+                        context
+                            .saturating_sub(reused.max(0.0) as u64)
+                            .saturating_mul(sequences),
+                    );
+                }
+                DecodeWorkEstimate {
+                    additional_tokens: Some(additional),
+                }
+            })
+            .collect()
+    }
+
     fn pick_prefill(&self, costs: &[f64], occupancy: &[usize]) -> Option<usize> {
         if costs.len() != occupancy.len() || costs.iter().any(|cost| !cost.is_finite()) {
             return None;
@@ -1869,11 +1967,24 @@ impl KvAwareOps for KvAwarePolicy {
         session: Option<&AffinityKey>,
         lora_name: Option<&str>,
         cache_salt: Option<&str>,
+        new_context: Option<&HashMap<String, u64>>,
     ) -> Option<StagePick> {
         if workers.is_empty() {
             return None;
         }
-        let loads: Vec<_> = workers.iter().map(|worker| worker.load()).collect();
+        // Occupancy is the caller's sample; the marginal context is ours. A
+        // candidate that reuses its prefix adds only the remainder, so the two
+        // are added in tokens rather than compared as separate rankings.
+        let loads: Vec<_> = workers
+            .iter()
+            .map(|worker| {
+                let occupancy = worker.load();
+                let additional = new_context
+                    .and_then(|context| context.get(worker.url()).copied())
+                    .unwrap_or(0);
+                occupancy.saturating_add(usize::try_from(additional).unwrap_or(usize::MAX))
+            })
+            .collect();
         let Some(session) = session.filter(|_| self.session_affinity_enabled()) else {
             let index = self.pick_decode(&loads)?;
             return Some(StagePick {
@@ -3031,6 +3142,14 @@ mod tests {
                 unreachable!("ordinary-only qualification must not enter PD selection")
             }
 
+            fn estimate_decode_work(
+                &self,
+                _inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+                _sequences: u32,
+            ) -> Vec<DecodeWorkEstimate> {
+                unreachable!("ordinary-only qualification must not enter PD selection")
+            }
+
             fn pick_prefill(&self, _costs: &[f64], _occupancy: &[usize]) -> Option<usize> {
                 unreachable!("ordinary-only qualification must not enter PD selection")
             }
@@ -3045,6 +3164,7 @@ mod tests {
                 _session: Option<&AffinityKey>,
                 _lora_name: Option<&str>,
                 _cache_salt: Option<&str>,
+                _new_context: Option<&HashMap<String, u64>>,
             ) -> Option<StagePick> {
                 unreachable!("ordinary-only qualification must not enter PD selection")
             }
@@ -3893,7 +4013,7 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
 
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((first.index, first.outcome), (0, "bind"));
         assert!(first.binding.is_some());
@@ -3902,7 +4022,7 @@ mod tests {
         workers[0].increment_load();
         workers[1].increment_load();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((hit.index, hit.outcome), (0, "sticky_hit"));
         first.binding.unwrap().release_ref();
@@ -3915,12 +4035,12 @@ mod tests {
         let key = affinity_key("s1");
         let workers = decode_pool(&["http://d0", "http://d1", "http://d2"]);
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         let original = first.binding.unwrap();
         workers[0].increment_load();
         let moved = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((moved.index, moved.outcome), (2, "rebind"));
         let replacement = moved.binding.unwrap();
@@ -3931,7 +4051,7 @@ mod tests {
         assert_eq!(replacement.in_flight(), 1);
         replacement.release_ref();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((hit.index, hit.outcome), (2, "sticky_hit"));
         hit.binding.unwrap().release_ref();
@@ -3943,7 +4063,7 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
         workers[0].increment_load();
         let pick = policy
-            .select_decode(&workers, Some(&affinity_key("s1")), None, None)
+            .select_decode(&workers, Some(&affinity_key("s1")), None, None, None)
             .unwrap();
         assert_eq!(pick.index, 1);
         assert!(pick.binding.is_none());
@@ -3957,16 +4077,16 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
         let key = affinity_key("s1");
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(hit.outcome, "sticky_hit");
         first.binding.unwrap().release_ref();
         hit.binding.unwrap().release_ref();
         let expired = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((expired.index, expired.outcome), (1, "bind"));
         expired.binding.unwrap().release_ref();
@@ -3979,11 +4099,13 @@ mod tests {
         let workers = decode_pool(&["http://d0"]);
         workers[0].increment_load();
         let pick = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(pick.index, 0);
         pick.binding.unwrap().release_ref();
-        assert!(policy.select_decode(&[], Some(&key), None, None).is_none());
+        assert!(policy
+            .select_decode(&[], Some(&key), None, None, None)
+            .is_none());
     }
 
     #[test]
@@ -3992,7 +4114,7 @@ mod tests {
         let key = affinity_key("s1");
         let workers = decode_pool(&["http://d0", "http://d1"]);
         let pick = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(pick.outcome, "bind");
 
@@ -4001,7 +4123,7 @@ mod tests {
         policy.reconcile_decode_workers(&shrunk);
         assert!(!policy.targets.contains_key("http://d0"));
         let rebound = policy
-            .select_decode(&shrunk, Some(&key), None, None)
+            .select_decode(&shrunk, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((rebound.index, rebound.outcome), (0, "bind"));
 
@@ -4011,7 +4133,7 @@ mod tests {
         policy.register_target("http://d1", target("http://d1", 0));
         moved[0].increment_load();
         let rebind = policy
-            .select_decode(&moved, Some(&key), None, None)
+            .select_decode(&moved, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((rebind.index, rebind.outcome), (1, "bind"));
         policy.reconcile_decode_workers(&[]);
@@ -4023,7 +4145,9 @@ mod tests {
         let policy = KvAwarePolicy::default();
         let workers = decode_pool(&["http://d0", "http://d1"]);
         workers[0].increment_load();
-        let pick = policy.select_decode(&workers, None, None, None).unwrap();
+        let pick = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
         assert_eq!((pick.index, pick.outcome), (1, "no_session"));
         assert!(pick.binding.is_none());
         assert!(policy.affinity.is_empty());
@@ -4036,5 +4160,131 @@ mod tests {
                     as Arc<dyn Worker>
             })
             .collect()
+    }
+
+    /// A Decode pool whose engines publish KV events: each worker gets a cache
+    /// identity, and `held` gives the root-aligned device blocks it already has.
+    fn decode_pool_with_blocks(
+        policy: &KvAwarePolicy,
+        urls: &[&str],
+        held: &[u32],
+        block_size: u32,
+    ) -> Vec<Arc<dyn Worker>> {
+        let workers = decode_pool(urls);
+        let provider = Arc::new(StaticMatches {
+            blocks: held.to_vec(),
+            targets: workers
+                .iter()
+                .map(|worker| target(worker.url(), 0))
+                .collect(),
+        });
+        let key = CacheKey {
+            model: Arc::from("decode-pool"),
+            hash_mode: crate::kv_index::HashMode::Sha256,
+            block_size,
+        };
+        for worker in &workers {
+            policy.register_target_with_cache_identity(
+                worker.url(),
+                target(worker.url(), 0),
+                key.clone(),
+                provider.clone(),
+            );
+        }
+        workers
+    }
+
+    /// Answers every placement query with the same per-target intervals, which
+    /// is what a fixed set of held blocks looks like to the cost model.
+    struct StaticMatches {
+        blocks: Vec<u32>,
+        targets: Vec<RoutableTarget>,
+    }
+
+    impl TieredMatchProvider for StaticMatches {
+        fn find_tiered_matches(&self, _query: &MatchQuery) -> Vec<TierMatch> {
+            self.targets
+                .iter()
+                .zip(&self.blocks)
+                .map(|(target, blocks)| {
+                    let segments = if *blocks == 0 {
+                        Vec::new()
+                    } else {
+                        vec![(0, *blocks)]
+                    };
+                    tier_match(target, StorageTier::Device, &segments)
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn decode_credit_charges_only_the_blocks_a_candidate_does_not_hold() {
+        // Two decoders at equal occupancy. `d0` holds half the prompt's blocks,
+        // `d1` holds none, so only d0 can resume the prefix: it must win even
+        // though plain occupancy is a tie.
+        let block_size = 4u32;
+        let policy = KvAwarePolicy::default();
+        let workers =
+            decode_pool_with_blocks(&policy, &["http://d0", "http://d1"], &[4, 0], block_size);
+        let ids: Vec<u32> = (0..8 * block_size).collect();
+        let prompts: Arc<[Vec<u32>]> = Arc::from(vec![ids]);
+        let context: HashMap<String, u64> = workers
+            .iter()
+            .map(|worker| {
+                let estimate = kv_aware_ops(&policy)
+                    .unwrap()
+                    .estimate_decode_work(&[(worker.as_ref(), &prompts[..], true)], 1);
+                (
+                    worker.url().to_owned(),
+                    estimate[0].additional_tokens.expect("verified identity"),
+                )
+            })
+            .collect();
+        assert_eq!(context["http://d0"], 16, "half the prompt is reusable");
+        assert_eq!(context["http://d1"], 32, "a cold decoder pays the prompt");
+
+        let pick = policy
+            .select_decode(&workers, None, None, None, Some(&context))
+            .unwrap();
+        assert_eq!(pick.index, 0, "the holder must be preferred");
+
+        // Without the credit both are tied at zero occupancy, so the tie cursor
+        // rotates between them instead of always taking the holder.
+        let first = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
+        let second = policy
+            .select_decode(&workers, None, None, None, None)
+            .unwrap();
+        assert_ne!(first.index, second.index);
+    }
+
+    #[test]
+    fn decode_work_estimate_returns_nothing_without_a_verified_identity() {
+        let block_size = 4u32;
+        let policy = KvAwarePolicy::default();
+        let workers = decode_pool(&["http://d0"]);
+        let ids: Vec<u32> = (0..8 * block_size).collect();
+        let prompts = vec![ids];
+        let estimates = kv_aware_ops(&policy)
+            .unwrap()
+            .estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), false)], 1);
+        assert_eq!(estimates, vec![DecodeWorkEstimate::default()]);
+    }
+
+    #[test]
+    fn decode_work_estimate_scales_with_sampling_sequences() {
+        let block_size = 4u32;
+        let policy = KvAwarePolicy::default();
+        let workers = decode_pool_with_blocks(&policy, &["http://d0"], &[4], block_size);
+        let ids: Vec<u32> = (0..8 * block_size).collect();
+        let prompts = vec![ids];
+        let ops = kv_aware_ops(&policy).unwrap();
+        let one = ops.estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), true)], 1);
+        let four = ops.estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), true)], 4);
+        // Four device blocks of eight are reused, so half the prompt is billable.
+        assert_eq!(one[0].additional_tokens, Some(16));
+        assert_eq!(four[0].additional_tokens, Some(16 * 4));
     }
 }

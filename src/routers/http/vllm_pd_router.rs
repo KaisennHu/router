@@ -5,7 +5,9 @@ use super::logprobs_merge;
 use super::pd_cached_tokens;
 use super::pd_program_adapter::{self, PdProgramRuntime};
 use super::pd_router::PdRouterBase;
-use super::pd_types::{error_chain, PDRouterError, PdAttempt, PdEndpoint, PdRequestContext};
+use super::pd_types::{
+    error_chain, requested_sequences, PDRouterError, PdAttempt, PdEndpoint, PdRequestContext,
+};
 use super::router::{hold_request_load_until_body_done, prepare_error_status, RequestLoadGuard};
 use super::usage_merge;
 use super::vllm_service_discovery::{MoriIOTransferMode, ServiceRegistry, ServiceType};
@@ -1006,7 +1008,12 @@ impl VllmPDRouter {
         let needs_headers = forward_policy_headers
             && (prefill_policy.needs_headers() || decode_policy.needs_headers());
         let policy_headers = header_utils::to_policy_headers(headers.filter(|_| needs_headers));
-        let (prefill_inputs, decode_inputs) = tokio::join!(
+        let sequences = requested_sequences(request);
+        // Decode context pricing runs before admission: it queries the KV index
+        // and tokenizes, neither of which may happen under the selection lock.
+        // The D pool is recorded here too, so the refresh loop subscribes to a
+        // Decode engine's own KV events when that engine publishes them.
+        let (prefill_inputs, decode_inputs, decode_context) = tokio::join!(
             self.pd_router.prepare_prefill_inputs(
                 prefill_workers,
                 request,
@@ -1021,6 +1028,26 @@ impl VllmPDRouter {
                 headers,
                 router_prompts
             ),
+            async {
+                let state = self.pd_router.kv_state.as_ref()?;
+                if !state.publishes_for(decode_workers) {
+                    return None;
+                }
+                state
+                    .record_decode_pool(decode_workers, &decode_policy)
+                    .await;
+                state
+                    .prepare_decode_context(
+                        decode_workers,
+                        &decode_policy,
+                        request,
+                        path,
+                        headers,
+                        router_prompts,
+                        sequences,
+                    )
+                    .await
+            },
         );
         let model_id = request.get("model").and_then(Value::as_str);
         let cache_salt = request
@@ -1068,13 +1095,18 @@ impl VllmPDRouter {
             affinity_key,
             lora_name: request.get(NAMED_LORA_FIELD).and_then(Value::as_str),
             cache_salt,
+            decode_sequences: sequences,
             route: path,
         };
         // Existing deployments configure a common connector. Discovery parses
         // registrations with that connector; no new pair compatibility is
         // inferred from KV overlap or DP rank equality.
-        self.pd_router
-            .select_and_admit(prefill_workers, decode_workers, &context)
+        self.pd_router.select_and_admit(
+            prefill_workers,
+            decode_workers,
+            &context,
+            decode_context.as_ref(),
+        )
     }
 
     /// Cheap opt-in gate: only Program-capable requests are serialized twice.
