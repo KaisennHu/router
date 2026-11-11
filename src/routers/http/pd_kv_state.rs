@@ -448,6 +448,21 @@ impl PdKvState {
         })
     }
 
+    /// Whether a binding's cache identity is verified for `model`, which is what
+    /// lets its blocks be credited. Model/block-size declarations and a
+    /// discovered cache identity are both accepted; a binding with neither gets
+    /// no credit, so its candidate is priced at full occupancy instead.
+    fn credit_allowed(binding: &Binding, model: Option<&str>) -> bool {
+        model.is_some_and(|model| {
+            binding.base_models.contains(model)
+                || binding
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.cache_key.as_ref())
+                    .is_some_and(|key| key.model.as_ref() == model)
+        })
+    }
+
     /// Whether any of `workers` is configured to publish KV events.
     ///
     /// Binding a pool that publishes nothing is not merely wasteful: the bind
@@ -492,6 +507,23 @@ impl PdKvState {
         sequences: u32,
     ) -> Option<HashMap<String, u64>> {
         let kv = kv_aware_ops(policy.as_ref())?;
+        // Nothing to price unless at least one Decode base has a verified cache
+        // identity. Checking first keeps the tokenize/render fan-out and the
+        // hash walk off the request path for every deployment whose Decode pool
+        // publishes no KV events, which is all of them until they opt in.
+        {
+            let bindings = self.bindings.lock().await;
+            let model = request.get("model").and_then(Value::as_str);
+            let any_creditable = workers.iter().any(|worker| {
+                bindings
+                    .get(worker.base_url())
+                    .is_some_and(|binding| Self::credit_allowed(binding, model))
+            });
+            if !any_creditable {
+                crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
+                return None;
+            }
+        }
         let bases: Vec<_> = workers
             .iter()
             .map(|worker| worker.base_url().to_owned())
@@ -503,15 +535,7 @@ impl PdKvState {
             .iter()
             .map(|(base, binding)| {
                 let model = request.get("model").and_then(Value::as_str);
-                let allowed = model.is_some_and(|model| {
-                    binding.base_models.contains(model)
-                        || binding
-                            .info
-                            .as_ref()
-                            .and_then(|info| info.cache_key.as_ref())
-                            .is_some_and(|key| key.model.as_ref() == model)
-                });
-                (base.clone(), allowed)
+                (base.clone(), Self::credit_allowed(binding, model))
             })
             .collect();
         let results = match router_prompts {
@@ -592,15 +616,7 @@ impl PdKvState {
             .iter()
             .map(|(base, binding)| {
                 let model = request.get("model").and_then(Value::as_str);
-                let allowed = model.is_some_and(|model| {
-                    binding.base_models.contains(model)
-                        || binding
-                            .info
-                            .as_ref()
-                            .and_then(|info| info.cache_key.as_ref())
-                            .is_some_and(|key| key.model.as_ref() == model)
-                });
-                (base.clone(), allowed)
+                (base.clone(), Self::credit_allowed(binding, model))
             })
             .collect();
         let results = match router_prompts {

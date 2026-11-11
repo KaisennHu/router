@@ -893,17 +893,35 @@ impl ConfigValidator {
                     // without its event stream the Router can only guess what
                     // a Decode worker already has, which is exactly the credit
                     // a marginal decode-load estimate needs.
-                    let configured = prefill_urls
+                    //
+                    // The key also decides which policy must be KV-aware: a
+                    // source keyed by a Decode URL is only subscribed when the
+                    // Decode policy ranks by KV, so accepting it for a
+                    // count-based Decode pool would drop the endpoint silently.
+                    let prefill_keyed = prefill_urls
                         .iter()
-                        .any(|(prefill, _)| base_url_without_rank(prefill) == url)
-                        || decode_urls
-                            .iter()
-                            .any(|decode| base_url_without_rank(decode) == url);
-                    if !configured {
+                        .any(|(prefill, _)| base_url_without_rank(prefill) == url);
+                    let decode_keyed = decode_urls
+                        .iter()
+                        .any(|decode| base_url_without_rank(decode) == url);
+                    if !prefill_keyed && !decode_keyed {
                         return Err(ConfigError::IncompatibleConfig {
                             reason: format!(
                                 "pd_kv_event_sources key '{url}' is not a configured prefill or \
                                  decode URL (use the base URL without the '@rank' suffix)"
+                            ),
+                        });
+                    }
+                    let owning_policy = if decode_keyed && !prefill_keyed {
+                        config.mode.get_decode_policy(&config.policy)
+                    } else {
+                        config.mode.get_prefill_policy(&config.policy)
+                    };
+                    if !matches!(owning_policy, PolicyConfig::KvAware { .. }) {
+                        return Err(ConfigError::IncompatibleConfig {
+                            reason: format!(
+                                "pd_kv_event_sources['{url}'] belongs to a stage whose policy is \
+                                 not kv_aware; its subscribers would never start"
                             ),
                         });
                     }
@@ -1760,8 +1778,10 @@ mod tests {
 
     #[test]
     fn test_pd_kv_event_sources_accept_a_kv_aware_decode_policy() {
-        // Prefill and Decode may use different policies; a kv_aware Decode alone
-        // is enough to start the subscribers that price its own blocks.
+        // Prefill and Decode may use different policies. A kv_aware Decode is
+        // what starts the subscribers that price its own blocks, so its sources
+        // must be keyed by Decode URLs - the stage whose policy is KV-aware is
+        // the stage that will subscribe.
         let mut config = pd_config_with_static_kv_sources();
         config.policy = PolicyConfig::CacheAware {
             cache_threshold: 0.5,
@@ -1779,7 +1799,42 @@ mod tests {
                 static_kv_event_sources: Default::default(),
             });
         }
+        let sources = config
+            .pd_kv_event_sources
+            .remove("http://prefill:8000")
+            .unwrap();
+        config
+            .pd_kv_event_sources
+            .insert("http://decode:8000".to_string(), sources);
         assert!(ConfigValidator::validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_pd_kv_event_sources_rejects_a_source_whose_stage_is_not_kv_aware() {
+        // A Decode-keyed source with a count-based Decode policy would never be
+        // subscribed, which is the silent drop this guard exists to stop.
+        let mut config = pd_config_with_static_kv_sources();
+        let sources = config
+            .pd_kv_event_sources
+            .remove("http://prefill:8000")
+            .unwrap();
+        config
+            .pd_kv_event_sources
+            .insert("http://decode:8000".to_string(), sources);
+        if let RoutingMode::VllmPrefillDecode { decode_policy, .. } = &mut config.mode {
+            *decode_policy = Some(PolicyConfig::RoundRobin);
+        }
+        let err = ConfigValidator::validate(&config).unwrap_err().to_string();
+        assert!(err.contains("policy is not kv_aware"), "{err}");
+
+        // A Prefill-keyed source with a count-based Prefill policy is the same
+        // mistake on the other side.
+        let mut config = pd_config_with_static_kv_sources();
+        if let RoutingMode::VllmPrefillDecode { prefill_policy, .. } = &mut config.mode {
+            *prefill_policy = Some(PolicyConfig::RoundRobin);
+        }
+        let err = ConfigValidator::validate(&config).unwrap_err().to_string();
+        assert!(err.contains("policy is not kv_aware"), "{err}");
     }
 
     #[test]

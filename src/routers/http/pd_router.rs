@@ -597,6 +597,16 @@ impl PdRouterBase {
         }
     }
 
+    /// Whether the shared KV state is needed at all: it exists for whichever
+    /// stage ranks by KV, and a mixed policy needs it just as much as a
+    /// kv_aware prefill does.
+    pub(super) fn needs_kv_state(
+        prefill_policy: &dyn LoadBalancingPolicy,
+        decode_policy: &dyn LoadBalancingPolicy,
+    ) -> bool {
+        kv_aware_ops(prefill_policy).is_some() || kv_aware_ops(decode_policy).is_some()
+    }
+
     /// Shared entry point for static and discovered P/D pools. Selection and
     /// reservation are synchronous; no network work runs under admission.
     pub(super) fn select_and_admit(
@@ -1189,14 +1199,27 @@ impl PdRouterBase {
         // Note: Health checking is now handled centrally by RouterManager
         // Individual routers no longer need to manage health checkers
 
-        let kv_state = if kv_aware_ops(prefill_policy.as_ref()).is_some() {
+        // Either stage may be the KV-aware one. A mixed policy such as
+        // `--prefill-policy cache_aware --decode-policy kv_aware` needs the
+        // shared state for the Decode side alone, and creating it from the
+        // prefill policy would leave that configuration with no subscribers.
+        let kv_state = if Self::needs_kv_state(prefill_policy.as_ref(), decode_policy.as_ref()) {
+            let prefill_kv = kv_aware_ops(prefill_policy.as_ref()).is_some();
             Some(
                 PdKvState::start(
                     ctx.client.clone(),
                     ctx.router_config.api_key.clone(),
                     ctx.router_config.pd_kv_event_sources.clone(),
-                    ctx.worker_registry.get_prefill_workers(),
-                    prefill_policy.clone(),
+                    if prefill_kv {
+                        ctx.worker_registry.get_prefill_workers()
+                    } else {
+                        Vec::new()
+                    },
+                    if prefill_kv {
+                        prefill_policy.clone()
+                    } else {
+                        decode_policy.clone()
+                    },
                 )
                 .await,
             )
