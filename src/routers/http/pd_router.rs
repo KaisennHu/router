@@ -2883,6 +2883,9 @@ mod admission_tests {
         );
     }
 
+    /// Pins the counters that make an unpriced request visible; the selection
+    /// consequence - the whole pool falling back to request counts - is
+    /// `unknown_decode_requests_fall_back_to_counts_for_the_whole_pool`.
     #[test]
     fn decode_reservation_without_a_rendered_prompt_counts_as_unknown() {
         let manager = Arc::new(PdLoadManager::default());

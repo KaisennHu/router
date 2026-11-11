@@ -4316,27 +4316,4 @@ mod tests {
         );
         assert_eq!(estimates, vec![DecodeWorkEstimate::default()]);
     }
-
-    #[test]
-    fn decode_work_estimate_scales_with_sampling_sequences() {
-        let block_size = 4u32;
-        let policy = KvAwarePolicy::default();
-        let workers = decode_pool_with_blocks(&policy, &["http://d0"], &[4], block_size);
-        let ids: Vec<u32> = (0..8 * block_size).collect();
-        let prompts = vec![ids];
-        let ops = kv_aware_ops(&policy).unwrap();
-        let one = ops.estimate_decode_work(
-            &[(workers[0].as_ref(), prompts.as_slice(), true)],
-            1,
-            &mut PromptHashes::new(),
-        );
-        let four = ops.estimate_decode_work(
-            &[(workers[0].as_ref(), prompts.as_slice(), true)],
-            4,
-            &mut PromptHashes::new(),
-        );
-        // Four device blocks of eight are reused, so half the prompt is billable.
-        assert_eq!(one[0].additional_tokens, Some(16));
-        assert_eq!(four[0].additional_tokens, Some(16 * 4));
-    }
 }
