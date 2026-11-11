@@ -273,6 +273,8 @@ Configure the engines' P/D connector and enable prefix caching and KV events on 
 
 If event discovery is unavailable, add `--pd-kv-events http://prefill:8000=tcp://prefill:5557` for each prefill worker.
 
+Decode is charged only for the context it newly allocates, which needs to know which blocks a Decode engine already holds. Enable KV events there too (`--kv-events-config` with `enable_kv_cache_events`) and point the flag at those workers, e.g. `--pd-kv-events http://decode:8000=tcp://decode:5557`. Without a Decode source every candidate's cache identity stays unverified: the marginal figure is withheld, ranking stays on full context tokens, and the decision metric reports `context_tokens` rather than `context_tokens_marginal`. A source is only accepted for a stage whose policy is `kv_aware`.
+
 ### Session affinity
 
 Affinity is off by default. Add `--kv-aware-session-affinity-ttl-secs 1800` to retain bindings for 30 minutes of inactivity.

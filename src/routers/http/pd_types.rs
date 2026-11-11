@@ -182,26 +182,37 @@ fn decode_context_tokens(prefill: &StageDecision, sequences: u32) -> Option<u64>
     }
 }
 
-/// Sampling sequences a request asks for: top-level `n` for the OpenAI
-/// endpoints, `sampling_params.n` for the vLLM generate API. Values above
-/// `MAX_SEQUENCES` are clamped: the engine rejects them long before the
+/// Sampling sequences a Decode endpoint runs for this request.
+///
+/// The engine forks `max(n, best_of)` sequences and each attends over the whole
+/// prompt, so the reservation has to charge the larger of the two: a
+/// `best_of=8, n=2` completion runs eight sequences, not two. `best_of` defaults
+/// to `n` on the engine, hence `n` is the floor rather than the value. Values
+/// above `MAX_SEQUENCES` are clamped: the engine rejects them long before the
 /// reservation could overflow, and one absurd value must not swamp routing.
 const MAX_SEQUENCES: u32 = 1024;
 
 pub(super) fn requested_sequences(request: &serde_json::Value) -> u32 {
-    let raw = request
-        .get("n")
-        .or_else(|| {
-            request
-                .get("sampling_params")
-                .and_then(|params| params.get("n"))
-        })
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
-    u32::try_from(raw)
+    let read = |field: &str| {
+        request
+            .get(field)
+            .or_else(|| {
+                request
+                    .get("sampling_params")
+                    .and_then(|params| params.get(field))
+            })
+            .and_then(serde_json::Value::as_u64)
+    };
+    let sequences = read("n").unwrap_or(1).max(read("best_of").unwrap_or(1));
+    u32::try_from(sequences)
         .unwrap_or(MAX_SEQUENCES)
         .clamp(1, MAX_SEQUENCES)
 }
+
+/// The route a probe uses. It takes a pair but starts no sequence, so it must
+/// not reserve Decode occupancy: an unknown reservation there would flip the
+/// whole pool to request counts for the length of every probe.
+pub(super) const HEALTH_PROBE_ROUTE: &str = "/health_generate";
 
 /// Backend-effective tokens prepared outside the admission transaction.
 #[derive(Debug, Clone)]
@@ -279,16 +290,21 @@ impl PdLoadManager {
         &self,
         select: impl FnOnce(&Loads) -> Option<PdSelection>,
     ) -> Option<(PdSelection, PdAttempt)> {
-        self.admit_sequences(select, 1)
+        self.admit_sequences(select, 1, true)
     }
 
     /// Same admission, for a request that asks for `sequences` sampling
     /// sequences. Each sequence attends over the prompt, so the Decode endpoint
     /// is charged the prompt length once per sequence.
+    ///
+    /// `reserve_decode` is false for a probe: it takes a pair but starts no
+    /// sequence, and an unknown Decode reservation there would flip the whole
+    /// pool to request counts for the length of every probe.
     pub(super) fn admit_sequences(
         &self,
         select: impl FnOnce(&Loads) -> Option<PdSelection>,
         sequences: u32,
+        reserve_decode: bool,
     ) -> Option<(PdSelection, PdAttempt)> {
         let mut loads = self.loads.lock();
         let selection = select(&loads)?;
@@ -308,6 +324,24 @@ impl PdLoadManager {
             p.unknown_prefill_requests += 1;
         }
         p.publish(Stage::Prefill, &prefill.endpoint);
+        if !reserve_decode {
+            let attempt = PdAttempt(Arc::new(AttemptInner {
+                admitted_at: std::time::Instant::now(),
+                loads: self.loads.clone(),
+                prefill: selection.prefill.endpoint.clone(),
+                decode: selection.decode.endpoint.clone(),
+                prefill_worker: Mutex::new(None),
+                decode_worker: Mutex::new(None),
+                prefill_tokens: selection.prefill.new_prefill_tokens,
+                decode_tokens: None,
+                affinity: selection.decode.affinity.clone(),
+                state: Mutex::new(AttemptState {
+                    prefill: true,
+                    decode: DecodeState::Pending,
+                }),
+            }));
+            return Some((selection, attempt));
+        }
         let d = loads
             .entry((Stage::Decode, decode.endpoint.clone()))
             .or_default();

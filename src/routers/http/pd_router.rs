@@ -636,6 +636,7 @@ impl PdRouterBase {
                 )
             },
             context.decode_sequences,
+            context.route != super::pd_types::HEALTH_PROBE_ROUTE,
         );
         if let Some((selection, attempt)) = &admitted {
             if kv_aware_ops(prefill_policy.as_ref()).is_some() {
@@ -2838,6 +2839,7 @@ mod admission_tests {
             .admit_sequences(
                 |loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx, None),
                 ctx.decode_sequences,
+                true,
             )
             .unwrap();
         let endpoint = selection.decode.endpoint.clone();
@@ -2872,6 +2874,21 @@ mod admission_tests {
         assert_eq!(
             crate::routers::http::pd_types::requested_sequences(&json(r#"{"prompt":"hi","n":0}"#)),
             1
+        );
+        // The engine forks max(n, best_of) sequences and each attends over the
+        // whole prompt, so the larger of the two is what the Decode endpoint
+        // occupies: best_of=8, n=2 runs eight sequences, not two.
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(
+                r#"{"prompt":"hi","n":2,"best_of":8}"#
+            )),
+            8
+        );
+        assert_eq!(
+            crate::routers::http::pd_types::requested_sequences(&json(
+                r#"{"sampling_params":{"n":4,"best_of":1}}"#
+            )),
+            4
         );
     }
 
