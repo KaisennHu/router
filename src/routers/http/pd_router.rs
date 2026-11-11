@@ -39,7 +39,6 @@ pub(super) fn select_pd_pair(
     prefill_policy: &dyn LoadBalancingPolicy,
     decode_policy: &dyn LoadBalancingPolicy,
     context: &PdRequestContext<'_>,
-    decode_context: Option<&HashMap<String, u64>>,
 ) -> Option<PdSelection> {
     // Admission must not switch an endpoint between aggregate and per-rank
     // accounting while requests are live. Index existing granularities once
@@ -96,9 +95,6 @@ pub(super) fn select_pd_pair(
         &prefill_indices,
         prefill_policy,
         context,
-        // Marginal Decode context belongs to the Decode stage only; the
-        // Prefill stage never reads it.
-        None,
     )?;
     let decode = select_stage(
         loads,
@@ -108,7 +104,6 @@ pub(super) fn select_pd_pair(
         &decode_indices,
         decode_policy,
         context,
-        decode_context,
     )?;
 
     Some(PdSelection { prefill, decode })
@@ -123,9 +118,9 @@ fn select_stage(
     indices: &[usize],
     policy: &dyn LoadBalancingPolicy,
     context: &PdRequestContext<'_>,
-    decode_context: Option<&HashMap<String, u64>>,
 ) -> Option<StageDecision> {
     let policy_input = context.legacy_policy_input;
+    let decode_context = context.decode_context;
     let kv_aware = kv_aware_ops(policy).is_some();
     // Decode ranks candidates by the logical context tokens they hold instead of
     // by request counts. The comparison needs one unit across the whole eligible
@@ -614,7 +609,6 @@ impl PdRouterBase {
         prefill_workers: &[Arc<dyn Worker>],
         decode_workers: &[Arc<dyn Worker>],
         context: &PdRequestContext<'_>,
-        decode_context: Option<&HashMap<String, u64>>,
     ) -> Option<(PdSelection, PdAttempt)> {
         let prefill_policy = self.policy_registry.get_prefill_policy();
         let decode_policy = self.policy_registry.get_decode_policy();
@@ -632,7 +626,6 @@ impl PdRouterBase {
                     prefill_policy.as_ref(),
                     decode_policy.as_ref(),
                     context,
-                    decode_context,
                 )
             },
             context.decode_sequences,
@@ -1400,8 +1393,7 @@ impl PdRouterBase {
         if self.first_grpc_prefill_url().is_some() {
             return (
                 StatusCode::NOT_IMPLEMENTED,
-                "/health_generate is not implemented for gRPC workers; use /health for gRPC readiness",
-            )
+                "/health_generate is not implemented for gRPC workers; use /health for gRPC readiness")
                 .into_response();
         }
         // Test model generation capability by selecting a random pair and testing them
@@ -1431,10 +1423,11 @@ impl PdRouterBase {
             lora_name: None,
             cache_salt: None,
             decode_sequences: 1,
+            decode_context: None,
             route: "/health_generate",
         };
         let (selection, _attempt) =
-            match self.select_and_admit(prefill_workers, decode_workers, &context, None) {
+            match self.select_and_admit(prefill_workers, decode_workers, &context) {
                 Some(admitted) => admitted,
                 None => {
                     return (
@@ -1614,8 +1607,7 @@ impl PdRouterBase {
         if self.first_grpc_prefill_url().is_some() {
             return (
                 StatusCode::NOT_IMPLEMENTED,
-                "/flush_cache is not implemented for gRPC workers: vLLM's gRPC Control service has no cache reset",
-            )
+                "/flush_cache is not implemented for gRPC workers: vLLM's gRPC Control service has no cache reset")
                 .into_response();
         }
         // Process both prefill and decode workers
@@ -1962,10 +1954,11 @@ mod tests {
             lora_name: None,
             cache_salt: None,
             decode_sequences: 1,
+            decode_context: None,
             route: "/health_generate",
         };
         let (selection, attempt) = router
-            .select_and_admit(&prefill_workers, &decode_workers, &context, None)
+            .select_and_admit(&prefill_workers, &decode_workers, &context)
             .unwrap();
         let prefill = &prefill_workers[selection.prefill.worker_index];
 
@@ -1992,11 +1985,10 @@ mod tests {
             lora_name: None,
             cache_salt: None,
             decode_sequences: 1,
+            decode_context: None,
             route: "/health_generate",
         };
-        assert!(router
-            .select_and_admit(&empty, &empty, &context, None)
-            .is_none());
+        assert!(router.select_and_admit(&empty, &empty, &context).is_none());
         assert!(router.pd_load.snapshot().is_empty());
     }
 
@@ -2643,14 +2635,14 @@ mod admission_tests {
         let mut context = context();
         context.prefill_inputs = Some(&inputs);
         let (first, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_eq!(first.prefill.worker_index, 1); // Warm P wins over the first idle P.
         assert_eq!(first.prefill.new_prefill_tokens, Some(1));
         assert_eq!(first.prefill.credited_prefix_tokens, Some(32));
         assert_eq!(first.prefill.fallback_reason, None);
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_eq!(second.prefill.worker_index, 1);
         assert_eq!(second.prefill.score, Some(2.0));
@@ -2676,7 +2668,7 @@ mod admission_tests {
                 ..Default::default()
             },
         );
-        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context, None).unwrap();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context).unwrap();
         assert_eq!(selection.prefill.worker_index, 0); // Token backlog outweighs warm residency.
         assert_eq!(selection.prefill.new_prefill_tokens, Some(33));
     }
@@ -2697,11 +2689,11 @@ mod admission_tests {
         context.prefill_inputs = Some(&inputs);
         let manager = Arc::new(PdLoadManager::default());
         let (first, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_eq!(first.prefill.worker_index, 1);
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_eq!(
             second.prefill.worker_index, 0,
@@ -2718,13 +2710,13 @@ mod admission_tests {
         let tokens: Vec<u32> = (0..33).collect();
         let policy = resident_prefix_policy(&p, &tokens);
         let (_, unknown) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context(), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context()))
             .unwrap();
         let inputs = token_inputs(&p, &tokens, &policy);
         let mut context = context();
         context.prefill_inputs = Some(&inputs);
         let (selection, known) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_eq!(
             selection.prefill.fallback_reason,
@@ -2767,7 +2759,7 @@ mod admission_tests {
         let policy = KvAwarePolicy::default();
         // Two 64K sequences hold 131,072 tokens; four 4K sequences hold 16,384.
         // Request counts would prefer the first decoder, context tokens the second.
-        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context(), None).unwrap();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context()).unwrap();
         assert_eq!(
             selection.decode.worker_index, 1,
             "context tokens prefer the four short sequences"
@@ -2785,7 +2777,7 @@ mod admission_tests {
             .or_default()
             .unknown_decode_requests = 1;
         let policy = KvAwarePolicy::default();
-        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context(), None).unwrap();
+        let selection = select_pd_pair(&loads, &p, &d, &policy, &policy, &context()).unwrap();
         assert_eq!(
             selection.decode.worker_index, 0,
             "one unknown prompt length keeps the pool on request counts"
@@ -2836,7 +2828,7 @@ mod admission_tests {
         ctx.decode_sequences = 4;
         let (selection, attempt) = manager
             .admit_sequences(
-                |loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx, None),
+                |loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx),
                 ctx.decode_sequences,
                 true,
             )
@@ -2938,6 +2930,7 @@ mod admission_tests {
             lora_name: None,
             cache_salt: None,
             decode_sequences: 1,
+            decode_context: None,
             route: "/v1/completions",
         }
     }
@@ -2949,7 +2942,7 @@ mod admission_tests {
     ) -> (PdSelection, PdAttempt) {
         let policy = KvAwarePolicy::default();
         manager
-            .admit(|loads| select_pd_pair(loads, p, d, &policy, &policy, &context(), None))
+            .admit(|loads| select_pd_pair(loads, p, d, &policy, &policy, &context()))
             .unwrap()
     }
 
@@ -2965,6 +2958,7 @@ mod admission_tests {
             lora_name: None,
             cache_salt: None,
             decode_sequences: 1,
+            decode_context: None,
             route: "/v1/completions",
         }
     }
@@ -2988,7 +2982,7 @@ mod admission_tests {
         context: &PdRequestContext<'_>,
     ) -> (PdSelection, PdAttempt) {
         manager
-            .admit(|loads| select_pd_pair(loads, p, d, policy, policy, context, None))
+            .admit(|loads| select_pd_pair(loads, p, d, policy, policy, context))
             .unwrap()
     }
 
@@ -3114,7 +3108,7 @@ mod admission_tests {
             .unwrap()
             .active_prefill_tokens = 40;
         let unbound_decode = KvAwarePolicy::default();
-        let next = select_pd_pair(&loads, &p, &d, &policy, &unbound_decode, &ctx, None).unwrap();
+        let next = select_pd_pair(&loads, &p, &d, &policy, &unbound_decode, &ctx).unwrap();
         assert_eq!(next.prefill.worker_index, 0);
         assert_eq!(next.prefill.new_prefill_tokens, Some(33));
         assert_eq!(next.prefill.affinity_outcome, None);
@@ -3249,7 +3243,7 @@ mod admission_tests {
         let d = pool("d", 1);
         let policy = KvAwarePolicy::default();
         assert!(manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &RejectDecode, &context(), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &RejectDecode, &context()))
             .is_none());
         assert!(manager.snapshot().is_empty());
     }
@@ -3314,15 +3308,7 @@ mod admission_tests {
         assert_eq!(second.decode.endpoint.dp_rank, Some(1));
         let policy = KvAwarePolicy::default();
         assert!(manager
-            .admit(|loads| select_pd_pair(
-                loads,
-                &p,
-                &pool("d", 1),
-                &policy,
-                &policy,
-                &context(),
-                None
-            ))
+            .admit(|loads| select_pd_pair(loads, &p, &pool("d", 1), &policy, &policy, &context()))
             .is_none());
         drop((a, b));
         let (_, attempt) = admit(&manager, &p, &pool("d", 1));
@@ -3391,7 +3377,7 @@ mod admission_tests {
             manager
                 .admit(|loads| {
                     let mut selection =
-                        select_pd_pair(loads, &p, &d, &policy, &policy, &context(), None)?;
+                        select_pd_pair(loads, &p, &d, &policy, &policy, &context())?;
                     selection.prefill.new_prefill_tokens = Some(tokens);
                     Some(selection)
                 })
@@ -3452,7 +3438,7 @@ mod admission_tests {
         context.headers = Some(&headers);
         let policy = LegacyPolicy;
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context, None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &context))
             .unwrap();
         assert_ne!(first.prefill.endpoint, second.prefill.endpoint);
         assert_ne!(first.decode.endpoint, second.decode.endpoint);
@@ -3492,7 +3478,6 @@ mod admission_tests {
                             &prefill_policy,
                             &decode_policy,
                             &context(),
-                            None,
                         )
                     })
                     .unwrap();
@@ -3511,10 +3496,10 @@ mod admission_tests {
         let rr = RoundRobinPolicy::new();
         let kv = KvAwarePolicy::default();
         let (_, a) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context(), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context()))
             .unwrap();
         let (second, b) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context(), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &rr, &kv, &context()))
             .unwrap();
         assert_eq!(second.prefill.score, None);
         assert_eq!(second.decode.score, Some(2.0));
@@ -3553,6 +3538,7 @@ mod admission_tests {
                 lora_name: None,
                 cache_salt: None,
                 decode_sequences: 1,
+                decode_context: None,
                 route: "/v1/completions",
             }
         }
@@ -3564,14 +3550,14 @@ mod admission_tests {
             unlabeled("http://p2"),
         ];
         let (selection, attempt) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-b"), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-b")))
             .unwrap();
         assert_eq!(selection.prefill.endpoint.http_url, "http://p1");
         drop(attempt);
 
         // Request for model-c: only the unlabeled worker keeps it routable.
         let (selection, attempt) = manager
-            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-c"), None))
+            .admit(|loads| select_pd_pair(loads, &p, &d, &policy, &policy, &ctx("model-c")))
             .unwrap();
         assert_eq!(selection.prefill.endpoint.http_url, "http://p2");
         drop(attempt);
@@ -3583,15 +3569,7 @@ mod admission_tests {
         ];
         assert!(manager
             .admit(|loads| {
-                select_pd_pair(
-                    loads,
-                    &only_labeled,
-                    &d,
-                    &policy,
-                    &policy,
-                    &ctx("model-c"),
-                    None,
-                )
+                select_pd_pair(loads, &only_labeled, &d, &policy, &policy, &ctx("model-c"))
             })
             .is_none());
         assert!(manager.snapshot().is_empty());

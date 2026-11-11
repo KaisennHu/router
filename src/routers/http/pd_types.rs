@@ -246,6 +246,11 @@ pub struct PdRequestContext<'a> {
     /// Each one carries the prompt as context, so the Decode reservation is
     /// charged the prompt length once per sequence.
     pub decode_sequences: u32,
+    /// Marginal Decode context per candidate, keyed by worker URL, priced
+    /// before admission because it queries the KV index and tokenizes and
+    /// neither may run under the selection lock. `None` keeps Decode on full
+    /// context tokens, or on request counts when those are unknown too.
+    pub decode_context: Option<&'a HashMap<String, u64>>,
     pub route: &'a str,
 }
 

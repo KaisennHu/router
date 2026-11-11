@@ -1764,49 +1764,42 @@ mod tests {
     #[test]
     fn test_pd_kv_event_sources_accept_a_decode_url() {
         // A Decode engine that publishes KV events is the only way the Router
-        // can see which blocks a candidate already holds.
-        let mut config = pd_config_with_static_kv_sources();
-        let sources = config
-            .pd_kv_event_sources
-            .remove("http://prefill:8000")
-            .unwrap();
-        config
-            .pd_kv_event_sources
-            .insert("http://decode:8000".to_string(), sources);
-        assert!(ConfigValidator::validate(&config).is_ok());
-    }
-
-    #[test]
-    fn test_pd_kv_event_sources_accept_a_kv_aware_decode_policy() {
-        // Prefill and Decode may use different policies. A kv_aware Decode is
-        // what starts the subscribers that price its own blocks, so its sources
-        // must be keyed by Decode URLs - the stage whose policy is KV-aware is
-        // the stage that will subscribe.
-        let mut config = pd_config_with_static_kv_sources();
-        config.policy = PolicyConfig::CacheAware {
-            cache_threshold: 0.5,
-            balance_abs_threshold: 5,
-            balance_rel_threshold: 1.1,
-            eviction_interval_secs: 60,
-            max_tree_size: 4096,
-        };
-        if let RoutingMode::VllmPrefillDecode { decode_policy, .. } = &mut config.mode {
-            *decode_policy = Some(PolicyConfig::KvAware {
-                router_temperature: 0.0,
-                kv_penalty_host: 0.8,
-                kv_penalty_external: 0.6,
-                kv_penalty_disk: 0.3,
-                static_kv_event_sources: Default::default(),
-            });
+        // can see which blocks a candidate already holds, so its URL must be
+        // accepted on both a shared policy and a Decode-only one. Prefill and
+        // Decode may differ: the stage whose policy is KV-aware is the stage
+        // that subscribes.
+        for decode_only_policy in [false, true] {
+            let mut config = pd_config_with_static_kv_sources();
+            if decode_only_policy {
+                config.policy = PolicyConfig::CacheAware {
+                    cache_threshold: 0.5,
+                    balance_abs_threshold: 5,
+                    balance_rel_threshold: 1.1,
+                    eviction_interval_secs: 60,
+                    max_tree_size: 4096,
+                };
+                if let RoutingMode::VllmPrefillDecode { decode_policy, .. } = &mut config.mode {
+                    *decode_policy = Some(PolicyConfig::KvAware {
+                        router_temperature: 0.0,
+                        kv_penalty_host: 0.8,
+                        kv_penalty_external: 0.6,
+                        kv_penalty_disk: 0.3,
+                        static_kv_event_sources: Default::default(),
+                    });
+                }
+            }
+            let sources = config
+                .pd_kv_event_sources
+                .remove("http://prefill:8000")
+                .unwrap();
+            config
+                .pd_kv_event_sources
+                .insert("http://decode:8000".to_string(), sources);
+            assert!(
+                ConfigValidator::validate(&config).is_ok(),
+                "decode-keyed source rejected (decode_only_policy={decode_only_policy})"
+            );
         }
-        let sources = config
-            .pd_kv_event_sources
-            .remove("http://prefill:8000")
-            .unwrap();
-        config
-            .pd_kv_event_sources
-            .insert("http://decode:8000".to_string(), sources);
-        assert!(ConfigValidator::validate(&config).is_ok());
     }
 
     #[test]

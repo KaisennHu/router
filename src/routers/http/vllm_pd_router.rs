@@ -1128,17 +1128,14 @@ impl VllmPDRouter {
             lora_name: request.get(NAMED_LORA_FIELD).and_then(Value::as_str),
             cache_salt,
             decode_sequences: sequences,
+            decode_context: decode_context.as_ref(),
             route: path,
         };
         // Existing deployments configure a common connector. Discovery parses
         // registrations with that connector; no new pair compatibility is
         // inferred from KV overlap or DP rank equality.
-        self.pd_router.select_and_admit(
-            prefill_workers,
-            decode_workers,
-            &context,
-            decode_context.as_ref(),
-        )
+        self.pd_router
+            .select_and_admit(prefill_workers, decode_workers, &context)
     }
 
     /// Cheap opt-in gate: only Program-capable requests are serialized twice.

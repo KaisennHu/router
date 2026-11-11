@@ -527,7 +527,6 @@ impl PdKvState {
 
     /// Pure: rendered prompts plus credit eligibility become `PdPrefillInput`s.
     fn build_prefill_inputs(
-        workers: &[Arc<dyn Worker>],
         request: &Value,
         allow_credit: &HashMap<String, bool>,
         results: HashMap<String, Result<crate::backend::preprocess::HttpTokenInput, &'static str>>,
@@ -553,7 +552,6 @@ impl PdKvState {
                 .set(if input.allow_credit { 1.0 } else { 0.0 });
             prepared.insert(base, input);
         }
-        let _ = workers;
         prepared
     }
 
@@ -677,6 +675,11 @@ impl PdKvState {
 
     /// Prefill inputs and, when the Decode pool can be priced, its marginal
     /// context - both computed from one hash cache.
+    ///
+    /// This is the KV-aware-prefill path. The other shape, a count-based
+    /// Prefill with a KV-aware Decode, goes through [`Self::prepare`] plus
+    /// [`Self::prepare_decode_context`] instead: the Prefill stage has no work
+    /// estimate to share there, so there is nothing to co-schedule.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn prepare_pair(
         &self,
@@ -736,8 +739,7 @@ impl PdKvState {
         // prompt with the same block size, so hashing it twice would be pure
         // duplication, linear in prompt length, on the admission path.
         let mut hashes = PromptHashes::new();
-        let mut prepared =
-            Self::build_prefill_inputs(prefill_workers, request, &allow_credit, prefill_results);
+        let mut prepared = Self::build_prefill_inputs(request, &allow_credit, prefill_results);
         if let Some(kv) = kv_aware_ops(prefill_policy.as_ref()) {
             Self::attach_prefill_work(kv, prefill_workers, &mut prepared, &mut hashes);
         }
@@ -785,7 +787,7 @@ impl PdKvState {
         let results = self
             .tokenize(bases, request, route, headers, router_prompts)
             .await;
-        let mut prepared = Self::build_prefill_inputs(workers, request, &allow_credit, results);
+        let mut prepared = Self::build_prefill_inputs(request, &allow_credit, results);
         if let Some(kv) = kv_aware_ops(policy.as_ref()) {
             Self::attach_prefill_work(kv, workers, &mut prepared, &mut PromptHashes::new());
         }
