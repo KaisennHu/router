@@ -795,6 +795,8 @@ mod test_pd_routing {
 
         for (mode, policy) in test_cases {
             let config = RouterConfig {
+                prefill_load_urls: Vec::new(),
+                prefill_load_poll_ms: None,
                 mode,
                 pd_kv_event_sources: Default::default(),
                 policy,

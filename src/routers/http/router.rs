@@ -5428,6 +5428,7 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
+            _prefill_poller_shutdown: None,
             epd: None,
             worker_registry,
             policy_registry,
@@ -5463,6 +5464,7 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
+            _prefill_poller_shutdown: None,
             worker_registry,
             policy_registry,
             worker_startup_timeout_secs: 5,
@@ -6903,6 +6905,7 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
+            _prefill_poller_shutdown: None,
             worker_registry,
             policy_registry,
             epd: None,

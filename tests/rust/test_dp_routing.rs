@@ -249,6 +249,8 @@ mod dp_e2e_tests {
     /// Helper to create a RouterConfig with DP settings for Regular mode
     fn make_regular_config(worker_urls: Vec<String>, dp_size: usize) -> RouterConfig {
         RouterConfig {
+            prefill_load_poll_ms: None,
+            prefill_load_urls: Vec::new(),
             mode: RoutingMode::Regular { worker_urls },
             pd_kv_event_sources: Default::default(),
             policy: PolicyConfig::RoundRobin,
@@ -295,6 +297,8 @@ mod dp_e2e_tests {
         dp_size: usize,
     ) -> RouterConfig {
         RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::VllmPrefillDecode {
                 prefill_urls,
                 decode_urls,

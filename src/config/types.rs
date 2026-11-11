@@ -2077,6 +2077,8 @@ mod tests {
     #[test]
     fn test_full_pd_mode_config() {
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::VllmPrefillDecode {
                 prefill_urls: vec![
                     ("http://prefill1:8000".to_string(), Some(8001)),
@@ -2149,6 +2151,8 @@ mod tests {
         selector.insert("app".to_string(), "vllm".to_string());
 
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec![
                     "http://worker1:8000".to_string(),
@@ -2220,6 +2224,8 @@ mod tests {
         selectors.insert("version".to_string(), "v1".to_string());
 
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec!["http://worker1".to_string()],
             },
