@@ -296,7 +296,6 @@ pub struct Router {
     _load_monitor_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     kv_index_supervisor: Option<Arc<crate::kv_index::KvIndexSupervisor>>,
     _kv_signal_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
-    _prefill_poller_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     program_scheduler: Option<Arc<ProgramScheduler>>,
     _program_observation_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     program_targets_cache: Mutex<HashMap<String, ProgramTargetCacheEntry>>,
@@ -385,10 +384,6 @@ impl Router {
         } else {
             worker_urls
         };
-
-        // Poll worker /load for remaining prefill work, when enabled.
-        let prefill_poller_shutdown =
-            Self::start_prefill_pollers(&worker_urls, ctx, default_policy.as_ref());
 
         // Convert config CircuitBreakerConfig to core CircuitBreakerConfig
         let circuit_breaker_config = ctx.router_config.effective_circuit_breaker_config();
@@ -636,61 +631,11 @@ impl Router {
             _load_monitor_handle: load_monitor_handle,
             kv_index_supervisor,
             _kv_signal_handle: kv_signal_handle,
-            _prefill_poller_shutdown: prefill_poller_shutdown,
             program_scheduler,
             _program_observation_handle: program_observation_handle,
             program_targets_cache: Mutex::new(HashMap::new()),
             program_token_estimator: Arc::new(MomentumTokenEstimator::default()),
         })
-    }
-
-    /// Start one `/load` poller per worker when the router is configured for it.
-    ///
-    /// Workers are keyed by the URL the policy routes to, so a `grpc://` pool
-    /// needs an explicit `instance-id=http-base` mapping.
-    fn start_prefill_pollers(
-        worker_urls: &[String],
-        ctx: &Arc<crate::server::AppContext>,
-        policy: &dyn LoadBalancingPolicy,
-    ) -> Option<tokio::sync::watch::Sender<bool>> {
-        let poll_ms = ctx.router_config.prefill_load_poll_ms?;
-        let kv = kv_aware_ops(policy)?;
-        let table = Arc::new(crate::backend::prefill_load::PrefillLoadTable::new());
-        let interval = Duration::from_millis(poll_ms);
-        let (shutdown, receiver) = tokio::sync::watch::channel(false);
-        for worker_url in worker_urls {
-            let http_base =
-                if worker_url.starts_with("http://") || worker_url.starts_with("https://") {
-                    Some(
-                        worker_url
-                            .split('@')
-                            .next()
-                            .unwrap_or(worker_url)
-                            .to_string(),
-                    )
-                } else {
-                    ctx.router_config
-                        .prefill_load_urls
-                        .iter()
-                        .find_map(|entry| {
-                            let (key, value) = entry.split_once('=')?;
-                            (key == worker_url).then(|| value.to_string())
-                        })
-                };
-            let Some(http_base) = http_base else {
-                continue;
-            };
-            tokio::spawn(crate::backend::prefill_load::poll_worker(
-                ctx.client.clone(),
-                worker_url.clone(),
-                http_base,
-                table.clone(),
-                interval,
-                receiver.clone(),
-            ));
-        }
-        kv.attach_prefill_load(table);
-        Some(shutdown)
     }
 
     /// Test hook: pin token ids so gRPC e2e does not load a model.
@@ -5428,7 +5373,6 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
-            _prefill_poller_shutdown: None,
             epd: None,
             worker_registry,
             policy_registry,
@@ -5464,7 +5408,6 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
-            _prefill_poller_shutdown: None,
             worker_registry,
             policy_registry,
             worker_startup_timeout_secs: 5,
@@ -6905,7 +6848,6 @@ mod tests {
 
         let (_, rx) = tokio::sync::watch::channel(HashMap::new());
         Router {
-            _prefill_poller_shutdown: None,
             worker_registry,
             policy_registry,
             epd: None,
