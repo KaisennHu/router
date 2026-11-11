@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+//! Polls a worker's `/load` endpoint for its remaining prefill work.
+//!
+//! The sample is worker-level: the same value applies to every data-parallel
+//! rank of that worker, and it is only ever replaced by a newer `sample_seq`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use dashmap::DashMap;
+use serde::Deserialize;
+use tokio::time::Instant;
+use tracing::{debug, warn};
+
+/// Latest remaining-prefill sample reported by one worker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrefillSample {
+    /// Work for requests the worker is running or has dispatched.
+    pub running_tokens: u64,
+    /// Work for requests the worker has not scheduled; not confirmed compute.
+    pub waiting_tokens: u64,
+    /// Worker-side sample counter, used to reject stale or duplicated polls.
+    pub sample_seq: u64,
+    /// When this router received the sample.
+    pub received_at: Instant,
+}
+
+impl PrefillSample {
+    fn is_newer_than(&self, previous: Option<Self>) -> bool {
+        previous.is_none_or(|previous| self.sample_seq > previous.sample_seq)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LoadResponse {
+    #[serde(default)]
+    prefill: Option<PrefillPayload>,
+    #[serde(default)]
+    sample_seq: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrefillPayload {
+    #[serde(default)]
+    running_tokens: u64,
+    #[serde(default)]
+    waiting_tokens: u64,
+}
+
+/// Latest sample per worker base URL.
+#[derive(Debug, Default)]
+pub struct PrefillLoadTable {
+    samples: DashMap<String, PrefillSample>,
+}
+
+impl PrefillLoadTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Latest sample for `worker_url`, if the worker has reported one.
+    pub fn get(&self, worker_url: &str) -> Option<PrefillSample> {
+        self.samples.get(worker_url).map(|sample| *sample)
+    }
+
+    fn store(&self, worker_url: &str, sample: PrefillSample) {
+        self.samples.insert(worker_url.to_owned(), sample);
+    }
+}
+
+/// Poll one worker's `/load` until `shutdown` flips to `true`.
+///
+/// Failures are logged and retried on the next tick: a worker that cannot be
+/// polled simply keeps whatever sample it last reported.
+pub async fn poll_worker(
+    client: reqwest::Client,
+    worker_url: String,
+    table: Arc<PrefillLoadTable>,
+    interval: Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let url = format!("{}/load", worker_url.trim_end_matches('/'));
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = ticker.tick() => {}
+        }
+        let response = match client.get(&url).send().await {
+            Ok(response) => response,
+            Err(err) => {
+                debug!(%worker_url, error = %err, "prefill load poll failed");
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            debug!(%worker_url, status = %response.status(), "prefill load poll rejected");
+            continue;
+        }
+        let body: LoadResponse = match response.json().await {
+            Ok(body) => body,
+            Err(err) => {
+                warn!(%worker_url, error = %err, "prefill load poll returned invalid JSON");
+                continue;
+            }
+        };
+        let (Some(prefill), Some(sample_seq)) = (body.prefill, body.sample_seq) else {
+            // The worker predates the fields; keep whatever we have.
+            continue;
+        };
+        let sample = PrefillSample {
+            running_tokens: prefill.running_tokens,
+            waiting_tokens: prefill.waiting_tokens,
+            sample_seq,
+            received_at: Instant::now(),
+        };
+        if sample.is_newer_than(table.get(&worker_url)) {
+            table.store(&worker_url, sample);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrefillSample;
+
+    #[test]
+    fn newer_sample_wins_and_duplicates_are_ignored() {
+        let first = PrefillSample {
+            running_tokens: 10,
+            waiting_tokens: 0,
+            sample_seq: 1,
+            ..Default::default()
+        };
+        let duplicate = PrefillSample {
+            running_tokens: 99,
+            waiting_tokens: 0,
+            sample_seq: 1,
+            ..Default::default()
+        };
+        let newer = PrefillSample {
+            running_tokens: 5,
+            waiting_tokens: 2,
+            sample_seq: 2,
+            ..Default::default()
+        };
+
+        assert!(first.is_newer_than(None));
+        assert!(!duplicate.is_newer_than(Some(first)));
+        assert!(newer.is_newer_than(Some(first)));
+    }
+}
