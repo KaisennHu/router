@@ -68,6 +68,12 @@ pub(super) enum Stage {
 pub struct PdLoadSample {
     pub prefill_requests: usize,
     pub active_prefill_tokens: u64,
+    /// Router-local prefill tokens charged by this router.
+    pub local_prefill_tokens: u64,
+    /// Router-local value when the current worker sample was applied.
+    pub local_at_sample: u64,
+    /// Worker sample counter reflected in ctive_prefill_tokens.
+    pub sample_seq: u64,
     pub unknown_prefill_requests: usize,
     pub pending_decode_requests: usize,
     pub active_decode_requests: usize,
@@ -185,9 +191,46 @@ pub struct PdSelection {
 #[derive(Debug, Default)]
 pub struct PdLoadManager {
     loads: Arc<Mutex<Loads>>,
+    prefill_load: parking_lot::Mutex<Option<Arc<crate::backend::prefill_load::PrefillLoadTable>>>,
 }
 
 impl PdLoadManager {
+    /// Attach the polled worker prefill-load table.
+    pub(super) fn attach_prefill_load(
+        &self,
+        table: Arc<crate::backend::prefill_load::PrefillLoadTable>,
+    ) {
+        *self.prefill_load.lock() = Some(table);
+    }
+
+    /// Re-anchor the prefill stage on the newest worker samples.
+    ///
+    /// The router keeps its own ledger of what it charged; a sample replaces the
+    /// worker's share and the ledger delta since that sample is added back, so
+    /// work the worker already reports is not counted twice.
+    fn refresh_prefill_loads(&self, loads: &mut Loads) {
+        let Some(table) = self.prefill_load.lock().clone() else {
+            return;
+        };
+        for ((stage, endpoint), load) in loads.iter_mut() {
+            if *stage != Stage::Prefill {
+                continue;
+            }
+            let Some(sample) = table.get(&endpoint.http_url) else {
+                continue;
+            };
+            if sample.sample_seq <= load.sample_seq {
+                continue;
+            }
+            let delta = load
+                .local_prefill_tokens
+                .saturating_sub(load.local_at_sample);
+            load.active_prefill_tokens = sample.remaining_tokens.saturating_add(delta);
+            load.local_at_sample = load.local_prefill_tokens;
+            load.sample_seq = sample.sample_seq;
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> Loads {
         self.loads.lock().clone()
@@ -224,6 +267,7 @@ impl PdLoadManager {
         defer_decode: bool,
     ) -> Option<(PdSelection, PdAttempt)> {
         let mut loads = self.loads.lock();
+        self.refresh_prefill_loads(&mut loads);
         let selection = select(&loads)?;
         let prefill = &selection.prefill;
         let decode = &selection.decode;
@@ -234,6 +278,7 @@ impl PdLoadManager {
         p.prefill_requests += 1;
         if let Some(tokens) = prefill.new_prefill_tokens {
             p.active_prefill_tokens += tokens;
+            p.local_prefill_tokens += tokens;
         } else {
             p.unknown_prefill_requests += 1;
         }
@@ -393,6 +438,7 @@ impl AttemptInner {
             load.prefill_requests -= 1;
             if let Some(tokens) = self.prefill_tokens {
                 load.active_prefill_tokens -= tokens;
+                load.local_prefill_tokens = load.local_prefill_tokens.saturating_sub(tokens);
             } else {
                 load.unknown_prefill_requests -= 1;
             }

@@ -74,6 +74,10 @@ class RouterArgs:
     request_id_headers: Optional[List[str]] = None
     # Request timeout in seconds
     request_timeout_secs: int = 1800
+    # Poll interval for the worker /load endpoint, in milliseconds
+    prefill_load_poll_ms: Optional[int] = None
+    # <instance-id>=<http-base> mappings for grpc:// workers
+    prefill_load_urls: List[str] = dataclasses.field(default_factory=list)
     # Max concurrent requests for rate limiting
     max_concurrent_requests: int = 32768
     # Queue size for pending requests when max concurrent limit reached
@@ -479,6 +483,18 @@ class RouterArgs:
             type=int,
             default=RouterArgs.request_timeout_secs,
             help="Request timeout in seconds",
+        )
+        parser.add_argument(
+            f"--{prefix}prefill-load-poll-ms",
+            type=int,
+            default=RouterArgs.prefill_load_poll_ms,
+            help="Poll the worker /load endpoint for remaining prefill work at this interval (milliseconds); disabled by default.",
+        )
+        parser.add_argument(
+            f"--{prefix}prefill-load-url",
+            action="append",
+            default=[],
+            help="Map a grpc:// worker instance to its HTTP base for /load, e.g. grpc://h:50051=http://h:8000.",
         )
         # Retry configuration
         parser.add_argument(

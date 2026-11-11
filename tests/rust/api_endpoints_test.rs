@@ -30,6 +30,8 @@ impl TestContext {
     async fn new(worker_configs: Vec<MockWorkerConfig>) -> Self {
         // Create default router config
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec![],
             },
@@ -1577,6 +1579,8 @@ mod error_tests {
     async fn test_payload_too_large() {
         // Create context with small payload limit
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec![],
             },
@@ -1939,6 +1943,8 @@ mod pd_mode_tests {
             .unwrap_or(9000);
 
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::VllmPrefillDecode {
                 prefill_urls: vec![(prefill_url, Some(prefill_port))],
                 decode_urls: vec![decode_url],
@@ -2112,6 +2118,8 @@ mod request_id_tests {
     async fn test_request_id_with_custom_headers() {
         // Create config with custom request ID headers
         let config = RouterConfig {
+            prefill_load_poll_ms: None,
+            prefill_load_urls: Vec::new(),
             mode: RoutingMode::Regular {
                 worker_urls: vec![],
             },

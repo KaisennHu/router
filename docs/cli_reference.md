@@ -134,6 +134,8 @@ PD stage using an explicit power-of-two policy needs two workers for that stage.
 | `--decode` | `string (repeatable)` | `[]` | `string (repeatable)` | `unset` | Add one decode URL per occurrence: `--decode URL`. |
 | `--vllm-discovery-address` | `string` | `unset` | `string` | `unset` | ZMQ registration address for vLLM workers, e.g. `0.0.0.0:30001`. |
 | `--kv-connector` | `nixl, mooncake, moriio` | `nixl` | `nixl, mooncake, moriio` | `nixl` | PD KV transfer connector: NIXL, Mooncake or MoRI-IO. MoRI-IO requires vLLM ZMQ discovery. |
+| `--prefill-load-poll-ms` | `u64` | `unset` | `integer` | `unset` | Poll the worker ``/load`` endpoint at this interval (milliseconds) and price kv_aware workers from the reported remaining prefill work; requires regular kv_aware routing. |
+| `--prefill-load-url` | `string (repeatable)` | `[]` | `string (repeatable)` | `[]` | Map a grpc:// worker instance to its HTTP base for ``/load``, e.g. ``grpc://host:50051=http://host:8000``; pairs with ``--prefill-load-poll-ms``. |
 | `--pd-kv-events` | `string (repeatable)` | `[]` | `string (repeatable)` | `[]` | Static prefill KV publishers as URL=ENDPOINT[,ENDPOINT...]; requires kv_aware prefill. Endpoints follow DP-rank order; block size is 16. |
 
 PD workers can come from static URLs, vLLM ZMQ discovery, or Kubernetes

@@ -511,6 +511,44 @@ pub struct PdRouterBase {
     pub circuit_breaker_config: CircuitBreakerConfig,
     // Fallback DP size for servers that report no engine metrics
     pub dp_size: usize,
+    _prefill_poller_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+}
+
+/// Start one `/load` poller per prefill worker when the router is configured for it.
+fn start_prefill_pollers(
+    ctx: &Arc<crate::server::AppContext>,
+    pd_load: &Arc<PdLoadManager>,
+) -> Option<tokio::sync::watch::Sender<bool>> {
+    let poll_ms = ctx.router_config.prefill_load_poll_ms?;
+    let table = Arc::new(crate::backend::prefill_load::PrefillLoadTable::new());
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    for worker in ctx.worker_registry.get_prefill_workers() {
+        let url = worker.base_url().to_string();
+        let http_base = if url.starts_with("http://") || url.starts_with("https://") {
+            Some(url.clone())
+        } else {
+            ctx.router_config
+                .prefill_load_urls
+                .iter()
+                .find_map(|entry| {
+                    let (key, value) = entry.split_once('=')?;
+                    (key == url).then(|| value.to_string())
+                })
+        };
+        let Some(http_base) = http_base else {
+            continue;
+        };
+        tokio::spawn(crate::backend::prefill_load::poll_worker(
+            ctx.client.clone(),
+            url,
+            http_base,
+            table.clone(),
+            std::time::Duration::from_millis(poll_ms),
+            receiver.clone(),
+        ));
+    }
+    pd_load.attach_prefill_load(table);
+    Some(shutdown)
 }
 
 /// Build the workers backing one server URL, one per engine the server fronts.
@@ -1294,9 +1332,11 @@ impl PdRouterBase {
         } else {
             None
         };
+        let pd_load = Arc::new(PdLoadManager::default());
+        let _prefill_poller_shutdown = start_prefill_pollers(ctx, &pd_load);
         Ok(PdRouterBase {
             kv_state,
-            pd_load: Arc::new(PdLoadManager::default()),
+            pd_load,
             worker_registry: Arc::clone(&ctx.worker_registry),
             policy_registry: Arc::clone(&ctx.policy_registry),
             worker_startup_timeout_secs: ctx.router_config.worker_startup_timeout_secs,
@@ -1309,6 +1349,7 @@ impl PdRouterBase {
             api_key: ctx.router_config.api_key.clone(),
             circuit_breaker_config: core_cb_config,
             dp_size: fallback_dp_size,
+            _prefill_poller_shutdown,
         })
     }
 
@@ -1825,6 +1866,7 @@ mod tests {
             Arc::new(PolicyRegistry::new(crate::config::PolicyConfig::RoundRobin));
 
         PdRouterBase {
+            _prefill_poller_shutdown: None,
             kv_state: None,
             pd_load: Arc::new(PdLoadManager::default()),
             worker_registry,
@@ -1846,6 +1888,7 @@ mod tests {
             Arc::new(PolicyRegistry::new(crate::config::PolicyConfig::RoundRobin));
 
         PdRouterBase {
+            _prefill_poller_shutdown: None,
             kv_state: None,
             pd_load: Arc::new(PdLoadManager::default()),
             worker_registry,

@@ -26,6 +26,7 @@ pub mod grpc;
 pub mod health;
 pub(crate) mod l1_encode_cache;
 pub mod openai;
+pub mod prefill_load;
 pub mod preprocess;
 mod tokenizer_determinism;
 mod vllm_frontend;

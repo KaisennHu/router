@@ -237,6 +237,8 @@ impl Router {
             request_timeout_secs: self.request_timeout_secs,
             worker_startup_timeout_secs: self.worker_startup_timeout_secs,
             worker_startup_check_interval_secs: self.worker_startup_check_interval,
+            prefill_load_poll_ms: None,
+            prefill_load_urls: Vec::new(),
             intra_node_data_parallel_size: self.intra_node_data_parallel_size,
             api_key: self.api_key.clone(),
             api_key_validation_urls: self.api_key_validation_urls.clone(),

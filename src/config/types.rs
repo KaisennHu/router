@@ -37,6 +37,14 @@ pub struct RouterConfig {
     pub worker_startup_timeout_secs: u64,
     /// Worker health check interval in seconds
     pub worker_startup_check_interval_secs: u64,
+    /// Poll interval for the worker `/load` endpoint, in milliseconds. Disabled
+    /// when unset; the router then keeps its local prefill ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_load_poll_ms: Option<u64>,
+    /// Static `instance-id=http-base` mappings, for pools whose workers are
+    /// configured with `grpc://` endpoints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefill_load_urls: Vec<String>,
     /// Intra-node data parallel size (number of DP replicas per worker URL). When > 1, the router will create multiple worker instances per URL, one for each DP rank.
     #[serde(default = "default_intra_node_data_parallel_size")]
     pub intra_node_data_parallel_size: usize,
@@ -1308,6 +1316,8 @@ impl Default for RouterConfig {
             request_timeout_secs: 1800,    // 30 minutes
             worker_startup_timeout_secs: 600,
             worker_startup_check_interval_secs: 30,
+            prefill_load_poll_ms: None,
+            prefill_load_urls: Vec::new(),
             intra_node_data_parallel_size: 1,
             api_key: None,
             api_key_validation_urls: vec![],
@@ -2067,6 +2077,8 @@ mod tests {
     #[test]
     fn test_full_pd_mode_config() {
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::VllmPrefillDecode {
                 prefill_urls: vec![
                     ("http://prefill1:8000".to_string(), Some(8001)),
@@ -2139,6 +2151,8 @@ mod tests {
         selector.insert("app".to_string(), "vllm".to_string());
 
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec![
                     "http://worker1:8000".to_string(),
@@ -2210,6 +2224,8 @@ mod tests {
         selectors.insert("version".to_string(), "v1".to_string());
 
         let config = RouterConfig {
+            prefill_load_urls: Vec::new(),
+            prefill_load_poll_ms: None,
             mode: RoutingMode::Regular {
                 worker_urls: vec!["http://worker1".to_string()],
             },
