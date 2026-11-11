@@ -102,8 +102,12 @@ pub(super) struct PdKvState {
     // the map locks, so a slow P engine can only delay its own refresh —
     // never the request path's short binding reads.
     bind_lock: Mutex<()>,
-    // The background refresh loop's latest view of the P pool and policy.
+    // The background refresh loop's latest view of the P and D pools.
     refresh_inputs: Mutex<RefreshInputs>,
+    // Base URLs configured to publish KV events. A pool with no entry has
+    // nothing to subscribe to, and recording it would only churn the policy's
+    // registration epoch — which invalidates live session bindings.
+    published: HashSet<String>,
     signals: tokio::task::JoinHandle<()>,
 }
 
@@ -159,6 +163,10 @@ impl PdKvState {
         client: reqwest::Client,
         static_sources: HashMap<String, crate::config::types::PdKvEventSources>,
     ) -> Self {
+        // Kept before the map is moved into the supervisor: the request path
+        // asks whether a pool is configured to publish before it records that
+        // pool for binding.
+        let published: HashSet<String> = static_sources.keys().cloned().collect();
         let (supervisor, mut signals) =
             KvIndexSupervisor::new_pd(client.clone(), HashMode::Sha256, static_sources);
         Self {
@@ -169,6 +177,7 @@ impl PdKvState {
             targets: Mutex::new(HashMap::new()),
             bind_lock: Mutex::new(()),
             refresh_inputs: Mutex::new(RefreshInputs::default()),
+            published,
             // Subscribers enforce trust by suspending/clearing affected sources.
             signals: tokio::spawn(async move { while signals.recv().await.is_some() {} }),
         }
@@ -437,6 +446,18 @@ impl PdKvState {
             base_models,
             worker,
         })
+    }
+
+    /// Whether any of `workers` is configured to publish KV events.
+    ///
+    /// Binding a pool that publishes nothing is not merely wasteful: the bind
+    /// path re-registers each target, which starts a new registration epoch and
+    /// makes every live session binding look stale. So the Decode pool is
+    /// recorded for binding only when it has something to subscribe to.
+    pub(super) fn publishes_for(&self, workers: &[Arc<dyn Worker>]) -> bool {
+        workers
+            .iter()
+            .any(|worker| self.published.contains(worker.base_url()))
     }
 
     /// Record the Decode pool the request path saw, so the refresh loop binds

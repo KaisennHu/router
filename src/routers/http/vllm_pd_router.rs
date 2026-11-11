@@ -987,13 +987,6 @@ impl VllmPDRouter {
 
     /// `router_prompts` replaces backend rendering with the router's own
     /// token ids, which is what `grpc://` workers receive.
-    /// Whether the Decode pool can be priced from its own KV index: without
-    /// registered workers there is nothing to subscribe to, and every candidate
-    /// would be unverified anyway.
-    fn decode_pool_publishes_kv(workers: &[Arc<dyn Worker>]) -> bool {
-        !workers.is_empty()
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn admit_pair_with_tokens(
         &self,
@@ -1037,7 +1030,7 @@ impl VllmPDRouter {
             ),
             async {
                 let state = self.pd_router.kv_state.as_ref()?;
-                if !Self::decode_pool_publishes_kv(decode_workers) {
+                if !state.publishes_for(decode_workers) {
                     return None;
                 }
                 state
