@@ -7,6 +7,31 @@ pub struct ConfigValidator;
 impl ConfigValidator {
     /// Validate a complete router configuration
     pub fn validate(config: &RouterConfig) -> ConfigResult<()> {
+        if let Some(poll_ms) = config.prefill_load_poll_ms {
+            if !(50..=60_000).contains(&poll_ms) {
+                return Err(ConfigError::InvalidValue {
+                    field: "prefill_load_poll_ms".to_string(),
+                    value: poll_ms.to_string(),
+                    reason: "Must be between 50 and 60000 milliseconds".to_string(),
+                });
+            }
+            if !matches!(config.mode, RoutingMode::Regular { .. })
+                || !matches!(config.policy, PolicyConfig::KvAware { .. })
+            {
+                return Err(ConfigError::IncompatibleConfig {
+                    reason: "prefill_load_poll_ms requires regular kv_aware routing".to_string(),
+                });
+            }
+            for entry in &config.prefill_load_urls {
+                if entry.split_once('=').is_none() {
+                    return Err(ConfigError::InvalidValue {
+                        field: "prefill_load_urls".to_string(),
+                        value: entry.clone(),
+                        reason: "Expected <instance-id>=<http-base>".to_string(),
+                    });
+                }
+            }
+        }
         if let Some(ttl_secs) = config.kv_aware_session_affinity_ttl_secs {
             if !(1..=31_536_000).contains(&ttl_secs) {
                 return Err(ConfigError::InvalidValue {

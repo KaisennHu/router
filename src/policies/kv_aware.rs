@@ -69,6 +69,8 @@ pub struct PrefillWorkEstimate {
 
 /// Optional operations used by adapters with tokenized requests and KV discovery.
 pub trait KvAwareOps: Send + Sync {
+    /// Attach the polled worker prefill-load table, when the router enables it.
+    fn attach_prefill_load(&self, _table: Arc<PrefillLoadTable>) {}
     /// P/D uses the same placement/credit contract as colocated routing,
     /// but accounts token backlog in the shared P/D admission manager.
     fn estimate_prefill_work(
@@ -1773,6 +1775,12 @@ impl LoadBalancingPolicy for KvAwarePolicy {
 }
 
 impl KvAwareOps for KvAwarePolicy {
+    fn attach_prefill_load(&self, table: Arc<PrefillLoadTable>) {
+        if let Some(slot_manager) = self.slot_manager.as_ref() {
+            slot_manager.attach_prefill_load(table);
+        }
+    }
+
     fn has_affinity(
         &self,
         workers: &[Arc<dyn Worker>],

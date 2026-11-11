@@ -37,6 +37,14 @@ pub struct RouterConfig {
     pub worker_startup_timeout_secs: u64,
     /// Worker health check interval in seconds
     pub worker_startup_check_interval_secs: u64,
+    /// Poll interval for the worker `/load` endpoint, in milliseconds. Disabled
+    /// when unset; the router then keeps its local prefill ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_load_poll_ms: Option<u64>,
+    /// Static `instance-id=http-base` mappings, for pools whose workers are
+    /// configured with `grpc://` endpoints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefill_load_urls: Vec<String>,
     /// Intra-node data parallel size (number of DP replicas per worker URL). When > 1, the router will create multiple worker instances per URL, one for each DP rank.
     #[serde(default = "default_intra_node_data_parallel_size")]
     pub intra_node_data_parallel_size: usize,
