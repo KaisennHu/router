@@ -17,10 +17,9 @@ use tracing::{debug, warn};
 /// Latest remaining-prefill sample reported by one worker.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PrefillSample {
-    /// Work for requests the worker is running or has dispatched.
-    pub running_tokens: u64,
-    /// Work for requests the worker has not scheduled; not confirmed compute.
-    pub waiting_tokens: u64,
+    /// Work across all requests the worker knows about; queued requests count
+    /// as their prompt length.
+    pub remaining_tokens: u64,
     /// Worker-side sample counter, used to reject stale or duplicated polls.
     pub sample_seq: u64,
     /// When this router received the sample.
@@ -36,17 +35,9 @@ impl PrefillSample {
 #[derive(Debug, Deserialize)]
 struct LoadResponse {
     #[serde(default)]
-    prefill: Option<PrefillPayload>,
+    prefill_tokens_remaining: Option<u64>,
     #[serde(default)]
     sample_seq: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PrefillPayload {
-    #[serde(default)]
-    running_tokens: u64,
-    #[serde(default)]
-    waiting_tokens: u64,
 }
 
 /// Latest sample per worker base URL.
@@ -107,13 +98,14 @@ pub async fn poll_worker(
                 continue;
             }
         };
-        let (Some(prefill), Some(sample_seq)) = (body.prefill, body.sample_seq) else {
+        let (Some(remaining_tokens), Some(sample_seq)) =
+            (body.prefill_tokens_remaining, body.sample_seq)
+        else {
             // The worker predates the fields; keep whatever we have.
             continue;
         };
         let sample = PrefillSample {
-            running_tokens: prefill.running_tokens,
-            waiting_tokens: prefill.waiting_tokens,
+            remaining_tokens,
             sample_seq,
             received_at: Instant::now(),
         };
@@ -130,20 +122,17 @@ mod tests {
     #[test]
     fn newer_sample_wins_and_duplicates_are_ignored() {
         let first = PrefillSample {
-            running_tokens: 10,
-            waiting_tokens: 0,
+            remaining_tokens: 10,
             sample_seq: 1,
             ..Default::default()
         };
         let duplicate = PrefillSample {
-            running_tokens: 99,
-            waiting_tokens: 0,
+            remaining_tokens: 99,
             sample_seq: 1,
             ..Default::default()
         };
         let newer = PrefillSample {
-            running_tokens: 5,
-            waiting_tokens: 2,
+            remaining_tokens: 5,
             sample_seq: 2,
             ..Default::default()
         };
