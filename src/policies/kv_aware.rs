@@ -4013,7 +4013,7 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
 
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((first.index, first.outcome), (0, "bind"));
         assert!(first.binding.is_some());
@@ -4022,7 +4022,7 @@ mod tests {
         workers[0].increment_load();
         workers[1].increment_load();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((hit.index, hit.outcome), (0, "sticky_hit"));
         first.binding.unwrap().release_ref();
@@ -4035,12 +4035,12 @@ mod tests {
         let key = affinity_key("s1");
         let workers = decode_pool(&["http://d0", "http://d1", "http://d2"]);
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         let original = first.binding.unwrap();
         workers[0].increment_load();
         let moved = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((moved.index, moved.outcome), (2, "rebind"));
         let replacement = moved.binding.unwrap();
@@ -4051,7 +4051,7 @@ mod tests {
         assert_eq!(replacement.in_flight(), 1);
         replacement.release_ref();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((hit.index, hit.outcome), (2, "sticky_hit"));
         hit.binding.unwrap().release_ref();
@@ -4063,7 +4063,7 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
         workers[0].increment_load();
         let pick = policy
-            .select_decode(&workers, Some(&affinity_key("s1")), None, None)
+            .select_decode(&workers, Some(&affinity_key("s1")), None, None, None)
             .unwrap();
         assert_eq!(pick.index, 1);
         assert!(pick.binding.is_none());
@@ -4077,16 +4077,16 @@ mod tests {
         let workers = decode_pool(&["http://d0", "http://d1"]);
         let key = affinity_key("s1");
         let first = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         let hit = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(hit.outcome, "sticky_hit");
         first.binding.unwrap().release_ref();
         hit.binding.unwrap().release_ref();
         let expired = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((expired.index, expired.outcome), (1, "bind"));
         expired.binding.unwrap().release_ref();
@@ -4099,11 +4099,11 @@ mod tests {
         let workers = decode_pool(&["http://d0"]);
         workers[0].increment_load();
         let pick = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(pick.index, 0);
         pick.binding.unwrap().release_ref();
-        assert!(policy.select_decode(&[], Some(&key), None, None).is_none());
+        assert!(policy.select_decode(&[], Some(&key), None, None, None).is_none());
     }
 
     #[test]
@@ -4112,7 +4112,7 @@ mod tests {
         let key = affinity_key("s1");
         let workers = decode_pool(&["http://d0", "http://d1"]);
         let pick = policy
-            .select_decode(&workers, Some(&key), None, None)
+            .select_decode(&workers, Some(&key), None, None, None)
             .unwrap();
         assert_eq!(pick.outcome, "bind");
 
@@ -4121,7 +4121,7 @@ mod tests {
         policy.reconcile_decode_workers(&shrunk);
         assert!(!policy.targets.contains_key("http://d0"));
         let rebound = policy
-            .select_decode(&shrunk, Some(&key), None, None)
+            .select_decode(&shrunk, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((rebound.index, rebound.outcome), (0, "bind"));
 
@@ -4131,7 +4131,7 @@ mod tests {
         policy.register_target("http://d1", target("http://d1", 0));
         moved[0].increment_load();
         let rebind = policy
-            .select_decode(&moved, Some(&key), None, None)
+            .select_decode(&moved, Some(&key), None, None, None)
             .unwrap();
         assert_eq!((rebind.index, rebind.outcome), (1, "bind"));
         policy.reconcile_decode_workers(&[]);
@@ -4143,7 +4143,7 @@ mod tests {
         let policy = KvAwarePolicy::default();
         let workers = decode_pool(&["http://d0", "http://d1"]);
         workers[0].increment_load();
-        let pick = policy.select_decode(&workers, None, None, None).unwrap();
+        let pick = policy.select_decode(&workers, None, None, None, None).unwrap();
         assert_eq!((pick.index, pick.outcome), (1, "no_session"));
         assert!(pick.binding.is_none());
         assert!(policy.affinity.is_empty());
@@ -4241,14 +4241,14 @@ mod tests {
         assert_eq!(context["http://d1"], 32, "a cold decoder pays the prompt");
 
         let pick = policy
-            .select_decode(&workers, None, None, Some(&context))
+            .select_decode(&workers, None, None, None, Some(&context))
             .unwrap();
         assert_eq!(pick.index, 0, "the holder must be preferred");
 
         // Without the credit both are tied at zero occupancy, so the tie cursor
         // rotates between them instead of always taking the holder.
-        let first = policy.select_decode(&workers, None, None, None).unwrap();
-        let second = policy.select_decode(&workers, None, None, None).unwrap();
+        let first = policy.select_decode(&workers, None, None, None, None).unwrap();
+        let second = policy.select_decode(&workers, None, None, None, None).unwrap();
         assert_ne!(first.index, second.index);
     }
 
