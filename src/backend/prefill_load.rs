@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 /// Latest remaining-prefill sample reported by one worker.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrefillSample {
     /// Work across all requests the worker knows about; queued requests count
     /// as their prompt length.
@@ -24,6 +24,16 @@ pub struct PrefillSample {
     pub sample_seq: u64,
     /// When this router received the sample.
     pub received_at: Instant,
+}
+
+impl Default for PrefillSample {
+    fn default() -> Self {
+        Self {
+            remaining_tokens: 0,
+            sample_seq: 0,
+            received_at: Instant::now(),
+        }
+    }
 }
 
 impl PrefillSample {
