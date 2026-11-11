@@ -15,11 +15,13 @@ impl ConfigValidator {
                     reason: "Must be between 50 and 60000 milliseconds".to_string(),
                 });
             }
-            if !matches!(config.mode, RoutingMode::Regular { .. })
-                || !matches!(config.policy, PolicyConfig::KvAware { .. })
-            {
+            // Colocated routing prices workers from `config.policy`; P/D does it
+            // from the prefill policy, which validation checks separately.
+            let colocated_kv_aware = matches!(config.mode, RoutingMode::Regular { .. })
+                && matches!(config.policy, PolicyConfig::KvAware { .. });
+            if !colocated_kv_aware && !matches!(config.mode, RoutingMode::VllmPrefillDecode { .. }) {
                 return Err(ConfigError::IncompatibleConfig {
-                    reason: "prefill_load_poll_ms requires regular kv_aware routing".to_string(),
+                    reason: "prefill_load_poll_ms requires kv_aware routing".to_string(),
                 });
             }
             for entry in &config.prefill_load_urls {
