@@ -22,6 +22,8 @@ pub struct PrefillSample {
     pub remaining_tokens: u64,
     /// Worker-side sample counter, used to reject stale or duplicated polls.
     pub sample_seq: u64,
+    /// When the poll that produced this sample was sent.
+    pub sent_at: Instant,
     /// When this router received the sample.
     pub received_at: Instant,
 }
@@ -31,6 +33,7 @@ impl Default for PrefillSample {
         Self {
             remaining_tokens: 0,
             sample_seq: 0,
+            sent_at: Instant::now(),
             received_at: Instant::now(),
         }
     }
@@ -91,6 +94,7 @@ pub async fn poll_worker(
             _ = shutdown.changed() => break,
             _ = ticker.tick() => {}
         }
+        let sent_at = Instant::now();
         let response = match client.get(&url).send().await {
             Ok(response) => response,
             Err(err) => {
@@ -118,6 +122,7 @@ pub async fn poll_worker(
         let sample = PrefillSample {
             remaining_tokens,
             sample_seq,
+            sent_at,
             received_at: Instant::now(),
         };
         let first = table.get(&instance_id).is_none();

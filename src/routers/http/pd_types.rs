@@ -70,9 +70,15 @@ pub struct PdLoadSample {
     pub active_prefill_tokens: u64,
     /// Router-local prefill tokens charged by this router.
     pub local_prefill_tokens: u64,
-    /// Router-local value when the current worker sample was applied.
-    pub local_at_sample: u64,
-    /// Worker sample counter reflected in ctive_prefill_tokens.
+    /// Worker-reported work at the current anchor.
+    pub sample_base: u64,
+    /// Router-local ledger at the moment the anchor's poll was sent.
+    pub sample_local: u64,
+    /// When the anchor's poll was sent; drives decay between samples.
+    pub sample_at: Option<tokio::time::Instant>,
+    /// Observed drain rate, in thousandths of a token per second.
+    pub drain_milli_tps: u64,
+    /// Worker sample counter reflected in active_prefill_tokens.
     pub sample_seq: u64,
     pub unknown_prefill_requests: usize,
     pub pending_decode_requests: usize,
@@ -188,10 +194,27 @@ pub struct PdSelection {
     pub decode: StageDecision,
 }
 
+fn record_history(history: &LocalHistory, endpoint: &PdEndpoint, value: u64) {
+    let mut history = history.lock();
+    let entries = history.entry(endpoint.clone()).or_default();
+    entries.push_back((tokio::time::Instant::now(), value));
+    while entries.len() > 64 {
+        entries.pop_front();
+    }
+}
+
+type LocalHistory =
+    Arc<Mutex<HashMap<PdEndpoint, std::collections::VecDeque<(tokio::time::Instant, u64)>>>>;
+
 #[derive(Debug, Default)]
 pub struct PdLoadManager {
     loads: Arc<Mutex<Loads>>,
     prefill_load: parking_lot::Mutex<Option<Arc<crate::backend::prefill_load::PrefillLoadTable>>>,
+    /// Local ledger snapshots, so a sample anchors to the value at the
+    /// moment its poll was sent rather than when it arrived.
+    history: LocalHistory,
+    /// Last raw sample per endpoint, for the drain-rate estimate.
+    last_raw: parking_lot::Mutex<HashMap<PdEndpoint, (u64, u64, tokio::time::Instant)>>,
 }
 
 impl PdLoadManager {
@@ -212,6 +235,7 @@ impl PdLoadManager {
         let Some(table) = self.prefill_load.lock().clone() else {
             return;
         };
+        let now = tokio::time::Instant::now();
         for ((stage, endpoint), load) in loads.iter_mut() {
             if *stage != Stage::Prefill {
                 continue;
@@ -219,18 +243,62 @@ impl PdLoadManager {
             let Some(sample) = table.get(&endpoint.http_url) else {
                 continue;
             };
-            if sample.sample_seq <= load.sample_seq {
-                continue;
+            if sample.sample_seq > load.sample_seq {
+                let mut last_raw = self.last_raw.lock();
+                if let Some((prev_seq, prev_tokens, prev_at)) = last_raw.get(endpoint).copied() {
+                    let dt = sample
+                        .sent_at
+                        .saturating_duration_since(prev_at)
+                        .as_secs_f64();
+                    if prev_seq < sample.sample_seq && dt >= 0.05 {
+                        let drop = prev_tokens.saturating_sub(sample.remaining_tokens);
+                        load.drain_milli_tps = (drop as f64 / dt * 1000.0) as u64;
+                    }
+                }
+                last_raw.insert(
+                    endpoint.clone(),
+                    (sample.sample_seq, sample.remaining_tokens, sample.sent_at),
+                );
+                drop(last_raw);
+                // Anchor on the ledger value when the poll was sent: admissions
+                // that happened while it was in flight are then counted by the
+                // delta instead of being swallowed by the anchor.
+                let local_at_send = self
+                    .local_at(endpoint, sample.sent_at)
+                    .unwrap_or(load.local_prefill_tokens);
+                load.sample_base = sample.remaining_tokens;
+                load.sample_local = local_at_send;
+                load.sample_at = Some(sample.sent_at);
+                load.sample_seq = sample.sample_seq;
             }
-            let delta = load
-                .local_prefill_tokens
-                .saturating_sub(load.local_at_sample);
-            load.active_prefill_tokens = sample.remaining_tokens.saturating_add(delta);
-            load.local_at_sample = load.local_prefill_tokens;
-            load.sample_seq = sample.sample_seq;
+            let elapsed = load
+                .sample_at
+                .map(|at| now.saturating_duration_since(at).as_secs_f64())
+                .unwrap_or(0.0);
+            let progressed = (load.drain_milli_tps as f64 * elapsed / 1000.0) as u64;
+            let delta = load.local_prefill_tokens.saturating_sub(load.sample_local);
+            load.active_prefill_tokens = load
+                .sample_base
+                .saturating_add(delta)
+                .saturating_sub(progressed);
         }
     }
 
+    /// Router-local ledger as of `at`, from the recorded snapshots.
+    fn local_at(&self, endpoint: &PdEndpoint, at: tokio::time::Instant) -> Option<u64> {
+        let history = self.history.lock();
+        let entries = history.get(endpoint)?;
+        entries
+            .iter()
+            .rev()
+            .find(|(when, _)| *when <= at)
+            .map(|(_, value)| *value)
+            .or_else(|| entries.front().map(|(_, value)| *value))
+    }
+
+    fn record_local(&self, endpoint: &PdEndpoint, value: u64) {
+        record_history(&self.history, endpoint, value);
+    }
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> Loads {
         self.loads.lock().clone()
@@ -279,11 +347,12 @@ impl PdLoadManager {
         if let Some(tokens) = prefill.new_prefill_tokens {
             p.active_prefill_tokens += tokens;
             p.local_prefill_tokens += tokens;
+            self.record_local(&prefill.endpoint, p.local_prefill_tokens);
         } else {
             p.unknown_prefill_requests += 1;
         }
         p.publish(Stage::Prefill, &prefill.endpoint);
-        let now = std::time::Instant::now();
+        let now = tokio::time::Instant::now();
         let (decode_endpoint, affinity, decode_state, pending_since) = if defer_decode {
             (None, None, DecodeState::Unbound, None)
         } else {
@@ -302,6 +371,7 @@ impl PdLoadManager {
         let attempt = PdAttempt(Arc::new(AttemptInner {
             admitted_at: now,
             loads: self.loads.clone(),
+            history: self.history.clone(),
             prefill: selection.prefill.endpoint.clone(),
             prefill_worker: Mutex::new(None),
             decode_worker: Mutex::new(None),
@@ -343,7 +413,7 @@ impl PdLoadManager {
         d.publish(Stage::Decode, &decision.endpoint);
         state.decode_endpoint = Some(decision.endpoint.clone());
         state.affinity = decision.affinity.clone();
-        state.pending_since = Some(std::time::Instant::now());
+        state.pending_since = Some(tokio::time::Instant::now());
         state.decode = DecodeState::Pending;
         metrics::histogram!("vllm_router_pd_decode_selection_gap_seconds")
             .record(inner.admitted_at.elapsed().as_secs_f64());
@@ -374,8 +444,9 @@ impl PdLoadManager {
             d.publish(Stage::Decode, &decode);
         }
         let attempt = PdAttempt(Arc::new(AttemptInner {
-            admitted_at: std::time::Instant::now(),
+            admitted_at: tokio::time::Instant::now(),
             loads: self.loads.clone(),
+            history: self.history.clone(),
             prefill,
             prefill_worker: Mutex::new(None),
             decode_worker: Mutex::new(None),
@@ -385,7 +456,7 @@ impl PdLoadManager {
                 decode: DecodeState::Pending,
                 decode_endpoint: Some(decode),
                 affinity: None,
-                pending_since: Some(std::time::Instant::now()),
+                pending_since: Some(tokio::time::Instant::now()),
             }),
         }));
         attempt.attach_workers(prefill_worker, decode_worker);
@@ -411,11 +482,11 @@ struct AttemptState {
     /// Decode binding held alive until this attempt finishes.
     affinity: Option<Arc<AffinityRecord>>,
     /// When the decode slot was charged, for the pending histogram.
-    pending_since: Option<std::time::Instant>,
+    pending_since: Option<tokio::time::Instant>,
 }
 
 struct AttemptInner {
-    admitted_at: std::time::Instant,
+    admitted_at: tokio::time::Instant,
     loads: Arc<Mutex<Loads>>,
     prefill: PdEndpoint,
     prefill_worker: Mutex<Option<Arc<dyn Worker>>>,
@@ -424,6 +495,7 @@ struct AttemptInner {
     /// Guards every stage transition and the decode fields below, so a commit
     /// and a release cannot interleave halfway through.
     state: Mutex<AttemptState>,
+    history: LocalHistory,
 }
 
 impl AttemptInner {
@@ -439,6 +511,7 @@ impl AttemptInner {
             if let Some(tokens) = self.prefill_tokens {
                 load.active_prefill_tokens -= tokens;
                 load.local_prefill_tokens = load.local_prefill_tokens.saturating_sub(tokens);
+                record_history(&self.history, &self.prefill, load.local_prefill_tokens);
             } else {
                 load.unknown_prefill_requests -= 1;
             }
