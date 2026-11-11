@@ -13,6 +13,7 @@ use rand::Rng;
 use sha2::{Digest as _, Sha256};
 
 use super::{get_healthy_worker_indices, LoadBalancingPolicy, RequestHeaders};
+use crate::backend::prefill_load::PrefillLoadTable;
 use crate::core::Worker;
 use crate::kv_index::{CacheKey, MatchQuery, RoutableTarget, StorageTier, TierMatch, WorkerKvInfo};
 use crate::request_identity::StableIdentity;
@@ -281,12 +282,27 @@ pub trait SlotManager: LoadProvider {
     /// Drop idle state for a target that is no longer registered. Implementers
     /// may keep active state until its matching request cleanup arrives.
     fn unregister_target(&self, _target: &RoutableTarget) {}
+
+    /// Attach the polled prefill-load table. Workers without a sample fall back
+    /// to the router-local ledger.
+    fn attach_prefill_load(&self, _table: Arc<PrefillLoadTable>) {}
+}
+
+/// The worker sample a target's estimate is currently anchored to.
+#[derive(Debug, Default)]
+struct AppliedSample {
+    sample_seq: u64,
+    /// Worker-reported work at the anchor, in tokens.
+    base_tokens: u64,
+    /// This router's ledger value when the anchor was applied.
+    local_at_sample: u64,
 }
 
 #[derive(Debug, Default)]
 struct SlotCounters {
     active_prefill_tokens: AtomicU64,
     active_requests: AtomicUsize,
+    applied: Mutex<AppliedSample>,
 }
 
 /// Router-local, bracket-based load view keyed at the index's `(worker, rank)`
@@ -294,6 +310,7 @@ struct SlotCounters {
 #[derive(Debug, Default)]
 pub struct InMemorySlotManager {
     slots: DashMap<RoutableTarget, Arc<SlotCounters>>,
+    prefill: Mutex<Option<Arc<PrefillLoadTable>>>,
 }
 
 impl InMemorySlotManager {
@@ -341,14 +358,40 @@ impl LoadProvider for InMemorySlotManager {
         let Some(slot) = self.slots.get(target) else {
             return LoadSample::default();
         };
+        let local = slot.active_prefill_tokens.load(Ordering::Acquire);
+        let active_requests = slot.active_requests.load(Ordering::Acquire);
+
+        let table = self.prefill.lock().clone();
+        let sample = table.and_then(|table| table.get(target.instance_id.as_ref()));
+        let Some(sample) = sample else {
+            // No worker sample yet: the router-local ledger is the estimate.
+            return LoadSample {
+                active_prefill_tokens: local,
+                active_requests,
+            };
+        };
+
+        let mut applied = slot.applied.lock();
+        if sample.sample_seq > applied.sample_seq {
+            applied.sample_seq = sample.sample_seq;
+            applied.base_tokens = sample.remaining_tokens;
+            applied.local_at_sample = local;
+        }
+        // Anchor on the worker's value and add only what this router did since
+        // that sample, so work already included by the worker is not re-counted.
+        let delta = local.saturating_sub(applied.local_at_sample);
         LoadSample {
-            active_prefill_tokens: slot.active_prefill_tokens.load(Ordering::Acquire),
-            active_requests: slot.active_requests.load(Ordering::Acquire),
+            active_prefill_tokens: applied.base_tokens.saturating_add(delta),
+            active_requests,
         }
     }
 }
 
 impl SlotManager for InMemorySlotManager {
+    fn attach_prefill_load(&self, table: Arc<PrefillLoadTable>) {
+        *self.prefill.lock() = Some(table);
+    }
+
     fn begin_prefill(&self, target: &RoutableTarget, prefill_tokens: u64) {
         self.update_or_insert(target, |slot| {
             slot.active_prefill_tokens

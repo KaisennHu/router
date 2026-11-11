@@ -51,13 +51,13 @@ impl PrefillLoadTable {
         Self::default()
     }
 
-    /// Latest sample for `worker_url`, if the worker has reported one.
-    pub fn get(&self, worker_url: &str) -> Option<PrefillSample> {
-        self.samples.get(worker_url).map(|sample| *sample)
+    /// Latest sample for `instance_id`, if the worker has reported one.
+    pub fn get(&self, instance_id: &str) -> Option<PrefillSample> {
+        self.samples.get(instance_id).map(|sample| *sample)
     }
 
-    fn store(&self, worker_url: &str, sample: PrefillSample) {
-        self.samples.insert(worker_url.to_owned(), sample);
+    fn store(&self, instance_id: &str, sample: PrefillSample) {
+        self.samples.insert(instance_id.to_owned(), sample);
     }
 }
 
@@ -67,6 +67,7 @@ impl PrefillLoadTable {
 /// polled simply keeps whatever sample it last reported.
 pub async fn poll_worker(
     client: reqwest::Client,
+    instance_id: String,
     worker_url: String,
     table: Arc<PrefillLoadTable>,
     interval: Duration,
@@ -83,18 +84,18 @@ pub async fn poll_worker(
         let response = match client.get(&url).send().await {
             Ok(response) => response,
             Err(err) => {
-                debug!(%worker_url, error = %err, "prefill load poll failed");
+                debug!(%instance_id, error = %err, "prefill load poll failed");
                 continue;
             }
         };
         if !response.status().is_success() {
-            debug!(%worker_url, status = %response.status(), "prefill load poll rejected");
+            debug!(%instance_id, status = %response.status(), "prefill load poll rejected");
             continue;
         }
         let body: LoadResponse = match response.json().await {
             Ok(body) => body,
             Err(err) => {
-                warn!(%worker_url, error = %err, "prefill load poll returned invalid JSON");
+                warn!(%instance_id, error = %err, "prefill load poll returned invalid JSON");
                 continue;
             }
         };
@@ -109,8 +110,8 @@ pub async fn poll_worker(
             sample_seq,
             received_at: Instant::now(),
         };
-        if sample.is_newer_than(table.get(&worker_url)) {
-            table.store(&worker_url, sample);
+        if sample.is_newer_than(table.get(&instance_id)) {
+            table.store(&instance_id, sample);
         }
     }
 }
