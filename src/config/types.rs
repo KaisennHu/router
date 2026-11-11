@@ -1316,6 +1316,8 @@ impl Default for RouterConfig {
             request_timeout_secs: 1800,    // 30 minutes
             worker_startup_timeout_secs: 600,
             worker_startup_check_interval_secs: 30,
+            prefill_load_poll_ms: None,
+            prefill_load_urls: Vec::new(),
             intra_node_data_parallel_size: 1,
             api_key: None,
             api_key_validation_urls: vec![],

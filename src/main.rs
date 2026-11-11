@@ -158,6 +158,14 @@ struct CliArgs {
     )]
     pd_kv_events: Vec<String>,
 
+    /// Poll the worker /load endpoint at this interval (milliseconds) and price kv_aware workers from the reported remaining prefill work. Disabled by default.
+    #[arg(long, value_name = "MILLISECONDS")]
+    prefill_load_poll_ms: Option<u64>,
+
+    /// Map a grpc:// worker instance to its HTTP base for /load, e.g. grpc://host:50051=http://host:8000. Repeatable.
+    #[arg(long = "prefill-load-url", action = ArgAction::Append, value_name = "INSTANCE=HTTP-BASE")]
+    prefill_load_urls: Vec<String>,
+
     /// Specific policy for prefill nodes in PD mode. kv_aware uses the prefill load profile.
     #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "kv_aware", "power_of_two", "consistent_hash", "sticky_least_loaded", "rendezvous_hash"])]
     prefill_policy: Option<String>,
@@ -638,6 +646,8 @@ impl CliArgs {
             request_timeout_secs: self.request_timeout_secs,
             worker_startup_timeout_secs: self.worker_startup_timeout_secs,
             worker_startup_check_interval_secs: self.worker_startup_check_interval,
+            prefill_load_poll_ms: self.prefill_load_poll_ms,
+            prefill_load_urls: self.prefill_load_urls.clone(),
             intra_node_data_parallel_size: self.intra_node_data_parallel_size,
             api_key: self.api_key.clone(),
             api_key_validation_urls,
