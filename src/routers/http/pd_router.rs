@@ -2547,7 +2547,7 @@ mod admission_tests {
     use super::*;
     use crate::core::{BasicWorker, DPAwareWorker};
     use crate::policies::{
-        AffinityKey, CostParams, KvAwarePolicy, RequestHeaders, RoundRobinPolicy,
+        AffinityKey, CostParams, KvAwarePolicy, PromptHashes, RequestHeaders, RoundRobinPolicy,
     };
 
     fn prefix_policy_with_blocks(
@@ -2614,11 +2614,10 @@ mod admission_tests {
                         prompts: Some(Arc::from(vec![tokens.to_vec()])),
                         work_by_rank: HashMap::from([(
                             worker.dp_rank(),
-                            kv_aware_ops(policy).unwrap().estimate_prefill_work(&[(
-                                worker.as_ref(),
-                                &[tokens.to_vec()],
-                                true,
-                            )])[0],
+                            kv_aware_ops(policy).unwrap().estimate_prefill_work(
+                                &[(worker.as_ref(), &[tokens.to_vec()], true)],
+                                &mut PromptHashes::new(),
+                            )[0],
                         )]),
                         allow_credit: true,
                         fallback_reason: None,

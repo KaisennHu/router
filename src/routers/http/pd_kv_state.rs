@@ -5,7 +5,7 @@ use crate::backend::preprocess::{prepare_http_token_inputs, router_token_inputs}
 use crate::core::Worker;
 use crate::kv_index::discovery::{worker_get, WorkerDiscovery};
 use crate::kv_index::{HashMode, KvIndexSupervisor, WorkerKvInfo};
-use crate::policies::{kv_aware_ops, KvAwareOps, KvAwarePolicy, LoadBalancingPolicy};
+use crate::policies::{kv_aware_ops, KvAwareOps, KvAwarePolicy, LoadBalancingPolicy, PromptHashes};
 use axum::http::HeaderMap;
 use futures_util::{stream, StreamExt};
 use serde_json::Value;
@@ -489,56 +489,26 @@ impl PdKvState {
         inputs.decode_policy = Some(policy.clone());
     }
 
-    /// Marginal Decode context per candidate for the request's prompt stream.
-    ///
-    /// Mirrors [`Self::prepare`] for the D pool: the same control-plane
-    /// bindings decide whether a candidate's cache identity is verified, and an
-    /// unverified candidate returns `None` so the caller can fall back to plain
-    /// occupancy instead of comparing a credited figure with a full-price one.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn prepare_decode_context(
+    /// One snapshot of which bases may be credited, keyed by base URL.
+    async fn credit_by_base(&self, request: &Value) -> HashMap<String, bool> {
+        let bindings = self.bindings.lock().await;
+        let model = request.get("model").and_then(Value::as_str);
+        bindings
+            .iter()
+            .map(|(base, binding)| (base.clone(), Self::credit_allowed(binding, model)))
+            .collect()
+    }
+
+    /// Render the request against each base, or reuse the router's own ids.
+    async fn tokenize(
         &self,
-        workers: &[Arc<dyn Worker>],
-        policy: &Arc<dyn LoadBalancingPolicy>,
+        bases: Vec<String>,
         request: &Value,
         route: &str,
         headers: Option<&HeaderMap>,
         router_prompts: Option<&Arc<[Vec<u32>]>>,
-        sequences: u32,
-    ) -> Option<HashMap<String, u64>> {
-        let kv = kv_aware_ops(policy.as_ref())?;
-        // Nothing to price unless at least one Decode base has a verified cache
-        // identity. Checking first keeps the tokenize/render fan-out and the
-        // hash walk off the request path for every deployment whose Decode pool
-        // publishes no KV events, which is all of them until they opt in.
-        {
-            let bindings = self.bindings.lock().await;
-            let model = request.get("model").and_then(Value::as_str);
-            let any_creditable = workers.iter().any(|worker| {
-                bindings
-                    .get(worker.base_url())
-                    .is_some_and(|binding| Self::credit_allowed(binding, model))
-            });
-            if !any_creditable {
-                crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
-                return None;
-            }
-        }
-        let bases: Vec<_> = workers
-            .iter()
-            .map(|worker| worker.base_url().to_owned())
-            .collect();
-        let allow_credit: HashMap<_, _> = self
-            .bindings
-            .lock()
-            .await
-            .iter()
-            .map(|(base, binding)| {
-                let model = request.get("model").and_then(Value::as_str);
-                (base.clone(), Self::credit_allowed(binding, model))
-            })
-            .collect();
-        let results = match router_prompts {
+    ) -> HashMap<String, Result<crate::backend::preprocess::HttpTokenInput, &'static str>> {
+        match router_prompts {
             Some(prompts) => router_token_inputs(bases, request, prompts),
             None => {
                 prepare_http_token_inputs(
@@ -552,7 +522,85 @@ impl PdKvState {
                 )
                 .await
             }
-        };
+        }
+    }
+
+    /// Pure: rendered prompts plus credit eligibility become `PdPrefillInput`s.
+    fn build_prefill_inputs(
+        workers: &[Arc<dyn Worker>],
+        request: &Value,
+        allow_credit: &HashMap<String, bool>,
+        results: HashMap<String, Result<crate::backend::preprocess::HttpTokenInput, &'static str>>,
+    ) -> HashMap<String, PdPrefillInput> {
+        let mut prepared = HashMap::with_capacity(results.len());
+        for (base, result) in results {
+            let fallback = KvAwarePolicy::credit_fallback(
+                request.get("cache_salt").and_then(Value::as_str),
+                allow_credit.get(&base).copied().unwrap_or(false),
+            );
+            let (prompts, fallback_reason, source) = match result {
+                Ok(input) => (Some(input.prompts), fallback, input.source),
+                Err(reason) => (None, Some(reason), reason),
+            };
+            crate::metrics::RouterMetrics::record_kv_routing_input("pd", source);
+            let input = PdPrefillInput {
+                prompts,
+                work_by_rank: HashMap::new(),
+                allow_credit: fallback_reason.is_none(),
+                fallback_reason,
+            };
+            metrics::gauge!("vllm_router_pd_identity_verified", "worker" => base.clone())
+                .set(if input.allow_credit { 1.0 } else { 0.0 });
+            prepared.insert(base, input);
+        }
+        let _ = workers;
+        prepared
+    }
+
+    fn attach_prefill_work(
+        kv: &dyn KvAwareOps,
+        workers: &[Arc<dyn Worker>],
+        prepared: &mut HashMap<String, PdPrefillInput>,
+        hashes: &mut PromptHashes,
+    ) {
+        let inputs: Vec<_> = workers
+            .iter()
+            .filter_map(|worker| {
+                let input = prepared.get(worker.base_url())?;
+                Some((
+                    worker.as_ref(),
+                    input.prompts.as_deref()?,
+                    input.allow_credit,
+                ))
+            })
+            .collect();
+        let work: Vec<_> = inputs
+            .iter()
+            .zip(kv.estimate_prefill_work(&inputs, hashes))
+            .map(|((worker, _, _), estimate)| {
+                (worker.base_url().to_owned(), worker.dp_rank(), estimate)
+            })
+            .collect();
+        for (base, rank, work) in work {
+            if let Some(entry) = prepared.get_mut(&base) {
+                entry.work_by_rank.insert(rank, work);
+            }
+        }
+    }
+
+    /// Pure: the Decode estimate over already-rendered prompts.
+    ///
+    /// Returns `None` when any candidate is unpriced, because one credited
+    /// figure beside a full-price one would compare different units across the
+    /// pool.
+    fn decode_context_from_results(
+        kv: &dyn KvAwareOps,
+        workers: &[Arc<dyn Worker>],
+        allow_credit: &HashMap<String, bool>,
+        results: &HashMap<String, Result<crate::backend::preprocess::HttpTokenInput, &'static str>>,
+        sequences: u32,
+        hashes: &mut PromptHashes,
+    ) -> Option<HashMap<String, u64>> {
         let inputs: Vec<_> = workers
             .iter()
             .filter_map(|worker| {
@@ -574,18 +622,142 @@ impl PdKvState {
             })
             .collect();
         if inputs.len() != workers.len() {
-            // One unpriced candidate would compare different units across the
-            // pool, which is exactly what the token ranking must never do.
             crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unpriced");
             return None;
         }
-        let work = kv.estimate_decode_work(&inputs, sequences);
+        let work = kv.estimate_decode_work(&inputs, sequences, hashes);
         let mut context = HashMap::with_capacity(work.len());
         for ((worker, _, _), estimate) in inputs.iter().zip(work) {
-            let additional = estimate.additional_tokens?;
-            context.insert(worker.url().to_owned(), additional);
+            context.insert(worker.url().to_owned(), estimate.additional_tokens?);
         }
         Some(context)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn prepare_decode_context(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        policy: &Arc<dyn LoadBalancingPolicy>,
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        sequences: u32,
+    ) -> Option<HashMap<String, u64>> {
+        let kv = kv_aware_ops(policy.as_ref())?;
+        let allow_credit = self.credit_by_base(request).await;
+        // Nothing to price unless some Decode base can be credited. Checking
+        // first keeps the render fan-out and the hash walk off the request path
+        // for every deployment whose Decode pool publishes no KV events.
+        if !workers.iter().any(|worker| {
+            allow_credit
+                .get(worker.base_url())
+                .copied()
+                .unwrap_or(false)
+        }) {
+            crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
+            return None;
+        }
+        let bases = workers
+            .iter()
+            .map(|worker| worker.base_url().to_owned())
+            .collect();
+        let results = self
+            .tokenize(bases, request, route, headers, router_prompts)
+            .await;
+        Self::decode_context_from_results(
+            kv,
+            workers,
+            &allow_credit,
+            &results,
+            sequences,
+            &mut PromptHashes::new(),
+        )
+    }
+
+    /// Prefill inputs and, when the Decode pool can be priced, its marginal
+    /// context - both computed from one hash cache.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn prepare_pair(
+        &self,
+        prefill_workers: &[Arc<dyn Worker>],
+        prefill_policy: &Arc<dyn LoadBalancingPolicy>,
+        decode_workers: &[Arc<dyn Worker>],
+        decode_policy: &Arc<dyn LoadBalancingPolicy>,
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        sequences: u32,
+    ) -> (
+        HashMap<String, PdPrefillInput>,
+        Option<HashMap<String, u64>>,
+    ) {
+        let started = Instant::now();
+        {
+            let mut inputs = self.refresh_inputs.lock().await;
+            inputs.prefill = prefill_workers.iter().cloned().collect();
+            inputs.prefill_policy = Some(prefill_policy.clone());
+        }
+        let allow_credit = self.credit_by_base(request).await;
+        let decode_priced = kv_aware_ops(decode_policy.as_ref()).is_some()
+            && decode_workers.iter().any(|worker| {
+                allow_credit
+                    .get(worker.base_url())
+                    .copied()
+                    .unwrap_or(false)
+            });
+        if !decode_priced {
+            crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
+        }
+        let prefill_bases: Vec<_> = prefill_workers
+            .iter()
+            .map(|worker| worker.base_url().to_owned())
+            .collect();
+        let decode_bases: Vec<_> = decode_workers
+            .iter()
+            .map(|worker| worker.base_url().to_owned())
+            .collect();
+        // Renders run together: they are network work over disjoint bases, and
+        // serialising them would add a whole fan-out to request latency. They
+        // compute no hashes, so nothing is shared across a mutable borrow here.
+        let (prefill_results, decode_results) = tokio::join!(
+            self.tokenize(prefill_bases, request, route, headers, router_prompts),
+            async {
+                if decode_priced {
+                    self.tokenize(decode_bases, request, route, headers, router_prompts)
+                        .await
+                } else {
+                    HashMap::new()
+                }
+            },
+        );
+        // One hash cache for both stages: the Decode estimate walks the same
+        // prompt with the same block size, so hashing it twice would be pure
+        // duplication, linear in prompt length, on the admission path.
+        let mut hashes = PromptHashes::new();
+        let mut prepared =
+            Self::build_prefill_inputs(prefill_workers, request, &allow_credit, prefill_results);
+        if let Some(kv) = kv_aware_ops(prefill_policy.as_ref()) {
+            Self::attach_prefill_work(kv, prefill_workers, &mut prepared, &mut hashes);
+        }
+        let decode_context = if decode_priced {
+            kv_aware_ops(decode_policy.as_ref()).and_then(|kv| {
+                Self::decode_context_from_results(
+                    kv,
+                    decode_workers,
+                    &allow_credit,
+                    &decode_results,
+                    sequences,
+                    &mut hashes,
+                )
+            })
+        } else {
+            None
+        };
+        metrics::histogram!("vllm_router_pd_kv_prepare_seconds")
+            .record(started.elapsed().as_secs_f64());
+        (prepared, decode_context)
     }
 
     /// `router_prompts` are the router's own token ids for `grpc://` pools;
@@ -605,82 +777,17 @@ impl PdKvState {
             inputs.prefill = workers.iter().cloned().collect();
             inputs.prefill_policy = Some(policy.clone());
         }
-        let bases: Vec<_> = workers
+        let allow_credit = self.credit_by_base(request).await;
+        let bases = workers
             .iter()
             .map(|worker| worker.base_url().to_owned())
             .collect();
-        let allow_credit: HashMap<_, _> = self
-            .bindings
-            .lock()
-            .await
-            .iter()
-            .map(|(base, binding)| {
-                let model = request.get("model").and_then(Value::as_str);
-                (base.clone(), Self::credit_allowed(binding, model))
-            })
-            .collect();
-        let results = match router_prompts {
-            Some(prompts) => router_token_inputs(bases, request, prompts),
-            None => {
-                prepare_http_token_inputs(
-                    &self.client,
-                    bases,
-                    request,
-                    route,
-                    headers,
-                    self.api_key.as_deref(),
-                    Duration::from_secs(1),
-                )
-                .await
-            }
-        };
-        let mut prepared = HashMap::new();
-        for (base, result) in results {
-            let fallback = KvAwarePolicy::credit_fallback(
-                request.get("cache_salt").and_then(Value::as_str),
-                allow_credit.get(&base).copied().unwrap_or(false),
-            );
-            let (prompts, fallback_reason, source) = match result {
-                Ok(input) => (Some(input.prompts), fallback, input.source),
-                Err(reason) => (None, Some(reason), reason),
-            };
-            crate::metrics::RouterMetrics::record_kv_routing_input("pd", source);
-            let input = PdPrefillInput {
-                prompts,
-                work_by_rank: HashMap::new(),
-                allow_credit: fallback_reason.is_none(),
-                fallback_reason,
-            };
-            metrics::gauge!("vllm_router_pd_identity_verified", "worker" => base.clone())
-                .set(if input.allow_credit { 1.0 } else { 0.0 });
-            prepared.insert(base, input);
-        }
+        let results = self
+            .tokenize(bases, request, route, headers, router_prompts)
+            .await;
+        let mut prepared = Self::build_prefill_inputs(workers, request, &allow_credit, results);
         if let Some(kv) = kv_aware_ops(policy.as_ref()) {
-            let inputs: Vec<_> = workers
-                .iter()
-                .filter_map(|worker| {
-                    let input = prepared.get(worker.base_url())?;
-                    Some((
-                        worker.as_ref(),
-                        input.prompts.as_deref()?,
-                        input.allow_credit,
-                    ))
-                })
-                .collect();
-            let work: Vec<_> = inputs
-                .iter()
-                .zip(kv.estimate_prefill_work(&inputs))
-                .map(|((worker, _, _), estimate)| {
-                    (worker.base_url().to_owned(), worker.dp_rank(), estimate)
-                })
-                .collect();
-            for (base, rank, work) in work {
-                prepared
-                    .get_mut(&base)
-                    .unwrap()
-                    .work_by_rank
-                    .insert(rank, work);
-            }
+            Self::attach_prefill_work(kv, workers, &mut prepared, &mut PromptHashes::new());
         }
         metrics::histogram!("vllm_router_pd_kv_prepare_seconds")
             .record(started.elapsed().as_secs_f64());
@@ -699,7 +806,7 @@ impl Drop for PdKvState {
 mod kv_input_tests {
     use super::*;
     use crate::core::{BasicWorker, WorkerType};
-    use crate::policies::{kv_aware_ops, KvAwarePolicy};
+    use crate::policies::{kv_aware_ops, KvAwarePolicy, PromptHashes};
     use axum::extract::Request;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -830,7 +937,10 @@ mod kv_input_tests {
             );
             let work = kv_aware_ops(policy.as_ref())
                 .unwrap()
-                .estimate_prefill_work(&[(workers[0].as_ref(), &[vec![7, 8, 9]], true)])[0];
+                .estimate_prefill_work(
+                    &[(workers[0].as_ref(), &[vec![7, 8, 9]], true)],
+                    &mut PromptHashes::new(),
+                )[0];
             assert_eq!(work.new_prefill_tokens, 3);
             assert!(!work.placement_verified); // No event source: exact tokens, zero fabricated credit.
             task.abort();
@@ -938,11 +1048,10 @@ mod kv_input_tests {
                         .send_multipart([b"".as_slice(), seq.as_slice(), payload.as_slice()], 0)
                         .unwrap();
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    let work = ops.estimate_prefill_work(&[(
-                        workers[0].as_ref(),
-                        std::slice::from_ref(&tokens),
-                        true,
-                    )])[0];
+                    let work = ops.estimate_prefill_work(
+                        &[(workers[0].as_ref(), std::slice::from_ref(&tokens), true)],
+                        &mut PromptHashes::new(),
+                    )[0];
                     if work.new_prefill_tokens == 1 {
                         break;
                     }

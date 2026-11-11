@@ -1013,31 +1013,23 @@ impl VllmPDRouter {
         // and tokenizes, neither of which may happen under the selection lock.
         // The D pool is recorded here too, so the refresh loop subscribes to a
         // Decode engine's own KV events when that engine publishes them.
-        let (prefill_inputs, decode_inputs, decode_context) = tokio::join!(
-            self.pd_router.prepare_prefill_inputs(
-                prefill_workers,
-                request,
-                path,
-                headers,
-                router_prompts
-            ),
-            self.pd_router.prepare_decode_inputs(
-                decode_workers,
-                request,
-                path,
-                headers,
-                router_prompts
-            ),
-            async {
-                let state = self.pd_router.kv_state.as_ref()?;
-                if !state.publishes_for(decode_workers) {
-                    return None;
-                }
+        //
+        // When both stages are KV-aware the two estimates are computed together,
+        // because they walk the same prompt: `prepare_pair` hashes it once and
+        // prices the Prefill and Decode pools from that one walk.
+        let (prefill_inputs, decode_inputs, decode_context) = match self.pd_router.kv_state.as_ref()
+        {
+            Some(state)
+                if state.publishes_for(decode_workers)
+                    && crate::policies::kv_aware_ops(prefill_policy.as_ref()).is_some() =>
+            {
                 state
                     .record_decode_pool(decode_workers, &decode_policy)
                     .await;
-                state
-                    .prepare_decode_context(
+                let (prepared, context) = state
+                    .prepare_pair(
+                        prefill_workers,
+                        &prefill_policy,
                         decode_workers,
                         &decode_policy,
                         request,
@@ -1046,9 +1038,49 @@ impl VllmPDRouter {
                         router_prompts,
                         sequences,
                     )
-                    .await
-            },
-        );
+                    .await;
+                (Some(prepared), None, context)
+            }
+            _ => {
+                let state = self.pd_router.kv_state.as_ref();
+                tokio::join!(
+                    self.pd_router.prepare_prefill_inputs(
+                        prefill_workers,
+                        request,
+                        path,
+                        headers,
+                        router_prompts
+                    ),
+                    self.pd_router.prepare_decode_inputs(
+                        decode_workers,
+                        request,
+                        path,
+                        headers,
+                        router_prompts
+                    ),
+                    async {
+                        let state = state?;
+                        if !state.publishes_for(decode_workers) {
+                            return None;
+                        }
+                        state
+                            .record_decode_pool(decode_workers, &decode_policy)
+                            .await;
+                        state
+                            .prepare_decode_context(
+                                decode_workers,
+                                &decode_policy,
+                                request,
+                                path,
+                                headers,
+                                router_prompts,
+                                sequences,
+                            )
+                            .await
+                    },
+                )
+            }
+        };
         let model_id = request.get("model").and_then(Value::as_str);
         let cache_salt = request
             .get("cache_salt")

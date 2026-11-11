@@ -78,6 +78,14 @@ pub struct DecodeWorkEstimate {
     pub additional_tokens: Option<u64>,
 }
 
+/// Block hashes computed once per request and shared by both work estimates.
+///
+/// Keyed by `(block_size, prompt index)`: both stages walk the same prompt list
+/// in the same order, and `lora_name` is constant for a request. Without this
+/// the Decode estimate re-hashes the prompt the Prefill estimate just hashed,
+/// which is linear in prompt length on the admission path.
+pub type PromptHashes = HashMap<(u32, usize), Arc<[Arc<str>]>>;
+
 /// Optional operations used by adapters with tokenized requests and KV discovery.
 pub trait KvAwareOps: Send + Sync {
     /// P/D uses the same placement/credit contract as colocated routing,
@@ -85,15 +93,20 @@ pub trait KvAwareOps: Send + Sync {
     fn estimate_prefill_work(
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+        hashes: &mut PromptHashes,
     ) -> Vec<PrefillWorkEstimate>;
     /// Marginal Decode context per candidate, from the same placement snapshot
     /// as [`Self::estimate_prefill_work`]. `inputs` pairs each candidate with
     /// the prompt stream it will hold and whether its cache identity is
     /// verified; the returned estimate is `None` for an unverified candidate.
+    ///
+    /// `hashes` is shared with the Prefill estimate so the same prompt is
+    /// hashed once per request rather than once per stage.
     fn estimate_decode_work(
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
         sequences: u32,
+        hashes: &mut PromptHashes,
     ) -> Vec<DecodeWorkEstimate>;
     fn pick_prefill(&self, costs: &[f64], occupancy: &[usize]) -> Option<usize>;
     /// Decode-side occupancy picker for P/D: deterministic argmin over the
@@ -1141,25 +1154,41 @@ impl KvAwarePolicy {
         crate::kv_index::local_block_hash_strings(token_ids, block_size, lora_name)
     }
 
-    fn placement_matches(
-        binding: &TargetBinding,
-        token_ids: Option<&[u32]>,
+    /// Block hashes of one prompt, computed at most once per request.
+    ///
+    /// The Prefill and Decode estimates walk the same prompt with the same block
+    /// size, so hashing it twice is pure duplication: it is linear in prompt
+    /// length and the Decode side exists only to price reuse. The key is
+    /// `(block_size, prompt index)` because both stages hand the same prompt
+    /// list to every candidate in the same order; `lora_name` is constant for a
+    /// request, so it does not need to be part of the key.
+    fn hashes_for<'h>(
+        cache: &'h mut PromptHashes,
+        block_size: u32,
         lora_name: Option<&str>,
-        enabled: bool,
+        prompts: &[Vec<u32>],
+        index: usize,
+    ) -> &'h Arc<[Arc<str>]> {
+        cache.entry((block_size, index)).or_insert_with(|| {
+            Arc::from(Self::local_hashes_with_lora(
+                &prompts[index],
+                block_size,
+                lora_name,
+            ))
+        })
+    }
+
+    /// The index query alone, for callers that already hold the hashes.
+    fn placement_matches_with(
+        binding: &TargetBinding,
+        local_hashes: &[Arc<str>],
     ) -> Vec<TierMatch> {
-        let local_hashes = if enabled {
-            token_ids
-                .map(|ids| Self::local_hashes_with_lora(ids, binding.block_size, lora_name))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         if local_hashes.is_empty() {
             Vec::new()
         } else {
             let hits = binding.matches.find_tiered_matches(&MatchQuery {
                 group_idx: 0,
-                local_hashes,
+                local_hashes: local_hashes.to_vec(),
                 tiers_of_interest: Self::tiers_of_interest(),
             });
             crate::metrics::RouterMetrics::record_kv_placement_lookup(
@@ -1807,6 +1836,7 @@ impl KvAwareOps for KvAwarePolicy {
     fn estimate_prefill_work(
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+        hashes: &mut PromptHashes,
     ) -> Vec<PrefillWorkEstimate> {
         let mut query_cache = HashMap::new();
         inputs
@@ -1819,14 +1849,16 @@ impl KvAwareOps for KvAwarePolicy {
                     ..self.params
                 };
                 let mut new_prefill_tokens = 0u64;
-                for tokens in prompts {
+                for (index, tokens) in prompts.iter().enumerate() {
                     let hits = if verified {
-                        query_cache
-                            .entry((binding.cache_key.clone(), tokens.as_slice()))
-                            .or_insert_with(|| {
-                                Self::placement_matches(&binding, Some(tokens), None, true)
-                            })
-                            .as_slice()
+                        let key = (binding.cache_key.clone(), index);
+                        if !query_cache.contains_key(&key) {
+                            let local =
+                                Self::hashes_for(hashes, binding.block_size, None, prompts, index);
+                            let found = Self::placement_matches_with(&binding, local);
+                            query_cache.insert(key.clone(), found);
+                        }
+                        query_cache[&key].as_slice()
                     } else {
                         &[]
                     };
@@ -1868,6 +1900,7 @@ impl KvAwareOps for KvAwarePolicy {
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
         sequences: u32,
+        hashes: &mut PromptHashes,
     ) -> Vec<DecodeWorkEstimate> {
         let sequences = u64::from(sequences.max(1));
         let mut query_cache = HashMap::new();
@@ -1883,13 +1916,15 @@ impl KvAwareOps for KvAwarePolicy {
                     ..self.params
                 };
                 let mut additional = 0u64;
-                for tokens in prompts {
-                    let hits = query_cache
-                        .entry((binding.cache_key.clone(), tokens.as_slice()))
-                        .or_insert_with(|| {
-                            Self::placement_matches(&binding, Some(tokens), None, true)
-                        })
-                        .as_slice();
+                for (index, tokens) in prompts.iter().enumerate() {
+                    let key = (binding.cache_key.clone(), index);
+                    if !query_cache.contains_key(&key) {
+                        let local =
+                            Self::hashes_for(hashes, binding.block_size, None, prompts, index);
+                        let found = Self::placement_matches_with(&binding, local);
+                        query_cache.insert(key.clone(), found);
+                    }
+                    let hits = query_cache[&key].as_slice();
                     let matches: Vec<_> = hits
                         .iter()
                         .filter(|hit| hit.target == binding.target)
@@ -3138,6 +3173,7 @@ mod tests {
             fn estimate_prefill_work(
                 &self,
                 _inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
+                _hashes: &mut PromptHashes,
             ) -> Vec<PrefillWorkEstimate> {
                 unreachable!("ordinary-only qualification must not enter PD selection")
             }
@@ -3146,6 +3182,7 @@ mod tests {
                 &self,
                 _inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
                 _sequences: u32,
+                _hashes: &mut PromptHashes,
             ) -> Vec<DecodeWorkEstimate> {
                 unreachable!("ordinary-only qualification must not enter PD selection")
             }
@@ -3742,13 +3779,16 @@ mod tests {
         let prompts = [vec![1, 2, 3, 4, 5, 6]];
         let batch = [prompts[0].clone(), prompts[0].clone()];
         let other = [vec![1, 2, 3, 4, 5, 6, 7, 8]];
-        let work = policy.estimate_prefill_work(&[
-            (&workers[0], &prompts, false),
-            (&workers[0], &batch, true),
-            (&workers[1], &prompts, true),
-            (&workers[2], &prompts, true),
-            (&workers[0], &other, true),
-        ]);
+        let work = policy.estimate_prefill_work(
+            &[
+                (&workers[0], &prompts, false),
+                (&workers[0], &batch, true),
+                (&workers[1], &prompts, true),
+                (&workers[2], &prompts, true),
+                (&workers[0], &other, true),
+            ],
+            &mut PromptHashes::new(),
+        );
         assert_eq!(matches.calls.load(Ordering::Relaxed), 3);
         assert_eq!(
             work.iter()
@@ -4232,9 +4272,11 @@ mod tests {
         let context: HashMap<String, u64> = workers
             .iter()
             .map(|worker| {
-                let estimate = kv_aware_ops(&policy)
-                    .unwrap()
-                    .estimate_decode_work(&[(worker.as_ref(), &prompts[..], true)], 1);
+                let estimate = kv_aware_ops(&policy).unwrap().estimate_decode_work(
+                    &[(worker.as_ref(), &prompts[..], true)],
+                    1,
+                    &mut PromptHashes::new(),
+                );
                 (
                     worker.url().to_owned(),
                     estimate[0].additional_tokens.expect("verified identity"),
@@ -4267,9 +4309,11 @@ mod tests {
         let workers = decode_pool(&["http://d0"]);
         let ids: Vec<u32> = (0..8 * block_size).collect();
         let prompts = vec![ids];
-        let estimates = kv_aware_ops(&policy)
-            .unwrap()
-            .estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), false)], 1);
+        let estimates = kv_aware_ops(&policy).unwrap().estimate_decode_work(
+            &[(workers[0].as_ref(), prompts.as_slice(), false)],
+            1,
+            &mut PromptHashes::new(),
+        );
         assert_eq!(estimates, vec![DecodeWorkEstimate::default()]);
     }
 
@@ -4281,8 +4325,16 @@ mod tests {
         let ids: Vec<u32> = (0..8 * block_size).collect();
         let prompts = vec![ids];
         let ops = kv_aware_ops(&policy).unwrap();
-        let one = ops.estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), true)], 1);
-        let four = ops.estimate_decode_work(&[(workers[0].as_ref(), prompts.as_slice(), true)], 4);
+        let one = ops.estimate_decode_work(
+            &[(workers[0].as_ref(), prompts.as_slice(), true)],
+            1,
+            &mut PromptHashes::new(),
+        );
+        let four = ops.estimate_decode_work(
+            &[(workers[0].as_ref(), prompts.as_slice(), true)],
+            4,
+            &mut PromptHashes::new(),
+        );
         // Four device blocks of eight are reused, so half the prompt is billable.
         assert_eq!(one[0].additional_tokens, Some(16));
         assert_eq!(four[0].additional_tokens, Some(16 * 4));
