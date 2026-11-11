@@ -522,6 +522,7 @@ fn start_prefill_pollers(
     let poll_ms = ctx.router_config.prefill_load_poll_ms?;
     let table = Arc::new(crate::backend::prefill_load::PrefillLoadTable::new());
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let mut polled = 0usize;
     for worker in ctx.worker_registry.get_prefill_workers() {
         let url = worker.base_url().to_string();
         let http_base = if url.starts_with("http://") || url.starts_with("https://") {
@@ -538,6 +539,7 @@ fn start_prefill_pollers(
         let Some(http_base) = http_base else {
             continue;
         };
+        polled += 1;
         tokio::spawn(crate::backend::prefill_load::poll_worker(
             ctx.client.clone(),
             url,
@@ -548,6 +550,7 @@ fn start_prefill_pollers(
         ));
     }
     pd_load.attach_prefill_load(table);
+    info!("prefill load: polling {polled} prefill worker(s) every {poll_ms} ms");
     Some(shutdown)
 }
 

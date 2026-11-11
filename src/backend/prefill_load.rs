@@ -12,7 +12,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde::Deserialize;
 use tokio::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Latest remaining-prefill sample reported by one worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,8 +120,17 @@ pub async fn poll_worker(
             sample_seq,
             received_at: Instant::now(),
         };
+        let first = table.get(&instance_id).is_none();
         if sample.is_newer_than(table.get(&instance_id)) {
             table.store(&instance_id, sample);
+            if first {
+                info!(
+                    %instance_id,
+                    sample_seq = sample.sample_seq,
+                    remaining_tokens = sample.remaining_tokens,
+                    "prefill load: first sample received"
+                );
+            }
         }
     }
 }
