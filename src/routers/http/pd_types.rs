@@ -191,7 +191,7 @@ pub struct PdSelection {
 #[derive(Debug, Default)]
 pub struct PdLoadManager {
     loads: Arc<Mutex<Loads>>,
-    prefill_load: parking_lot::Mutex<Option<Arc<crate::backend::prefill_load::PrefillLoadTable>>>
+    prefill_load: parking_lot::Mutex<Option<Arc<crate::backend::prefill_load::PrefillLoadTable>>>,
 }
 
 impl PdLoadManager {

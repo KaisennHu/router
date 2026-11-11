@@ -428,10 +428,13 @@ fn start_prefill_pollers(
         let http_base = if url.starts_with("http://") || url.starts_with("https://") {
             Some(url.clone())
         } else {
-            ctx.router_config.prefill_load_urls.iter().find_map(|entry| {
-                let (key, value) = entry.split_once('=')?;
-                (key == url).then(|| value.to_string())
-            })
+            ctx.router_config
+                .prefill_load_urls
+                .iter()
+                .find_map(|entry| {
+                    let (key, value) = entry.split_once('=')?;
+                    (key == url).then(|| value.to_string())
+                })
         };
         let Some(http_base) = http_base else {
             continue;
@@ -1196,7 +1199,7 @@ impl PdRouterBase {
             None
         };
         let pd_load = Arc::new(PdLoadManager::default());
-        let _prefill_poller_shutdown = start_prefill_pollers(&ctx, &pd_load);
+        let _prefill_poller_shutdown = start_prefill_pollers(ctx, &pd_load);
         Ok(PdRouterBase {
             kv_state,
             pd_load,

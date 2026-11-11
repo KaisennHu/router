@@ -659,16 +659,24 @@ impl Router {
         let interval = Duration::from_millis(poll_ms);
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
         for worker_url in worker_urls {
-            let http_base = if worker_url.starts_with("http://")
-                || worker_url.starts_with("https://")
-            {
-                Some(worker_url.split('@').next().unwrap_or(worker_url).to_string())
-            } else {
-                ctx.router_config.prefill_load_urls.iter().find_map(|entry| {
-                    let (key, value) = entry.split_once('=')?;
-                    (key == worker_url).then(|| value.to_string())
-                })
-            };
+            let http_base =
+                if worker_url.starts_with("http://") || worker_url.starts_with("https://") {
+                    Some(
+                        worker_url
+                            .split('@')
+                            .next()
+                            .unwrap_or(worker_url)
+                            .to_string(),
+                    )
+                } else {
+                    ctx.router_config
+                        .prefill_load_urls
+                        .iter()
+                        .find_map(|entry| {
+                            let (key, value) = entry.split_once('=')?;
+                            (key == worker_url).then(|| value.to_string())
+                        })
+                };
             let Some(http_base) = http_base else {
                 continue;
             };
