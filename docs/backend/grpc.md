@@ -6,14 +6,16 @@ HTTP `http://` workers stay a transparent reverse proxy of OpenAI requests.
 
 The current gRPC wire sends router-produced `token_ids`:
 
-1. The router receives HTTP `/v1/chat/completions`.
-2. `vllm-chat` and `vllm-tokenizer` render and tokenize the chat request.
+1. The router receives HTTP `/v1/chat/completions` or `/v1/completions`.
+2. `vllm-chat` and `vllm-tokenizer` render the chat template (chat) or encode
+   the completion prompt; client `list[int]` prompts bypass both.
 3. The router selects a worker.
-4. The router sends `GenerateRequest { prompt: TokenIds, ... }`.
-5. Returned token IDs/text are adapted back into OpenAI JSON or SSE.
+4. The router sends `GenerateRequest { prompt: TokenIds, ... }` per sequence.
+5. Returned token IDs/text are adapted back into OpenAI JSON or SSE, including
+   per-sequence choices, logprobs and `echo`.
 
-This is the current backend contract, not a policy that gRPC can never support
-text prompts or richer payloads.
+Chat requests still send `token_ids` only; the proto `text` prompt and `media`
+fields stay unused by the router.
 
 ## API Compatibility
 
@@ -22,7 +24,7 @@ Support status of the OpenAI HTTP surface when the worker pool is `grpc://`:
 | API | Status | Behavior |
 |---|---|---|
 | `/v1/chat/completions` | Supported | The router renders the chat template and tokenizes, then sends `TokenIds`. |
-| `/v1/completions` | Supported, token-id prompts only | `prompt` must be `list[int]`; ids go straight to the wire. Text prompts and fields the chat shape cannot express (`suffix`, `best_of`, `n > 1`, `json_schema`, `logprobs`, `echo`, `return_hidden_states`, `documents`) are rejected with `400`. |
+| `/v1/completions` | Supported | Full vLLM v1 completions surface. Every prompt form is accepted, `n`/batched prompts fan out into one gRPC request per sequence, and `logprobs`, `echo`, `json_schema`, `return_token_ids` and `logprob_token_ids` are mapped onto the proto. `suffix` needs FIM rendering and `best_of` is gone from the vLLM v1 API; both return `400` with the reason. |
 | `/v1/responses`, `/v1/embeddings`, `/v1/rerank`, `/generate`, `/inference/v1/generate` | Not supported | Rejected with `400` before dispatch, so they are client errors and never reach a worker. |
 | `/v1/models`, `/health` | Supported | Answered through the gRPC control/health services. |
 | `/health_generate` | Not supported | Returns `501`; use `/health` for gRPC readiness. |
@@ -32,23 +34,44 @@ listed under [Capability Boundaries](#capability-boundaries).
 
 ### `/v1/completions` on a gRPC pool
 
-A gRPC pool also serves `/v1/completions` with token-id prompts only:
-`prompt: [int]` skips the chat template (step 2 above) and the client's ids go
-straight to the worker. Text and nested prompts return 400. Routing honors
-`session_params.session_id` like chat; without one, token-id prompts create no
-prefix-cache affinity (cache_aware balances them on load alone).
+A gRPC pool serves the vLLM v1 completions surface:
+
+- **Prompts.** `str`, `list[str]`, `list[int]` and `list[list[int]]`. Text is
+  tokenized once by the router frontend (outside policy and retry); client ids
+  go straight to the wire. `add_special_tokens` defaults to `true`.
+- **`n`.** The engine rejects `num_sequences > 1` and hardcodes
+  `SequenceOutput.index = 0`, so `n` fans out into one single-choice request
+  per sample and the choices are merged back with indices `0..n-1`.
+- **Batched prompts.** One gRPC request carries one prompt, so a batched
+  prompt fans out into one admission plus dispatch per prompt. Non-streaming
+  replies merge into one `text_completion` body (sequential `index`, summed
+  usage); streaming replies merge SSE frames, rewrite `choices[].index`, keep
+  one `id`/`model`, and emit one usage chunk plus one `[DONE]`.
+- **Logprobs.** `logprobs`, `top_logprobs`, `prompt_logprobs`,
+  `logprob_token_ids` and `return_tokens_as_token_ids` map onto
+  `ResponseOptions.output_logprobs`/`output_candidates` (and the prompt
+  variants) plus the per-token `logprobs`, `ranks` and `candidate_tokens`.
+  `text_offset` is cumulative across chunks.
+- **`echo`.** The prompt text is prefixed to the reply, and `echo` with
+  `max_tokens: 0` answers with the prompt only instead of leaking the one
+  token the engine must generate to finish the stream.
+- **`json_schema`.** Mapped onto the proto structured-output constraint.
 
 The reply is shaped for completion clients — `text_completion` chunks and body
 with `choices[].text`, `cmpl-` ids — while reusing the chat pipeline internally.
 `return_token_ids` gates whether the reply writes `choices[].token_ids`; chat
 responses never carry them. Streaming emits every id even from frames whose
 text is empty. The non-streaming choice also carries `prompt_token_ids` (the
-client's ids) under the same flag; streaming never echoes prompt ids, matching
-vLLM HTTP where that happens only under `echo`.
+client's ids or the tokenized text prompt) under the same flag.
 
-`suffix`, `best_of`, `n > 1`, `json_schema`, `logprobs`, `echo`,
-`return_hidden_states`, `documents`, negative prompt ids, and unknown
-passthrough keys return 400 instead of being dropped.
+Routing honors `session_params.session_id` like chat; without one, token-id
+prompts create no prefix-cache affinity (cache_aware balances them on load
+alone).
+
+`suffix` requires FIM rendering on the serving engine, and `best_of` is no
+longer part of the vLLM v1 completions API; both return `400` with that
+reason. `return_hidden_states`, `documents`, negative prompt ids and unknown
+passthrough keys also return `400` instead of being dropped.
 
 ## Pool Behavior
 
