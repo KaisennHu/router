@@ -34,13 +34,17 @@ pub fn with_prompt(request: &CompletionRequest, prompt: PromptInput) -> Completi
     single
 }
 
-/// Choices each prompt contributes (`n`, defaulting to 1).
-pub fn choices_per_prompt(request: &CompletionRequest) -> u32 {
-    request.n.unwrap_or(1).max(1)
-}
-
-/// Merge already-dispatched per-prompt responses into one client reply.
-pub async fn merge(responses: Vec<Response>, request: &CompletionRequest) -> Response {
+/// Merge responses that each carry `choice_stride` choices.
+///
+/// `choice_stride` is `n` when one request answers each batched prompt, and 1
+/// when `n` was fanned out into `n` single-choice requests. `prompt_repeat`
+/// divides the summed prompt tokens back to one count per prompt.
+pub async fn merge_with(
+    responses: Vec<Response>,
+    request: &CompletionRequest,
+    choice_stride: u32,
+    prompt_repeat: u32,
+) -> Response {
     if responses.is_empty() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -49,13 +53,13 @@ pub async fn merge(responses: Vec<Response>, request: &CompletionRequest) -> Res
             .into_response();
     }
     if request.stream {
-        merge_streams(responses, request).await
+        merge_streams(responses, request, choice_stride, prompt_repeat).await
     } else {
-        merge_bodies(responses).await
+        merge_bodies(responses, prompt_repeat).await
     }
 }
 
-async fn merge_bodies(responses: Vec<Response>) -> Response {
+async fn merge_bodies(responses: Vec<Response>, prompt_repeat: u32) -> Response {
     let mut merged: Option<Value> = None;
     let mut prompt_tokens = 0u64;
     let mut completion_tokens = 0u64;
@@ -109,6 +113,10 @@ async fn merge_bodies(responses: Vec<Response>) -> Response {
         )
             .into_response();
     };
+    if prompt_repeat > 1 {
+        // The same prompt was sent once per choice; count it once.
+        prompt_tokens /= u64::from(prompt_repeat);
+    }
     merged["usage"] = json!({
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -117,8 +125,12 @@ async fn merge_bodies(responses: Vec<Response>) -> Response {
     axum::Json(merged).into_response()
 }
 
-async fn merge_streams(responses: Vec<Response>, request: &CompletionRequest) -> Response {
-    let n = choices_per_prompt(request) as u64;
+async fn merge_streams(
+    responses: Vec<Response>,
+    request: &CompletionRequest,
+    choice_stride: u32,
+    prompt_repeat: u32,
+) -> Response {
     let include_usage = request
         .stream_options
         .as_ref()
@@ -135,7 +147,7 @@ async fn merge_streams(responses: Vec<Response>, request: &CompletionRequest) ->
         let out = tx.clone();
         let shared_id = shared_id.clone();
         let shared_meta = shared_meta.clone();
-        let base = index as u64 * n;
+        let base = index as u64 * u64::from(choice_stride);
         readers.push(tokio::spawn(async move {
             forward_frames(response, out, shared_id, shared_meta, base).await
         }));
@@ -157,6 +169,9 @@ async fn merge_streams(responses: Vec<Response>, request: &CompletionRequest) ->
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
             }
+        }
+        if prompt_repeat > 1 {
+            prompt_tokens /= u64::from(prompt_repeat);
         }
         if include_usage && saw_usage {
             let (id, model, created) = shared_meta
@@ -329,7 +344,7 @@ mod tests {
                 "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
             })),
         ];
-        let merged = merge(responses, &completion_request()).await;
+        let merged = merge_with(responses, &completion_request(), 1, 1).await;
         assert_eq!(merged.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(merged.into_body(), usize::MAX)
             .await
@@ -345,9 +360,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn merge_with_fans_out_choices_and_counts_the_prompt_once() {
+        let responses = vec![
+            body_response(json!({
+                "id": "cmpl-1", "object": "text_completion", "created": 1, "model": "m",
+                "choices": [{"text": "A", "index": 0, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+            })),
+            body_response(json!({
+                "id": "cmpl-2", "object": "text_completion", "created": 1, "model": "m",
+                "choices": [{"text": "B", "index": 0, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+            })),
+        ];
+        let merged = merge_with(responses, &completion_request(), 1, 2).await;
+        assert_eq!(merged.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(merged.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let choices = json["choices"].as_array().unwrap();
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0]["index"], 0);
+        assert_eq!(choices[1]["index"], 1);
+        // `n` repeats the same prompt: prompt tokens count once, output tokens
+        // accumulate across the sampled choices.
+        assert_eq!(json["usage"]["prompt_tokens"], 3);
+        assert_eq!(json["usage"]["completion_tokens"], 4);
+        assert_eq!(json["usage"]["total_tokens"], 7);
+    }
+
+    #[tokio::test]
     async fn a_failed_sub_request_is_returned_instead_of_a_partial_merge() {
         let responses = vec![(StatusCode::SERVICE_UNAVAILABLE, "down").into_response()];
-        let merged = merge(responses, &completion_request()).await;
+        let merged = merge_with(responses, &completion_request(), 1, 1).await;
         assert_eq!(merged.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

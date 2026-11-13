@@ -200,6 +200,36 @@ async fn grpc_pd_completion_tokenizes_text_prompts() {
     assert_eq!(decode.captured()[0].token_ids, vec![1, 2, 3]);
 }
 
+/// `n > 1` fans out into one single-choice dispatch per sequence, because the
+/// engine rejects `num_sequences > 1` and hardcodes `SequenceOutput.index`.
+#[tokio::test]
+async fn grpc_pd_completion_fans_out_n_choices() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+
+    let body: CompletionRequest = serde_json::from_value(json!({
+        "model": "test-model", "prompt": [11, 12], "max_tokens": 8, "n": 2
+    }))
+    .unwrap();
+    let response = router.route_completion(None, &body, None).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    let choices = json["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 2, "{json}");
+    assert_eq!(choices[0]["index"], 0);
+    assert_eq!(choices[1]["index"], 1);
+    assert_eq!(prefill.captured().len(), 2, "one dispatch per choice");
+    assert_eq!(decode.captured().len(), 2, "one dispatch per choice");
+}
+
 /// A batched prompt becomes one gRPC request per prompt, merged into one
 /// `text_completion` body with sequential choice indices.
 #[tokio::test]

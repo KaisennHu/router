@@ -3447,29 +3447,35 @@ impl RouterTrait for VllmPDRouter {
         }
         match serde_json::to_value(body) {
             Ok(request_json) if !self.use_discovery && self.uses_grpc_pools() => {
-                if body.prompt.len() > 1 {
-                    // One gRPC request carries one prompt: fan out, then merge
-                    // the per-prompt replies back into one completion.
+                if body.prompt.len() > 1 || body.n.unwrap_or(1) > 1 {
+                    // One gRPC request carries one prompt and one sequence: fan
+                    // out `n` choices too, then merge the replies back into one
+                    // completion. The engine rejects `num_sequences > 1`.
+                    let n = body.n.unwrap_or(1).max(1);
                     let prompts = super::grpc_completion_batch::split_prompt(&body.prompt);
-                    let mut responses = Vec::with_capacity(prompts.len());
+                    let mut responses = Vec::with_capacity(prompts.len() * n as usize);
                     for prompt in prompts {
-                        let single = super::grpc_completion_batch::with_prompt(body, prompt);
-                        let single_json = match serde_json::to_value(&single) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                return (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Serialization error: {error}"),
-                                )
-                                    .into_response();
-                            }
-                        };
-                        responses.push(
-                            self.route_grpc_completion_single(headers, &single, single_json)
-                                .await,
-                        );
+                        for _ in 0..n {
+                            let mut single =
+                                super::grpc_completion_batch::with_prompt(body, prompt.clone());
+                            single.n = Some(1);
+                            let single_json = match serde_json::to_value(&single) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        format!("Serialization error: {error}"),
+                                    )
+                                        .into_response();
+                                }
+                            };
+                            responses.push(
+                                self.route_grpc_completion_single(headers, &single, single_json)
+                                    .await,
+                            );
+                        }
                     }
-                    return super::grpc_completion_batch::merge(responses, body).await;
+                    return super::grpc_completion_batch::merge_with(responses, body, 1, n).await;
                 }
                 self.route_grpc_completion_single(headers, body, request_json)
                     .await

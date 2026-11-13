@@ -977,23 +977,38 @@ impl Router {
         )
     }
 
-    /// Split a batched completion into one gRPC request per prompt, then merge.
+    /// Split a batched or multi-choice completion into one gRPC request per
+    /// sequence, then merge.
+    ///
+    /// The engine rejects `num_sequences > 1` (`num_sequences > 1 is not
+    /// supported`) and hardcodes `SequenceOutput.index = 0`, so `n` is fanned
+    /// out here instead of relying on the proto field.
     async fn route_completion_fanout(
         &self,
         headers: Option<&HeaderMap>,
         body: &CompletionRequest,
         model_id: Option<&str>,
     ) -> Response {
+        let n = body.n.unwrap_or(1).max(1);
         let prompts = super::grpc_completion_batch::split_prompt(&body.prompt);
-        let mut responses = Vec::with_capacity(prompts.len());
+        let mut responses = Vec::with_capacity(prompts.len() * n as usize);
         for prompt in prompts {
-            let single = super::grpc_completion_batch::with_prompt(body, prompt);
-            responses.push(
-                self.route_prepared_request(headers, &single, "/v1/completions", model_id, None)
+            for _ in 0..n {
+                let mut single = super::grpc_completion_batch::with_prompt(body, prompt.clone());
+                single.n = Some(1);
+                responses.push(
+                    self.route_prepared_request(
+                        headers,
+                        &single,
+                        "/v1/completions",
+                        model_id,
+                        None,
+                    )
                     .await,
-            );
+                );
+            }
         }
-        super::grpc_completion_batch::merge(responses, body).await
+        super::grpc_completion_batch::merge_with(responses, body, 1, n).await
     }
 
     /// Get worker URLs for a specific model
@@ -2806,16 +2821,16 @@ impl RouterTrait for Router {
         body: &CompletionRequest,
         model_id: Option<&str>,
     ) -> Response {
-        // A gRPC request carries one prompt, so a batched completion fans out
-        // into one admission + dispatch per prompt and merges the replies.
-        if body.prompt.len() > 1 && self.uses_grpc_pool() {
+        // A gRPC request carries one prompt and one sequence: batched prompts
+        // and `n > 1` fan out into one admission + dispatch per sequence and
+        // are merged back into one reply.
+        if self.uses_grpc_pool() && (body.prompt.len() > 1 || body.n.unwrap_or(1) > 1) {
             return self.route_completion_fanout(headers, body, model_id).await;
         }
         self.route_prepared_request(headers, body, "/v1/completions", model_id, None)
             .await
     }
 
-    /// Split a batched completion into one gRPC request per prompt, then merge.
     async fn route_completion_raw(
         &self,
         headers: Option<&HeaderMap>,
@@ -2827,7 +2842,7 @@ impl RouterTrait for Router {
         let effective_model_id = model_id
             .or_else(|| body.get_model())
             .filter(|model| self.worker_registry.has_model(model));
-        if body.prompt.len() > 1 && self.uses_grpc_pool() {
+        if self.uses_grpc_pool() && (body.prompt.len() > 1 || body.n.unwrap_or(1) > 1) {
             return self
                 .route_completion_fanout(headers, body.as_ref(), effective_model_id)
                 .await;
