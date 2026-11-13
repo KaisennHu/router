@@ -4,6 +4,7 @@ mod completion_output;
 mod completion_route;
 pub mod dp_utils;
 mod epd;
+mod grpc_completion_batch;
 pub mod logprobs_merge;
 pub mod openai_router;
 mod pd_cached_tokens;

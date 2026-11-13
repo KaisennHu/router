@@ -696,6 +696,45 @@ pub fn tokenize_chat_request_timed(
     }
 }
 
+/// Tokenize one `/v1/completions` text prompt with the model tokenizer.
+///
+/// Test pins return their ids unchanged, exactly like chat prompts do, so the
+/// completion tests do not need model assets.
+pub fn tokenize_completion_text(
+    frontend: &FrontendHandle,
+    text: &str,
+    add_special_tokens: bool,
+) -> anyhow::Result<Vec<u32>> {
+    match &frontend.0 {
+        Frontend::TestIds(ids) => {
+            if ids.is_empty() {
+                return Err(anyhow!("pinned test token_ids are empty"));
+            }
+            Ok(ids.clone())
+        }
+        Frontend::Vllm(vllm) => vllm
+            .tokenizer()
+            .encode(text, add_special_tokens)
+            .map_err(|error| anyhow!("completion tokenization failed: {error}")),
+    }
+}
+
+/// Decode prompt ids back to text for `echo`; test pins have no tokenizer.
+pub fn decode_completion_text(
+    frontend: &FrontendHandle,
+    ids: &[u32],
+    skip_special_tokens: bool,
+) -> anyhow::Result<Option<String>> {
+    match &frontend.0 {
+        Frontend::TestIds(_) => Ok(None),
+        Frontend::Vllm(vllm) => vllm
+            .tokenizer()
+            .decode(ids, skip_special_tokens)
+            .map(Some)
+            .map_err(|error| anyhow!("completion prompt detokenization failed: {error}")),
+    }
+}
+
 fn tokenize_vllm(request: &ChatCompletionRequest, frontend: &VllmFrontend) -> Result<TokenizeOut> {
     if request
         .tools

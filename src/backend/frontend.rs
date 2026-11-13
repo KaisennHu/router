@@ -11,7 +11,10 @@ use axum::response::Response;
 
 use super::grpc::{FirstOutputCallback, GrpcEngineBackend, KvHandoff};
 use super::l1_encode_cache::{L1CacheConfig, L1CacheStats};
-use super::preprocess::{tokenize_chat_request_timed, FrontendHandle, TokenizeOut, TokenizerCache};
+use super::preprocess::{
+    decode_completion_text, tokenize_chat_request_timed, tokenize_completion_text, FrontendHandle,
+    TokenizeOut, TokenizerCache,
+};
 use crate::protocols::spec::ChatCompletionRequest;
 use crate::tokenizer::{TokenizerCacheConfig, TokenizerCacheStats};
 
@@ -54,6 +57,8 @@ pub struct PreparedRequest {
     pub shape: ResponseShape,
     /// Client opted in with `return_token_ids`; ids are withheld otherwise.
     pub emit_token_ids: bool,
+    /// `/v1/completions` options (`echo`, `logprobs`, …); `None` for chat.
+    pub completion: Option<crate::backend::convert::CompletionOptions>,
 }
 
 /// Load-once tokenizer + tonic client. One replica per router process.
@@ -168,12 +173,101 @@ impl EngineFrontend {
             t_req,
             shape: ResponseShape::Chat,
             emit_token_ids: false,
+            completion: None,
         })
     }
 
-    /// Wire adapter path for `/v1/completions` on the gRPC pool: the client
-    /// already sent token ids, so there is no chat template / router tokenize.
-    /// Sampling defaults are resolved like `prepare`; encode fields report 0.
+    /// Wire adapter path for `/v1/completions` on the gRPC pool.
+    ///
+    /// Accepts every prompt form. Text is tokenized once here (outside policy
+    /// and retry) with the model tokenizer; client ids pass through untouched.
+    /// One `PreparedRequest` comes back per prompt sequence, in client order,
+    /// so batched prompts can be admitted and dispatched independently.
+    pub async fn prepare_completions(
+        &self,
+        request: &crate::protocols::spec::CompletionRequest,
+    ) -> Result<Vec<PreparedRequest>, PrepareError> {
+        let lowered = crate::backend::convert::prepare_grpc_completion(request)
+            .map_err(PrepareError::Invalid)?;
+        let crate::backend::convert::PreparedCompletion {
+            mut chat,
+            prompts,
+            echo_texts,
+            emit_token_ids,
+            options,
+        } = lowered;
+        let add_special_tokens = match request.other.get("add_special_tokens") {
+            None => true,
+            Some(value) => value.as_bool().ok_or_else(|| {
+                PrepareError::Invalid("add_special_tokens must be a boolean".to_string())
+            })?,
+        };
+        let (handle, t_req, resolve_ms) = self.resolve_with_defaults(&mut chat).await?;
+        let chat = Arc::new(chat);
+        let mut prepared = Vec::with_capacity(prompts.len());
+        for (prompt, echo_text) in prompts.into_iter().zip(echo_texts) {
+            let (token_ids, encode_ms, encode_backend): (Vec<u32>, f64, &'static str) = match prompt
+            {
+                crate::backend::convert::CompletionPrompt::Ids(ids) => {
+                    (ids, 0.0, "completions-token-ids")
+                }
+                crate::backend::convert::CompletionPrompt::Text(text) => {
+                    let started = Instant::now();
+                    let ids = tokenize_completion_text(&handle, &text, add_special_tokens)
+                        .map_err(|error| PrepareError::Unavailable(error.to_string()))?;
+                    (
+                        ids,
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        "vllm-tokenizer",
+                    )
+                }
+            };
+            if token_ids.is_empty() {
+                return Err(PrepareError::Invalid(
+                    "completion prompt produced no token ids".to_string(),
+                ));
+            }
+            let mut tokenized = TokenizeOut {
+                token_ids: Arc::from(token_ids),
+                adapt_ms: 0.0,
+                template_ms: 0.0,
+                encode_ms,
+                encode_backend,
+                cached_tokens: 0,
+            };
+            truncate_grpc_prompt(&chat, &mut tokenized)?;
+            let echo_text = if options.echo {
+                match echo_text {
+                    Some(text) => Some(text),
+                    None => decode_completion_text(
+                        &handle,
+                        &tokenized.token_ids,
+                        chat.skip_special_tokens,
+                    )
+                    .map_err(|error| PrepareError::Unavailable(error.to_string()))?,
+                }
+            } else {
+                None
+            };
+            prepared.push(PreparedRequest {
+                request: chat.clone(),
+                tokenized,
+                handle: handle.clone(),
+                resolve_ms,
+                t_req,
+                shape: ResponseShape::Completion,
+                emit_token_ids,
+                completion: Some(crate::backend::convert::CompletionOptions {
+                    echo_text,
+                    ..options.clone()
+                }),
+            });
+        }
+        Ok(prepared)
+    }
+
+    /// Single-prompt convenience for callers that already know one prompt.
+    #[allow(dead_code)]
     pub async fn prepare_token_ids(
         &self,
         mut request: ChatCompletionRequest,
@@ -198,6 +292,7 @@ impl EngineFrontend {
             t_req,
             shape: ResponseShape::Completion,
             emit_token_ids,
+            completion: None,
         })
     }
 

@@ -10,7 +10,7 @@ use crate::backend::pb;
 use crate::protocols::spec::{
     ChatChoice, ChatCompletionResponse, ChatCompletionStreamResponse, ChatMessage,
     ChatMessageDelta, ChatStreamChoice, CompletionChoice, CompletionResponse,
-    CompletionStreamChoice, CompletionStreamResponse, Usage, UserMessageContent,
+    CompletionStreamChoice, CompletionStreamResponse, LogProbs, Usage, UserMessageContent,
 };
 
 pub fn now_secs() -> u64 {
@@ -93,12 +93,14 @@ pub fn format_sse<T: serde::Serialize>(chunk: &T) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn sse_chunk(
     shape: ResponseShape,
+    index: u32,
     id: &str,
     model: &str,
     created: u64,
     text: &str,
     include_role: bool,
     finish_reason: Option<String>,
+    logprobs: Option<LogProbs>,
     token_ids: Option<Vec<u32>>,
 ) -> String {
     match shape {
@@ -112,11 +114,13 @@ pub fn sse_chunk(
             None,
         )),
         ResponseShape::Completion => format_sse(&completion_stream_chunk(
+            index,
             id,
             model,
             created,
             text,
             finish_reason,
+            logprobs,
             token_ids,
         )),
     }
@@ -138,12 +142,15 @@ pub fn sse_usage_chunk(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn completion_stream_chunk(
+    index: u32,
     id: &str,
     model: &str,
     created: u64,
     text: &str,
     finish_reason: Option<String>,
+    logprobs: Option<LogProbs>,
     token_ids: Option<Vec<u32>>,
 ) -> CompletionStreamResponse {
     CompletionStreamResponse {
@@ -153,8 +160,8 @@ pub fn completion_stream_chunk(
         model: model.to_string(),
         choices: vec![CompletionStreamChoice {
             text: text.to_string(),
-            index: 0,
-            logprobs: None,
+            index,
+            logprobs,
             finish_reason,
             token_ids,
         }],
@@ -219,6 +226,26 @@ pub fn completion_final_response(
 
 pub const SSE_DONE: &str = "data: [DONE]\n\n";
 
+/// Final `/v1/completions` body: one choice per generated sequence, in index
+/// order, with the caller's usage totals.
+pub fn completion_response(
+    id: &str,
+    model: &str,
+    created: u64,
+    choices: Vec<CompletionChoice>,
+    usage: Usage,
+) -> CompletionResponse {
+    CompletionResponse {
+        id: id.to_string(),
+        object: "text_completion".to_string(),
+        created,
+        model: model.to_string(),
+        choices,
+        usage: Some(usage),
+        system_fingerprint: None,
+    }
+}
+
 pub fn final_response(
     id: &str,
     model: &str,
@@ -277,11 +304,13 @@ mod tests {
     fn completion_sse_chunk_carries_text_not_delta() {
         let line = sse_chunk(
             ResponseShape::Completion,
+            0,
             "cmpl-1",
             "m",
             1,
             "hi",
             true,
+            None,
             None,
             Some(vec![7]),
         );

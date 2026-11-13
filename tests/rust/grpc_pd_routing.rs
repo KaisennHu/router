@@ -179,9 +179,10 @@ async fn grpc_pd_completion_passes_client_token_ids_to_both_legs() {
     assert_eq!(decode.captured()[0].token_ids, vec![11, 12, 13, 14]);
 }
 
-/// A prompt the gRPC wire cannot carry is rejected before any worker is used.
+/// Text prompts are tokenized by the router; the client's ids still win when
+/// the prompt already carries them.
 #[tokio::test]
-async fn grpc_pd_completion_rejects_text_prompts() {
+async fn grpc_pd_completion_tokenizes_text_prompts() {
     let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
         finish_kv_transfer_params: Some(prefill_kv()),
         ..Default::default()
@@ -193,9 +194,39 @@ async fn grpc_pd_completion_rejects_text_prompts() {
     let response = router
         .route_completion(None, &completion(json!("hello"), false), None)
         .await;
-    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert!(prefill.captured().is_empty());
-    assert!(decode.captured().is_empty());
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    // `pd_router` pins the fake tokenizer to [1, 2, 3].
+    assert_eq!(prefill.captured()[0].token_ids, vec![1, 2, 3]);
+    assert_eq!(decode.captured()[0].token_ids, vec![1, 2, 3]);
+}
+
+/// A batched prompt becomes one gRPC request per prompt, merged into one
+/// `text_completion` body with sequential choice indices.
+#[tokio::test]
+async fn grpc_pd_completion_fans_out_batched_prompts() {
+    let prefill = MockVllmRsServer::spawn_with_state(MockVllmRs {
+        finish_kv_transfer_params: Some(prefill_kv()),
+        ..Default::default()
+    })
+    .await;
+    let decode = MockVllmRsServer::spawn().await;
+    let router = pd_router(&prefill, &decode).await;
+
+    let response = router
+        .route_completion(None, &completion(json!(["a", "b"]), false), None)
+        .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["object"], "text_completion", "{json}");
+    let choices = json["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 2, "{json}");
+    assert_eq!(choices[0]["index"], 0);
+    assert_eq!(choices[1]["index"], 1);
+    assert_eq!(prefill.captured().len(), 2, "one dispatch per prompt");
+    assert_eq!(decode.captured().len(), 2, "one dispatch per prompt");
 }
 
 #[tokio::test]

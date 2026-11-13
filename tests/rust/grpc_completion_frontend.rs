@@ -56,8 +56,9 @@ async fn grpc_prefix_selection_uses_the_ids_actually_dispatched() {
         let expected = if completion {
             let request: CompletionRequest = serde_json::from_value(body.clone()).unwrap();
             let lowered = prepare_grpc_completion(&request).unwrap();
+            let token_ids = lowered.single_prompt_ids().unwrap().to_vec();
             frontend
-                .prepare_token_ids(lowered.chat, lowered.token_ids, false)
+                .prepare_token_ids(lowered.chat, token_ids, false)
                 .await
                 .unwrap()
                 .tokenized

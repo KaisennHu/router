@@ -969,6 +969,33 @@ impl Router {
         self.worker_registry.get_all_urls()
     }
 
+    /// True when every worker speaks gRPC.
+    fn uses_grpc_pool(&self) -> bool {
+        matches!(
+            crate::backend::classify_worker_urls(&self.get_worker_urls()),
+            Ok(Some(crate::backend::WorkerPoolKind::Grpc))
+        )
+    }
+
+    /// Split a batched completion into one gRPC request per prompt, then merge.
+    async fn route_completion_fanout(
+        &self,
+        headers: Option<&HeaderMap>,
+        body: &CompletionRequest,
+        model_id: Option<&str>,
+    ) -> Response {
+        let prompts = super::grpc_completion_batch::split_prompt(&body.prompt);
+        let mut responses = Vec::with_capacity(prompts.len());
+        for prompt in prompts {
+            let single = super::grpc_completion_batch::with_prompt(body, prompt);
+            responses.push(
+                self.route_prepared_request(headers, &single, "/v1/completions", model_id, None)
+                    .await,
+            );
+        }
+        super::grpc_completion_batch::merge(responses, body).await
+    }
+
     /// Get worker URLs for a specific model
     pub fn get_worker_urls_for_model(&self, model_id: Option<&str>) -> Vec<String> {
         let workers = match model_id {
@@ -1459,16 +1486,8 @@ impl Router {
                 Some(crate::backend::WorkerPoolKind::Grpc),
                 Some(GrpcRequestRef::Completion(completion)),
             ) if route == "/v1/completions" => {
-                let lowered = match crate::backend::prepare_grpc_completion(completion) {
-                    Ok(lowered) => lowered,
-                    Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
-                };
-                match self
-                    .frontend
-                    .prepare_token_ids(lowered.chat, lowered.token_ids, lowered.emit_token_ids)
-                    .await
-                {
-                    Ok(prepared) => Some(prepared),
+                match self.frontend.prepare_completions(completion).await {
+                    Ok(mut prepared) => prepared.pop(),
                     Err(error) => {
                         return (prepare_error_status(&error), error.to_string()).into_response();
                     }
@@ -2787,10 +2806,16 @@ impl RouterTrait for Router {
         body: &CompletionRequest,
         model_id: Option<&str>,
     ) -> Response {
+        // A gRPC request carries one prompt, so a batched completion fans out
+        // into one admission + dispatch per prompt and merges the replies.
+        if body.prompt.len() > 1 && self.uses_grpc_pool() {
+            return self.route_completion_fanout(headers, body, model_id).await;
+        }
         self.route_prepared_request(headers, body, "/v1/completions", model_id, None)
             .await
     }
 
+    /// Split a batched completion into one gRPC request per prompt, then merge.
     async fn route_completion_raw(
         &self,
         headers: Option<&HeaderMap>,
@@ -2802,6 +2827,11 @@ impl RouterTrait for Router {
         let effective_model_id = model_id
             .or_else(|| body.get_model())
             .filter(|model| self.worker_registry.has_model(model));
+        if body.prompt.len() > 1 && self.uses_grpc_pool() {
+            return self
+                .route_completion_fanout(headers, body.as_ref(), effective_model_id)
+                .await;
+        }
         let policy = self.policy_for_model(effective_model_id);
         let preserve_raw =
             self.intra_node_data_parallel_size == 1 && kv_aware_ops(policy.as_ref()).is_some();

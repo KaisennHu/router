@@ -2012,32 +2012,31 @@ impl VllmPDRouter {
         .await
     }
 
-    /// `/v1/completions` on static `grpc://` pools: the client already sends
-    /// token ids, so there is no router-side tokenize and admission scores P by
-    /// those same ids.
-    async fn route_grpc_completion(
+    /// `/v1/completions` on static `grpc://` pools: the client's prompt is
+    /// tokenized once (text) or passed through (ids), then admitted and
+    /// dispatched. Batched prompts fan out into one request per prompt.
+    async fn route_grpc_completion_single(
         &self,
         headers: Option<&HeaderMap>,
         body: &crate::protocols::spec::CompletionRequest,
         request_json: Value,
     ) -> Response {
-        let lowered = match crate::backend::prepare_grpc_completion(body) {
-            Ok(lowered) => lowered,
-            Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
-        };
         let workers = match self.available_grpc_workers() {
             Ok(workers) => workers,
             Err(response) => return *response,
         };
-        let prepared = match self
-            .grpc_frontend
-            .prepare_token_ids(lowered.chat, lowered.token_ids, lowered.emit_token_ids)
-            .await
-        {
+        let mut prepared = match self.grpc_frontend.prepare_completions(body).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 return (prepare_error_status(&error), error.to_string()).into_response();
             }
+        };
+        let Some(prepared) = prepared.pop() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                "completion prompt produced no token ids",
+            )
+                .into_response();
         };
         self.route_grpc_prepared(headers, request_json, "/v1/completions", prepared, workers)
             .await
@@ -3448,7 +3447,31 @@ impl RouterTrait for VllmPDRouter {
         }
         match serde_json::to_value(body) {
             Ok(request_json) if !self.use_discovery && self.uses_grpc_pools() => {
-                self.route_grpc_completion(headers, body, request_json)
+                if body.prompt.len() > 1 {
+                    // One gRPC request carries one prompt: fan out, then merge
+                    // the per-prompt replies back into one completion.
+                    let prompts = super::grpc_completion_batch::split_prompt(&body.prompt);
+                    let mut responses = Vec::with_capacity(prompts.len());
+                    for prompt in prompts {
+                        let single = super::grpc_completion_batch::with_prompt(body, prompt);
+                        let single_json = match serde_json::to_value(&single) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Serialization error: {error}"),
+                                )
+                                    .into_response();
+                            }
+                        };
+                        responses.push(
+                            self.route_grpc_completion_single(headers, &single, single_json)
+                                .await,
+                        );
+                    }
+                    return super::grpc_completion_batch::merge(responses, body).await;
+                }
+                self.route_grpc_completion_single(headers, body, request_json)
                     .await
             }
             Ok(body) => {

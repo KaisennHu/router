@@ -46,7 +46,10 @@ pub use control::{
     get_grpc_model_info, get_grpc_server_info, grpc_engine_version_older_than_0_30,
     model_info_json, openai_models_json, server_info_json, warn_old_grpc_pd_workers,
 };
-pub use convert::prepare_grpc_completion;
+pub use convert::{
+    chat_to_generate_request_with_options, prepare_grpc_completion, CompletionOptions,
+    CompletionPrompt, PreparedCompletion,
+};
 pub use detect::{
     classify_worker_urls, connection_mode_from_url, grpc_connect_uri, is_grpc_url, parse_dp_rank,
     strip_dp_suffix, WorkerPoolKind,
