@@ -112,6 +112,25 @@ impl<'a, 'b> Eligibility<'a, 'b> {
 /// failure mode was an engine that filled and stopped completing requests behind it.
 const KV_CAPACITY_WATERMARK_PERCENT: u64 = 95;
 
+/// Prompt tokens a candidate must be charged when the request cannot claim credit.
+///
+/// `decode_context` is absent for a salted request, or for a base whose identity is
+/// unverified. Charging zero there would make an engine that is already too full look
+/// free, so the ceiling is evaluated against the whole prompt instead.
+fn uncredited_prompt_tokens(
+    known: Option<u64>,
+    inputs: Option<&HashMap<String, PdPrefillInput>>,
+) -> u64 {
+    if let Some(tokens) = known {
+        return tokens;
+    }
+    inputs
+        .and_then(|inputs| inputs.values().next())
+        .and_then(|input| input.prompts.as_ref())
+        .map(|prompts| prompts.iter().map(|prompt| prompt.len() as u64).sum())
+        .unwrap_or(0)
+}
+
 pub(super) fn select_pd_pair(
     loads: &Loads,
     prefill_workers: &[Arc<dyn Worker>],
@@ -342,12 +361,18 @@ fn select_stage(
         // When every candidate is over, the request still goes to the least
         // projected one - refusing would turn a full pool into 503s - and the
         // decision metric records that the ceiling was exceeded.
+        // A request that cannot claim credit (salted, or a base whose identity is
+        // unverified) has no entry in `decode_context`. Charging zero there would make an
+        // engine that is already too full look free, so fall back to the whole prompt:
+        // that is what such an engine must receive for this request.
+        let uncredited_tokens =
+            uncredited_prompt_tokens(context.prompt_tokens, context.prefill_inputs);
         let additional_tokens = |worker: &Arc<dyn Worker>| -> u64 {
             context
                 .decode_context
                 .and_then(|context| context.get(worker.url()))
                 .copied()
-                .unwrap_or(0)
+                .unwrap_or(uncredited_tokens)
         };
         // `projected` is built from `selected_indices`, so a candidate's endpoint is
         // `endpoints[selected_indices[index]]`. Indexing `endpoints` with the candidate
@@ -377,18 +402,19 @@ fn select_stage(
                         .saturating_mul(100)
                         <= capacity.saturating_mul(KV_CAPACITY_WATERMARK_PERCENT)
                 });
-            // Slots are counted in requests, which live on the stage sample rather
-            // than in the projected load.
+            // Slots are counted in sequences, not requests: `n`/`best_of` fork extra
+            // sequences on a single request. They are integers, so the ceiling is exact -
+            // applying a percentage watermark to a count would make a single-slot engine
+            // never eligible.
             let running = loads
                 .get(&(Stage::Decode, endpoint_of(index)))
                 .map(|sample| {
                     (sample.pending_decode_requests + sample.active_decode_requests) as u64
                 })
                 .unwrap_or(0);
-            let sequences_ok = limits.sequences.is_none_or(|slots| {
-                running.saturating_add(1).saturating_mul(100)
-                    <= slots.saturating_mul(KV_CAPACITY_WATERMARK_PERCENT)
-            });
+            let sequences_ok = limits
+                .sequences
+                .is_none_or(|slots| running.saturating_add(context.decode_sequences as u64) <= slots);
             tokens_ok && sequences_ok
         };
         let eligible: Vec<usize> = (0..projected.len()).filter(|&index| fits(index)).collect();
@@ -404,12 +430,20 @@ fn select_stage(
                 .map(|&index| projected[index].clone())
                 .collect()
         };
+        // Ranking by request count must not also add marginal tokens: `select_decode`
+        // sums the two, which would compare unlike units exactly where the pool has
+        // already fallen back to counts.
+        let marginal = if decode_tokens_known {
+            context.decode_context
+        } else {
+            None
+        };
         let pick = kv.select_decode(
             &candidates,
             context.affinity_key.as_ref(),
             context.lora_name,
             context.cache_salt,
-            context.decode_context,
+            marginal,
         )?;
         let index = if over_capacity {
             pick.index
@@ -1646,6 +1680,7 @@ impl PdRouterBase {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            prompt_tokens: None,
             decode_saturated: None,
             route: "/health_generate",
         };
@@ -1969,6 +2004,42 @@ mod tests {
     use super::*;
     use crate::core::{BasicWorker, DPAwareWorker, Worker, WorkerFactory, WorkerType};
 
+    /// A request that cannot claim credit must still be charged its whole prompt, or the
+    /// ceiling would let an already-full engine look free.
+    #[test]
+    fn uncredited_prompt_counts_the_whole_prompt() {
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "http://p0".to_string(),
+            PdPrefillInput {
+                prompts: Some(Arc::from(vec![vec![1u32; 300], vec![2u32; 200]])),
+                work_by_rank: HashMap::new(),
+                allow_credit: false,
+                fallback_reason: Some("cache_salt"),
+            },
+        );
+        assert_eq!(uncredited_prompt_tokens(None, Some(&inputs)), 500);
+        // A known prompt length wins over the rendered inputs, which the deferred commit
+        // path does not carry.
+        assert_eq!(uncredited_prompt_tokens(Some(700), Some(&inputs)), 700);
+    }
+
+    #[test]
+    fn uncredited_prompt_is_zero_without_a_prompt() {
+        assert_eq!(uncredited_prompt_tokens(None, None), 0);
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "http://p0".to_string(),
+            PdPrefillInput {
+                prompts: None,
+                work_by_rank: HashMap::new(),
+                allow_credit: false,
+                fallback_reason: Some("unverified_model"),
+            },
+        );
+        assert_eq!(uncredited_prompt_tokens(None, Some(&inputs)), 0);
+    }
+
     fn create_test_pd_router() -> PdRouterBase {
         let worker_registry = Arc::new(WorkerRegistry::new());
         let policy_registry =
@@ -2179,6 +2250,7 @@ mod tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            prompt_tokens: None,
             decode_saturated: None,
             route: "/health_generate",
         };
@@ -2211,6 +2283,7 @@ mod tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            prompt_tokens: None,
             decode_saturated: None,
             route: "/health_generate",
         };
@@ -2978,6 +3051,7 @@ mod admission_tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            prompt_tokens: None,
             decode_saturated: None,
             route: "/v1/completions",
         }
@@ -3046,6 +3120,7 @@ mod admission_tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            prompt_tokens: None,
             decode_saturated: None,
             route: "/v1/completions",
         }
@@ -3772,6 +3847,7 @@ mod admission_tests {
                 cache_salt: None,
                 decode_sequences: 1,
                 decode_context: None,
+                prompt_tokens: None,
                 decode_saturated: None,
                 route: "/v1/completions",
             }

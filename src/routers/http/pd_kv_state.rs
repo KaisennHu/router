@@ -861,12 +861,20 @@ impl PdKvState {
             inputs.prefill_policy = Some(prefill_policy.clone());
         }
         let allow_credit = self.credit_by_base(request).await;
+        // Same eligibility rule as the single-stage path: a salted request must not be
+        // credited with unsalted blocks, so the salt check belongs here too. Checking the
+        // model alone could price Decode from a cache the request is not allowed to use.
+        let decode_salt = request.get("cache_salt").and_then(Value::as_str);
         let decode_priced = kv_aware_ops(decode_policy.as_ref()).is_some()
             && decode_workers.iter().any(|worker| {
-                allow_credit
-                    .get(worker.base_url())
-                    .copied()
-                    .unwrap_or(false)
+                KvAwarePolicy::credit_fallback(
+                    decode_salt,
+                    allow_credit
+                        .get(worker.base_url())
+                        .copied()
+                        .unwrap_or(false),
+                )
+                .is_none()
             });
         if !decode_priced {
             crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");

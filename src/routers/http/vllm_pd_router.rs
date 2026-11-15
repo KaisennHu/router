@@ -1261,6 +1261,7 @@ impl VllmPDRouter {
             cache_salt,
             decode_sequences: sequences,
             decode_context: decode_context.as_ref(),
+            prompt_tokens: None,
             decode_saturated: Some(&decode_saturated),
             route: path,
         };
@@ -1437,6 +1438,16 @@ impl VllmPDRouter {
                 .await
         }
         .await;
+        // Measured pressure must still gate the final choice: a worker that filled while
+        // Prefill ran is otherwise picked anyway.
+        let decode_saturated = match self.pd_router.kv_state.as_ref() {
+            Some(state) => state.saturated_workers(&candidates).await,
+            None => Default::default(),
+        };
+        let known_prompt_tokens = input
+            .router_prompts
+            .as_ref()
+            .map(|prompts| prompts.iter().map(|prompt| prompt.len() as u64).sum());
         let context = PdRequestContext {
             prefill_inputs: None,
             model_id: input.model_id.as_deref(),
@@ -1449,7 +1460,8 @@ impl VllmPDRouter {
             cache_salt: input.cache_salt.as_deref(),
             decode_sequences: sequences,
             decode_context: decode_context.as_ref(),
-            decode_saturated: None,
+            prompt_tokens: known_prompt_tokens,
+            decode_saturated: Some(&decode_saturated),
             route: &input.route,
         };
         let committed = self
