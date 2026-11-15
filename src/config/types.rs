@@ -9,6 +9,10 @@ use crate::program_scheduling::{
 };
 
 /// Main router configuration
+pub fn default_decode_max_kv_usage() -> f64 {
+    0.90
+}
+
 pub fn default_kv_event_max_batch_events() -> usize {
     16384
 }
@@ -27,6 +31,9 @@ pub struct RouterConfig {
     /// KV events kept from one message; oversized batches keep the newest events.
     #[serde(default = "default_kv_event_max_batch_events")]
     pub kv_event_max_batch_events: usize,
+    /// KV usage at which a Decode engine stops receiving work.
+    #[serde(default = "default_decode_max_kv_usage")]
+    pub decode_max_kv_usage: f64,
     /// Worker connection mode
     #[serde(default)]
     pub connection_mode: ConnectionMode,
@@ -1309,6 +1316,7 @@ impl Default for RouterConfig {
             },
             pd_kv_event_sources: HashMap::new(),
             kv_event_max_batch_events: default_kv_event_max_batch_events(),
+            decode_max_kv_usage: default_decode_max_kv_usage(),
             policy: PolicyConfig::Random,
             host: "127.0.0.1".to_string(),
             port: 3001,
@@ -2090,6 +2098,7 @@ mod tests {
             },
             pd_kv_event_sources: Default::default(),
             kv_event_max_batch_events: default_kv_event_max_batch_events(),
+            decode_max_kv_usage: default_decode_max_kv_usage(),
             policy: PolicyConfig::PowerOfTwo {
                 load_check_interval_secs: 30,
             },
@@ -2157,6 +2166,7 @@ mod tests {
             },
             pd_kv_event_sources: Default::default(),
             kv_event_max_batch_events: default_kv_event_max_batch_events(),
+            decode_max_kv_usage: default_decode_max_kv_usage(),
             policy: PolicyConfig::CacheAware {
                 cache_threshold: 0.9,
                 balance_abs_threshold: 5,
@@ -2225,6 +2235,7 @@ mod tests {
             },
             pd_kv_event_sources: Default::default(),
             kv_event_max_batch_events: default_kv_event_max_batch_events(),
+            decode_max_kv_usage: default_decode_max_kv_usage(),
             policy: PolicyConfig::RoundRobin,
             host: "::1".to_string(), // IPv6
             port: 8888,

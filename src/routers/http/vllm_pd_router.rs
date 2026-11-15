@@ -1243,6 +1243,12 @@ impl VllmPDRouter {
         // The prepared selection gates deferral; token inputs are retained so
         // cache matches can be recomputed against the tree at dispatch.
         let decode_cache = decode_cache.map(Arc::new);
+        // Measured pressure per Decode engine, dropped from the candidate set even when
+        // no absolute capacity is configured.
+        let decode_saturated = match self.pd_router.kv_state.as_ref() {
+            Some(state) => state.saturated_workers(decode_workers).await,
+            None => Default::default(),
+        };
         let context = PdRequestContext {
             prefill_inputs: prefill_inputs.as_ref(),
             model_id,
@@ -1255,6 +1261,7 @@ impl VllmPDRouter {
             cache_salt,
             decode_sequences: sequences,
             decode_context: decode_context.as_ref(),
+            decode_saturated: Some(&decode_saturated),
             route: path,
         };
         // Existing deployments configure a common connector. Discovery parses
@@ -1442,6 +1449,7 @@ impl VllmPDRouter {
             cache_salt: input.cache_salt.as_deref(),
             decode_sequences: sequences,
             decode_context: decode_context.as_ref(),
+            decode_saturated: None,
             route: &input.route,
         };
         let committed = self

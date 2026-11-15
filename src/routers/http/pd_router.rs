@@ -353,7 +353,18 @@ fn select_stage(
         // `endpoints[selected_indices[index]]`. Indexing `endpoints` with the candidate
         // index would read another engine's queue.
         let endpoint_of = |index: usize| endpoints[selected_indices[index]].clone();
+        // Saturation is measured, not configured: an engine whose KV pool is nearly full,
+        // or that already queues on capacity, stops being a candidate even when no
+        // absolute capacity was discovered.
+        let saturated = |index: usize| -> bool {
+            context
+                .decode_saturated
+                .is_some_and(|set| set.contains(projected[index].url()))
+        };
         let fits = |index: usize| -> bool {
+            if saturated(index) {
+                return false;
+            }
             let worker = &projected[index];
             let limits = kv.decode_limits(worker.as_ref());
             // The projection carries tokens only when every candidate's token count was
@@ -381,6 +392,9 @@ fn select_stage(
             tokens_ok && sequences_ok
         };
         let eligible: Vec<usize> = (0..projected.len()).filter(|&index| fits(index)).collect();
+        let dropped_for_saturation = (0..projected.len())
+            .filter(|&index| saturated(index))
+            .count();
         let over_capacity = eligible.is_empty();
         let candidates: Vec<Arc<dyn Worker>> = if over_capacity {
             projected.clone()
@@ -403,10 +417,22 @@ fn select_stage(
             eligible[pick.index]
         };
         if over_capacity {
+            // Every candidate was refused: either measured pressure or a configured
+            // ceiling. The label says which, so a saturated pool is not mistaken for a
+            // capacity misconfiguration.
+            let outcome = if dropped_for_saturation == projected.len() {
+                "saturated_fallback"
+            } else {
+                "over_capacity_fallback"
+            };
+            crate::metrics::RouterMetrics::record_prefix_routing_decision(
+                "kv_aware", "decode", outcome,
+            );
+        } else if dropped_for_saturation > 0 {
             crate::metrics::RouterMetrics::record_prefix_routing_decision(
                 "kv_aware",
                 "decode",
-                "over_capacity_fallback",
+                "decode_saturated",
             );
         }
         (
@@ -1620,6 +1646,7 @@ impl PdRouterBase {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            decode_saturated: None,
             route: "/health_generate",
         };
         let (selection, _attempt) =
@@ -2152,6 +2179,7 @@ mod tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            decode_saturated: None,
             route: "/health_generate",
         };
         let (selection, attempt) = router
@@ -2183,6 +2211,7 @@ mod tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            decode_saturated: None,
             route: "/health_generate",
         };
         assert!(router.select_and_admit(&empty, &empty, &context).is_none());
@@ -2949,6 +2978,7 @@ mod admission_tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            decode_saturated: None,
             route: "/v1/completions",
         }
     }
@@ -3016,6 +3046,7 @@ mod admission_tests {
             cache_salt: None,
             decode_sequences: 1,
             decode_context: None,
+            decode_saturated: None,
             route: "/v1/completions",
         }
     }
@@ -3741,6 +3772,7 @@ mod admission_tests {
                 cache_salt: None,
                 decode_sequences: 1,
                 decode_context: None,
+                decode_saturated: None,
                 route: "/v1/completions",
             }
         }

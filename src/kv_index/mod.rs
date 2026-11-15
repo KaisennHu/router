@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 pub mod discovery;
 mod endpoints;
 pub mod indexer;
+pub mod saturation;
 pub mod subscriber;
 pub mod types;
 pub mod wire;
@@ -22,6 +23,7 @@ pub use discovery::{
 pub(crate) use endpoints::canonical_endpoint;
 pub use endpoints::{parse_endpoint_mapping, resolve_endpoints};
 pub use indexer::{KvBlockIndexer, MatchQuery, TierMatch};
+pub use saturation::set_decode_max_kv_usage;
 pub use subscriber::local_hashes;
 pub use types::{
     CacheOwnerId, ClearScope, HashMode, Locality, ResidencyOwner, RoutableTarget, SourceId,

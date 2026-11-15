@@ -168,6 +168,15 @@ struct CliArgs {
     )]
     kv_event_max_batch_events: usize,
 
+    /// KV usage at which a Decode engine stops receiving work. Measured from the
+    /// engine's own `/metrics`, so admission needs no configured capacity.
+    #[arg(
+        long = "decode-max-kv-usage",
+        default_value_t = 0.90,
+        value_name = "FRACTION"
+    )]
+    decode_max_kv_usage: f64,
+
     /// Specific policy for prefill nodes in PD mode. kv_aware uses the prefill load profile.
     #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "kv_aware", "power_of_two", "consistent_hash", "sticky_least_loaded", "rendezvous_hash"])]
     prefill_policy: Option<String>,
@@ -630,6 +639,7 @@ impl CliArgs {
         // The decoder keeps the newest events of an oversized batch; publish the
         // configured limit once, before any subscription starts.
         vllm_router_rs::kv_index::set_max_batch_events(self.kv_event_max_batch_events);
+        vllm_router_rs::kv_index::set_decode_max_kv_usage(self.decode_max_kv_usage);
 
         // Build RouterConfig
         Ok(RouterConfig {
@@ -644,6 +654,7 @@ impl CliArgs {
             mode,
             pd_kv_event_sources,
             kv_event_max_batch_events: self.kv_event_max_batch_events,
+            decode_max_kv_usage: self.decode_max_kv_usage,
             policy,
             connection_mode,
             host: self.host.clone(),

@@ -3,7 +3,7 @@ use crate::policies::{AffinityKey, AffinityRecord, RequestHeaders};
 use axum::body::Body;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Custom error type for PD router operations
@@ -201,6 +201,11 @@ pub struct PdRequestContext<'a> {
     /// immediately before Decode is selected. `None` keeps Decode on full
     /// context tokens, or on request counts when those are unknown too.
     pub decode_context: Option<&'a HashMap<String, u64>>,
+    /// Decode workers whose engine reports itself saturated right now (KV pool
+    /// nearly full, or already queuing on capacity). Admission drops them even when
+    /// no absolute capacity is configured, which is the case on builds that publish
+    /// no `cache_config_info`.
+    pub decode_saturated: Option<&'a HashSet<String>>,
     pub route: &'a str,
 }
 

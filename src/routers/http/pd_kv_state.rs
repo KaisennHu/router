@@ -23,6 +23,28 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// are noticed.
 const REFRESH_TICK: Duration = Duration::from_secs(1);
 
+/// How long one saturation scrape may take. A miss drops that base's row, so a stale
+/// "healthy" verdict cannot keep a full engine in the candidate set.
+const SATURATION_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long a saturation verdict stays in force after the last observation.
+///
+/// KV usage is spiky: a 1 s sample missed a 97.9% peak entirely, so a verdict that only
+/// lives for the instant it was seen can never gate a decision.
+const SATURATION_HOLD: Duration = Duration::from_secs(10);
+
+/// One engine's pressure plus the window its verdict remains valid in.
+struct PressureEntry {
+    saturated_until: Option<std::time::Instant>,
+}
+
+impl PressureEntry {
+    fn is_saturated(&self) -> bool {
+        self.saturated_until
+            .is_some_and(|until| until > std::time::Instant::now())
+    }
+}
+
 #[derive(Clone)]
 struct Binding {
     signature: String,
@@ -111,6 +133,9 @@ pub(super) struct PdKvState {
     // nothing to subscribe to, and recording it would only churn the policy's
     // registration epoch — which invalidates live session bindings.
     published: HashSet<String>,
+    // Latest measured pressure per base. Older frontends publish no absolute capacity
+    // but do publish saturation, so admission can still refuse a full engine.
+    saturation: Mutex<HashMap<String, PressureEntry>>,
     signals: tokio::task::JoinHandle<()>,
 }
 
@@ -206,6 +231,7 @@ impl PdKvState {
             bind_lock: Mutex::new(()),
             refresh_inputs: Mutex::new(RefreshInputs::default()),
             published,
+            saturation: Mutex::new(HashMap::new()),
             // Subscribers enforce trust by suspending/clearing affected sources.
             signals: tokio::spawn(async move { while signals.recv().await.is_some() {} }),
         }
@@ -239,8 +265,96 @@ impl PdKvState {
                         state.bind(&workers[..], kv).await;
                     }
                 }
+                // Measured pressure, refreshed off the request path. Bounded by the same
+                // connection pool the probes use; a slow engine only delays its own row.
+                let bases: Vec<String> = inputs
+                    .prefill
+                    .iter()
+                    .chain(inputs.decode.iter())
+                    .map(|worker| worker.base_url().to_owned())
+                    .collect();
+                if !bases.is_empty() {
+                    state.refresh_saturation(bases).await;
+                }
             }
         });
+    }
+
+    /// Scrape `/metrics` from every live base and keep the saturation gauges.
+    ///
+    /// Older frontends publish no absolute KV capacity, but they do publish usage and
+    /// queue reasons, which is enough to refuse an engine that is already full.
+    async fn refresh_saturation(&self, bases: Vec<String>) {
+        let client = self.client.clone();
+        let samples: Vec<(String, Option<String>)> = stream::iter(bases)
+            .map(|base| {
+                let client = client.clone();
+                async move {
+                    let url = format!("{}/metrics", base.trim_end_matches('/'));
+                    let body = tokio::time::timeout(SATURATION_TIMEOUT, async {
+                        let response = client.get(&url).send().await.ok()?;
+                        response.text().await.ok()
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    (base, body)
+                }
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+        let mut pressure = self.saturation.lock().await;
+        for (base, body) in samples {
+            match body {
+                Some(text) => {
+                    let sample = crate::kv_index::saturation::parse(&text);
+                    let was_saturated =
+                        pressure.get(&base).is_some_and(PressureEntry::is_saturated);
+                    let saturated_until = if sample.is_saturated() {
+                        Some(std::time::Instant::now() + SATURATION_HOLD)
+                    } else {
+                        pressure.get(&base).and_then(|entry| entry.saturated_until)
+                    };
+                    let is_saturated =
+                        saturated_until.is_some_and(|until| until > std::time::Instant::now());
+                    if is_saturated && !was_saturated {
+                        // One line per transition, so the gate can be seen acting.
+                        tracing::info!(
+                            base = %base,
+                            kv_usage = ?sample.kv_usage,
+                            waiting_capacity = sample.waiting_capacity,
+                            "pd_kv_state: decode engine saturated"
+                        );
+                    }
+                    pressure.insert(base, PressureEntry { saturated_until });
+                }
+                // A failed scrape drops the row only once its verdict has expired, so a
+                // transient error cannot re-open an engine that was just full.
+                None => {
+                    if pressure
+                        .get(&base)
+                        .is_some_and(|entry| !entry.is_saturated())
+                    {
+                        pressure.remove(&base);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decode workers whose engine reports itself saturated right now.
+    pub(super) async fn saturated_workers(&self, workers: &[Arc<dyn Worker>]) -> HashSet<String> {
+        let pressure = self.saturation.lock().await;
+        workers
+            .iter()
+            .filter(|worker| {
+                pressure
+                    .get(worker.base_url())
+                    .is_some_and(PressureEntry::is_saturated)
+            })
+            .map(|worker| worker.url().to_owned())
+            .collect()
     }
 
     /// Reconcile the pool of one role, including incarnation and publisher
