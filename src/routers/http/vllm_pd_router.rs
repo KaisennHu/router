@@ -1143,27 +1143,35 @@ impl VllmPDRouter {
             && (prefill_policy.needs_headers() || decode_policy.needs_headers());
         let policy_headers = header_utils::to_policy_headers(headers.filter(|_| needs_headers));
         let sequences = requested_sequences(request);
-        // Decode context pricing runs before admission: it queries the KV index
-        // and tokenizes, neither of which may happen under the selection lock.
-        // The D pool is recorded here too, so the refresh loop subscribes to a
-        // Decode engine's own KV events when that engine publishes them.
-        //
-        // When both stages are KV-aware the two estimates are computed together,
-        // because they walk the same prompt: `prepare_pair` hashes it once and
-        // prices the Prefill and Decode pools from that one walk.
-        let (prefill_inputs, decode_inputs, decode_context) = match self.pd_router.kv_state.as_ref()
-        {
-            Some(state)
-                if state.publishes_for(decode_workers)
-                    && crate::policies::kv_aware_ops(prefill_policy.as_ref()).is_some() =>
-            {
+        // One hash cache for the request: the Prefill estimate and the Decode credit walk
+        // the same rendered prompt, so hashing it once keeps the two stages from repeating
+        // the work. Sharing it here is also what removed `prepare_pair`, whose only purpose
+        // was to share it - at the cost of a second copy of the eligibility rules.
+        let mut hashes = crate::policies::PromptHashes::new();
+        let prefill_inputs = self
+            .pd_router
+            .prepare_prefill_inputs_with(
+                prefill_workers,
+                request,
+                path,
+                headers,
+                router_prompts,
+                &mut hashes,
+            )
+            .await;
+        let decode_inputs = self
+            .pd_router
+            .prepare_decode_inputs(decode_workers, request, path, headers, router_prompts)
+            .await;
+        // The D pool is recorded here too, so the refresh loop subscribes to a Decode
+        // engine's own KV events when that engine publishes them.
+        let decode_context = match self.pd_router.kv_state.as_ref() {
+            Some(state) if state.publishes_for(decode_workers) => {
                 state
                     .record_decode_pool(decode_workers, &decode_policy)
                     .await;
-                let (prepared, context) = state
-                    .prepare_pair(
-                        prefill_workers,
-                        &prefill_policy,
+                state
+                    .prepare_decode_context_with(
                         decode_workers,
                         &decode_policy,
                         request,
@@ -1171,49 +1179,11 @@ impl VllmPDRouter {
                         headers,
                         router_prompts,
                         sequences,
+                        &mut hashes,
                     )
-                    .await;
-                (Some(prepared), None, context)
+                    .await
             }
-            _ => {
-                let state = self.pd_router.kv_state.as_ref();
-                tokio::join!(
-                    self.pd_router.prepare_prefill_inputs(
-                        prefill_workers,
-                        request,
-                        path,
-                        headers,
-                        router_prompts
-                    ),
-                    self.pd_router.prepare_decode_inputs(
-                        decode_workers,
-                        request,
-                        path,
-                        headers,
-                        router_prompts
-                    ),
-                    async {
-                        let state = state?;
-                        if !state.publishes_for(decode_workers) {
-                            return None;
-                        }
-                        state
-                            .record_decode_pool(decode_workers, &decode_policy)
-                            .await;
-                        state
-                            .prepare_decode_context(
-                                decode_workers,
-                                &decode_policy,
-                                request,
-                                path,
-                                headers,
-                                router_prompts,
-                                sequences,
-                            )
-                            .await
-                    },
-                )
-            }
+            _ => None,
         };
         let model_id = request.get("model").and_then(Value::as_str);
         let cache_salt = request
@@ -1349,6 +1319,10 @@ impl VllmPDRouter {
         // reports its last availability on the admission-time handle, and a
         // replacement registered in the meantime is invisible from it.
         let mut candidates = self.live_decode_candidates(input.pool);
+        // Price only what could actually be selected: an unavailable member of the live
+        // pool made the whole pool refuse credit, because pricing requires every candidate
+        // to succeed.
+        candidates.retain(|worker| worker.is_available());
         // A push-addressed Prefill already sent its KV to the provisional
         // Decode, so that worker is the only one that can serve the request.
         if pin_to_provisional {

@@ -352,6 +352,7 @@ impl PdLoadManager {
         }
         p.publish(Stage::Prefill, &prefill.endpoint);
         let now = std::time::Instant::now();
+        let mut unknown_decode_charged = false;
         let (decode_endpoint, affinity, decode_state, pending_since) = if defer_decode {
             (None, None, DecodeState::Unbound, None)
         } else {
@@ -363,6 +364,7 @@ impl PdLoadManager {
                 Some(tokens) => d.pending_decode_tokens += tokens,
                 None => d.unknown_decode_requests += 1,
             }
+            unknown_decode_charged = charged.is_none();
             d.publish(Stage::Decode, &decode.endpoint);
             (
                 Some(decode.endpoint.clone()),
@@ -380,6 +382,7 @@ impl PdLoadManager {
             prefill_tokens: selection.prefill.new_prefill_tokens,
             decode_context: prompt,
             decode_tokens: std::sync::atomic::AtomicU64::new(charged.unwrap_or(0)),
+            unknown_decode_charged: std::sync::atomic::AtomicBool::new(unknown_decode_charged),
             state: Mutex::new(AttemptState {
                 prefill: true,
                 decode: decode_state,
@@ -425,7 +428,12 @@ impl PdLoadManager {
                     .decode_tokens
                     .store(tokens, std::sync::atomic::Ordering::Relaxed);
             }
-            None => d.unknown_decode_requests += 1,
+            None => {
+                d.unknown_decode_requests += 1;
+                inner
+                    .unknown_decode_charged
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         d.publish(Stage::Decode, &decision.endpoint);
         state.decode_endpoint = Some(decision.endpoint.clone());
@@ -473,6 +481,7 @@ impl PdLoadManager {
             // attempt.
             decode_context: None,
             decode_tokens: std::sync::atomic::AtomicU64::new(0),
+            unknown_decode_charged: std::sync::atomic::AtomicBool::new(true),
             state: Mutex::new(AttemptState {
                 prefill: true,
                 decode: DecodeState::Pending,
@@ -521,6 +530,9 @@ struct AttemptInner {
     /// later frees exactly that amount. Independent of the sampling-sequence
     /// count: extra sequences share the prompt's blocks.
     decode_tokens: std::sync::atomic::AtomicU64,
+    /// Whether admission charged this attempt to `unknown_decode_requests`; the release
+    /// must undo exactly that, or the pool stays on request counts after the attempt.
+    unknown_decode_charged: std::sync::atomic::AtomicBool,
     /// Guards every stage transition and the decode fields below, so a commit
     /// and a release cannot interleave halfway through.
     state: Mutex<AttemptState>,
@@ -614,6 +626,14 @@ impl AttemptInner {
                     load.active_decode_tokens = load.active_decode_tokens.saturating_sub(tokens);
                 }
                 DecodeState::Unbound | DecodeState::Finished => unreachable!(),
+            }
+            // Undo the unknown-length charge too, or this attempt keeps the pool on
+            // request counts after it has already finished.
+            if self
+                .unknown_decode_charged
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                load.unknown_decode_requests = load.unknown_decode_requests.saturating_sub(1);
             }
             load.publish(Stage::Decode, &endpoint);
             if load.idle() {

@@ -491,7 +491,16 @@ impl PdKvState {
         })
     }
 
-    /// Whether any of `workers` is configured to publish KV events.
+    /// Whether credit may be used for one base.
+///
+/// `credit_fallback` returns the *reason* credit is refused, or `None` when it is allowed.
+/// Both preparation paths call this instead of testing the option themselves, because one
+/// of them had the polarity backwards and silently refused every eligible request.
+fn credit_eligible(cache_salt: Option<&str>, model_verified: bool) -> bool {
+    KvAwarePolicy::credit_fallback(cache_salt, model_verified).is_none()
+}
+
+/// Whether any of `workers` is configured to publish KV events.
     ///
     /// Binding a pool that publishes nothing is not merely wasteful: the bind
     /// path re-registers each target, which starts a new registration epoch and
@@ -676,6 +685,33 @@ impl PdKvState {
         router_prompts: Option<&Arc<[Vec<u32>]>>,
         sequences: u32,
     ) -> Option<HashMap<String, u64>> {
+        self.prepare_decode_context_with(
+            workers,
+            policy,
+            request,
+            route,
+            headers,
+            router_prompts,
+            sequences,
+            &mut PromptHashes::new(),
+        )
+        .await
+    }
+
+    /// Same, with a hash cache the caller may share with the Prefill estimate so one
+    /// request hashes its prompt once.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn prepare_decode_context_with(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        policy: &Arc<dyn LoadBalancingPolicy>,
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        sequences: u32,
+        hashes: &mut PromptHashes,
+    ) -> Option<HashMap<String, u64>> {
         let kv = kv_aware_ops(policy.as_ref())?;
         let allow_credit = self.credit_by_base(request).await;
         // A salted request must not be credited with unsalted blocks: the same rule
@@ -685,14 +721,13 @@ impl PdKvState {
         // first keeps the render fan-out and the hash walk off the request path
         // for every deployment whose Decode pool publishes no KV events.
         if !workers.iter().any(|worker| {
-            KvAwarePolicy::credit_fallback(
+            credit_eligible(
                 cache_salt,
                 allow_credit
                     .get(worker.base_url())
                     .copied()
                     .unwrap_or(false),
             )
-            .is_some()
         }) {
             crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
             return None;
@@ -704,104 +739,9 @@ impl PdKvState {
         let results = self
             .tokenize(bases, request, route, headers, router_prompts)
             .await;
-        Self::decode_context_from_results(
-            kv,
-            workers,
-            &allow_credit,
-            &results,
-            sequences,
-            &mut PromptHashes::new(),
-        )
+        Self::decode_context_from_results(kv, workers, &allow_credit, &results, sequences, hashes)
     }
 
-    /// Prefill inputs and, when the Decode pool can be priced, its marginal
-    /// context - both computed from one hash cache.
-    ///
-    /// This is the KV-aware-prefill path. The other shape, a count-based
-    /// Prefill with a KV-aware Decode, goes through [`Self::prepare`] plus
-    /// [`Self::prepare_decode_context`] instead: the Prefill stage has no work
-    /// estimate to share there, so there is nothing to co-schedule.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn prepare_pair(
-        &self,
-        prefill_workers: &[Arc<dyn Worker>],
-        prefill_policy: &Arc<dyn LoadBalancingPolicy>,
-        decode_workers: &[Arc<dyn Worker>],
-        decode_policy: &Arc<dyn LoadBalancingPolicy>,
-        request: &Value,
-        route: &str,
-        headers: Option<&HeaderMap>,
-        router_prompts: Option<&Arc<[Vec<u32>]>>,
-        sequences: u32,
-    ) -> (
-        HashMap<String, PdPrefillInput>,
-        Option<HashMap<String, u64>>,
-    ) {
-        let started = Instant::now();
-        {
-            let mut inputs = self.refresh_inputs.lock().await;
-            inputs.prefill = prefill_workers.iter().cloned().collect();
-            inputs.prefill_policy = Some(prefill_policy.clone());
-        }
-        let allow_credit = self.credit_by_base(request).await;
-        let decode_priced = kv_aware_ops(decode_policy.as_ref()).is_some()
-            && decode_workers.iter().any(|worker| {
-                allow_credit
-                    .get(worker.base_url())
-                    .copied()
-                    .unwrap_or(false)
-            });
-        if !decode_priced {
-            crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
-        }
-        let prefill_bases: Vec<_> = prefill_workers
-            .iter()
-            .map(|worker| worker.base_url().to_owned())
-            .collect();
-        let decode_bases: Vec<_> = decode_workers
-            .iter()
-            .map(|worker| worker.base_url().to_owned())
-            .collect();
-        // Renders run together: they are network work over disjoint bases, and
-        // serialising them would add a whole fan-out to request latency. They
-        // compute no hashes, so nothing is shared across a mutable borrow here.
-        let (prefill_results, decode_results) = tokio::join!(
-            self.tokenize(prefill_bases, request, route, headers, router_prompts),
-            async {
-                if decode_priced {
-                    self.tokenize(decode_bases, request, route, headers, router_prompts)
-                        .await
-                } else {
-                    HashMap::new()
-                }
-            },
-        );
-        // One hash cache for both stages: the Decode estimate walks the same
-        // prompt with the same block size, so hashing it twice would be pure
-        // duplication, linear in prompt length, on the admission path.
-        let mut hashes = PromptHashes::new();
-        let mut prepared = Self::build_prefill_inputs(request, &allow_credit, prefill_results);
-        if let Some(kv) = kv_aware_ops(prefill_policy.as_ref()) {
-            Self::attach_prefill_work(kv, prefill_workers, &mut prepared, &mut hashes);
-        }
-        let decode_context = if decode_priced {
-            kv_aware_ops(decode_policy.as_ref()).and_then(|kv| {
-                Self::decode_context_from_results(
-                    kv,
-                    decode_workers,
-                    &allow_credit,
-                    &decode_results,
-                    sequences,
-                    &mut hashes,
-                )
-            })
-        } else {
-            None
-        };
-        metrics::histogram!("vllm_router_pd_kv_prepare_seconds")
-            .record(started.elapsed().as_secs_f64());
-        (prepared, decode_context)
-    }
 
     /// `router_prompts` are the router's own token ids for `grpc://` pools;
     /// HTTP pools pass `None` and render through each backend.
@@ -813,6 +753,30 @@ impl PdKvState {
         route: &str,
         headers: Option<&HeaderMap>,
         router_prompts: Option<&Arc<[Vec<u32>]>>,
+    ) -> HashMap<String, PdPrefillInput> {
+        self.prepare_with(
+            workers,
+            policy,
+            request,
+            route,
+            headers,
+            router_prompts,
+            &mut PromptHashes::new(),
+        )
+        .await
+    }
+
+    /// Same, with a hash cache the caller may share with the Decode estimate so one
+    /// request hashes its prompt once.
+    pub(super) async fn prepare_with(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        policy: &Arc<dyn LoadBalancingPolicy>,
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        hashes: &mut PromptHashes,
     ) -> HashMap<String, PdPrefillInput> {
         let started = Instant::now();
         {
@@ -830,7 +794,7 @@ impl PdKvState {
             .await;
         let mut prepared = Self::build_prefill_inputs(request, &allow_credit, results);
         if let Some(kv) = kv_aware_ops(policy.as_ref()) {
-            Self::attach_prefill_work(kv, workers, &mut prepared, &mut PromptHashes::new());
+            Self::attach_prefill_work(kv, workers, &mut prepared, hashes);
         }
         metrics::histogram!("vllm_router_pd_kv_prepare_seconds")
             .record(started.elapsed().as_secs_f64());

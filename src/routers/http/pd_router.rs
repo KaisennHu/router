@@ -336,7 +336,12 @@ fn select_stage(
             context.affinity_key.as_ref(),
             context.lora_name,
             context.cache_salt,
-            context.decode_context,
+            // Ranking by request counts must not also add marginal tokens.
+            if decode_tokens_known {
+                context.decode_context
+            } else {
+                None
+            },
         )?;
         (
             pick.index,
@@ -582,12 +587,41 @@ impl PdRouterBase {
         headers: Option<&HeaderMap>,
         router_prompts: Option<&Arc<[Vec<u32>]>>,
     ) -> Option<HashMap<String, super::pd_types::PdPrefillInput>> {
+        self.prepare_prefill_inputs_with(
+            workers,
+            request,
+            route,
+            headers,
+            router_prompts,
+            &mut crate::policies::PromptHashes::new(),
+        )
+        .await
+    }
+
+    /// Same, with a hash cache the caller may share with the Decode estimate.
+    pub(super) async fn prepare_prefill_inputs_with(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        request: &Value,
+        route: &str,
+        headers: Option<&HeaderMap>,
+        router_prompts: Option<&Arc<[Vec<u32>]>>,
+        hashes: &mut crate::policies::PromptHashes,
+    ) -> Option<HashMap<String, super::pd_types::PdPrefillInput>> {
         let policy = self.policy_registry.get_prefill_policy();
         if kv_aware_ops(policy.as_ref()).is_some() {
             return Some(
                 self.kv_state
                     .as_ref()?
-                    .prepare(workers, &policy, request, route, headers, router_prompts)
+                    .prepare_with(
+                        workers,
+                        &policy,
+                        request,
+                        route,
+                        headers,
+                        router_prompts,
+                        hashes,
+                    )
                     .await,
             );
         }
