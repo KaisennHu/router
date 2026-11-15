@@ -491,7 +491,16 @@ impl PdKvState {
         })
     }
 
-    /// Whether any of `workers` is configured to publish KV events.
+    /// Whether credit may be used for one base.
+///
+/// `credit_fallback` returns the *reason* credit is refused, or `None` when it is allowed.
+/// Both preparation paths call this instead of testing the option themselves, because one
+/// of them had the polarity backwards and silently refused every eligible request.
+fn credit_allowed(cache_salt: Option<&str>, model_verified: bool) -> bool {
+    KvAwarePolicy::credit_fallback(cache_salt, model_verified).is_none()
+}
+
+/// Whether any of `workers` is configured to publish KV events.
     ///
     /// Binding a pool that publishes nothing is not merely wasteful: the bind
     /// path re-registers each target, which starts a new registration epoch and
@@ -685,14 +694,13 @@ impl PdKvState {
         // first keeps the render fan-out and the hash walk off the request path
         // for every deployment whose Decode pool publishes no KV events.
         if !workers.iter().any(|worker| {
-            KvAwarePolicy::credit_fallback(
+            credit_allowed(
                 cache_salt,
                 allow_credit
                     .get(worker.base_url())
                     .copied()
                     .unwrap_or(false),
             )
-            .is_some()
         }) {
             crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");
             return None;
@@ -744,12 +752,18 @@ impl PdKvState {
             inputs.prefill_policy = Some(prefill_policy.clone());
         }
         let allow_credit = self.credit_by_base(request).await;
+        // Same eligibility rule as the single-stage path: a salted request must not be
+        // priced from unsalted blocks, so the salt check belongs here too.
+        let decode_salt = request.get("cache_salt").and_then(Value::as_str);
         let decode_priced = kv_aware_ops(decode_policy.as_ref()).is_some()
             && decode_workers.iter().any(|worker| {
-                allow_credit
-                    .get(worker.base_url())
-                    .copied()
-                    .unwrap_or(false)
+                credit_allowed(
+                    decode_salt,
+                    allow_credit
+                        .get(worker.base_url())
+                        .copied()
+                        .unwrap_or(false),
+                )
             });
         if !decode_priced {
             crate::metrics::RouterMetrics::record_kv_placement_lookup("decode_unbound");

@@ -1875,7 +1875,10 @@ impl KvAwareOps for KvAwarePolicy {
                 let mut new_prefill_tokens = 0u64;
                 for (index, tokens) in prompts.iter().enumerate() {
                     let hits = if verified {
-                        let key = (binding.cache_key.clone(), index);
+                        // Keyed by the prompt content that this backend actually rendered:
+                    // two backends can render the same request into different ids, and a
+                    // position-only key would hand the second one the first one's query.
+                    let key = (binding.cache_key.clone(), prompt_fingerprint(tokens));
                         if !query_cache.contains_key(&key) {
                             let local =
                                 Self::hashes_for(hashes, binding.block_size, None, prompts, index);
@@ -1923,10 +1926,9 @@ impl KvAwareOps for KvAwarePolicy {
     fn estimate_decode_work(
         &self,
         inputs: &[(&dyn Worker, &[Vec<u32>], bool)],
-        sequences: u32,
+        _sequences: u32,
         hashes: &mut PromptHashes,
     ) -> Vec<DecodeWorkEstimate> {
-        let sequences = u64::from(sequences.max(1));
         let mut query_cache = HashMap::new();
         inputs
             .iter()
@@ -1965,11 +1967,14 @@ impl KvAwareOps for KvAwarePolicy {
                         },
                         &params,
                     );
-                    additional = additional.saturating_add(
-                        context
-                            .saturating_sub(reused.max(0.0) as u64)
-                            .saturating_mul(sequences),
-                    );
+                    // The engine shares one copy of the prompt's blocks across the
+                    // request's sequences, so the marginal cost is the prompt's
+                    // un-cached remainder once - the same amount the ledger charges when
+                    // this request becomes an existing one. Multiplying by `n` here made
+                    // a request cost more before admission than after, so the two sides of
+                    // the comparison disagreed.
+                    additional = additional
+                        .saturating_add(context.saturating_sub(reused.max(0.0) as u64));
                 }
                 DecodeWorkEstimate {
                     additional_tokens: Some(additional),

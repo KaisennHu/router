@@ -1349,6 +1349,10 @@ impl VllmPDRouter {
         // reports its last availability on the admission-time handle, and a
         // replacement registered in the meantime is invisible from it.
         let mut candidates = self.live_decode_candidates(input.pool);
+        // Price only what could actually be selected: an unavailable member of the live
+        // pool made the whole pool refuse credit, because pricing requires every candidate
+        // to succeed.
+        candidates.retain(|worker| worker.is_available());
         // A push-addressed Prefill already sent its KV to the provisional
         // Decode, so that worker is the only one that can serve the request.
         if pin_to_provisional {

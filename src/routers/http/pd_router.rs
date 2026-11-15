@@ -336,7 +336,12 @@ fn select_stage(
             context.affinity_key.as_ref(),
             context.lora_name,
             context.cache_salt,
-            context.decode_context,
+            // Ranking by request counts must not also add marginal tokens.
+            if decode_tokens_known {
+                context.decode_context
+            } else {
+                None
+            },
         )?;
         (
             pick.index,
