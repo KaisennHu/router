@@ -54,7 +54,17 @@ The earlier two-worker controls also covered Qwen3-4B, Qwen3.5-4B with MTP on an
 
 Earlier **2P1D MooncakeConnectorV1** runs on Router `b65f4e5` covered Qwen3.5-4B and Qwen3.8-27B W8A8, each with MTP on and off. All four scenarios routed both warmed prefixes to their respective Prefill workers, matched local warm credit on each worker, and recorded eight transfer completions and nine equal handoffs per scenario. Those runs captured completion logs and did not retain the Decode external-token counter.
 
-Full DeepSeek V4 Flash was tested in colocated mode. The measured model used all eight NPUs and approximately 39 GiB per NPU with a single TP8 worker. DeepSeek V4 Pro and V4.1 are outside this A2 experiment.
+Full DeepSeek V4 Flash was tested in colocated mode. The measured model used all eight NPUs and approximately 39 GiB per NPU with a single TP8 worker. DeepSeek V4 Pro is outside this A2 experiment.
+
+### Additional colocated deployment checks
+
+| Case | Support and A2 validation status |
+| --- | --- |
+| Qwen4Exp W4A8 with DSpark | No compatible DSpark draft checkpoint or Ascend configuration was established. The local Qwen3.8-Flash-Next checkpoint contains MTP weights. The published Ascend recipe covers MTP for this architecture. The DSpark case remains untested. [Ascend recipe](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3.8-Flash-Next.html) |
+| DeepSeek V4 Flash W8A8 with classic MTP | The v0.32.0rc1 image has a V4 MTP implementation. The older W8A8 MTP checkpoint contains the draft's `mtp.0.e_proj.weight` and `mtp.0.h_proj.weight`. The 0731 checkpoint used in the measured DSpark case contains a different draft, with `main_proj`, Markov and confidence weights. The dedicated 70-shard MTP checkpoint is being staged for a TP8 colocated run. [Pinned Ascend MTP fixture](https://github.com/vllm-project/vllm-ascend/blob/24487f4f48ee99cf45d86d1c504e645549b8c1ef/tests/e2e/cases/models/configs/DeepSeek/acceptace_rate_deepseekv4-flash-w8a8-mtp.yaml) |
+| DeepSeek V4.1 Flash W4A8 | The checkpoint has the DSpark draft tensors. The pinned vLLM build rejects classic MTP for V4.1. For A2, the documented full-weight colocated DSpark deployment uses two 8-NPU nodes (DP2/TP8/EP16). This test environment has one 8-NPU node, so there is no Router prefix-accuracy result for V4.1 on A2. [Ascend deployment guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html#55-multi-node-colocated-deployment) · [Pinned vLLM method check](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/config/speculative.py#L1360-L1375) |
+
+The V4 Flash classic-MTP probe uses the same pinned Router and incremental event settings as the main matrix. It sets `--speculative-config '{"method":"deepseek_mtp","num_speculative_tokens":1,"enforce_eager":true}'`, derives the layout from the running engine, and checks warm, boundary and divergent prompts after replay. Acceptance requires matching Router credit, worker response and the engine lookup, plus a positive draft-token delta.
 
 ### API and text checks
 
