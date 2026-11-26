@@ -15,7 +15,10 @@
 | 轮次 | 2 |
 | Router | main `9605956f`（`--policy` / `--prefill-policy` / `--decode-policy` 三者相同） |
 | 其它 Router 参数 | `--router-temperature 0`、`--cache-threshold 0.3`、`--balance-abs 2`、`--balance-rel 1.5`、`--kv-penalty-host/external/disk 0.8/0.6/0.3` |
-| 回放 | agentinfer，`trace_same_agent_gap_scale=0.002`、`max_inflight_requests=1`、`interval_mode=trace`、`sample_seed=0` |
+| 回放 | agentinfer，`trace_same_agent_gap_scale=0.002`、`sample_seed=0` |
+| `replay.interval_mode` | **trace** |
+| `replay.prompt_transport` / 容差 | **completion_token_ids** / `prompt_calibration_tolerance_tokens=0` |
+| `backend.endpoint` | `/v1/chat/completions`（token 请求仍走 `/v1/completions`） |
 
 ## tlg-tg1（requests/臂 = 273）
 
