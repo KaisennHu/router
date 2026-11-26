@@ -20,6 +20,53 @@
 | `replay.prompt_transport` / 容差 | **chat_text** / `prompt_calibration_tolerance_tokens=0` |
 | `backend.endpoint` | `/v1/chat/completions` |
 
+
+## 完整配置（可逐字复现）
+
+### 硬件与软件
+
+| 项 | 值 |
+|---|---|
+| 集群 | H20 集群，SLURM `--partition=h20`，本次用 8 张卡（每节点 8× H20） |
+| Router 二进制 | `bin/router-main-9605956f`（main `9605956f`），sha256 `c330911d49cedc86…` |
+| 引擎 | vLLM 0.33 runtime：`kv-unified-vllm033-runtime/bin/vllm serve` |
+| KV 传输 | NIXL（`PYTHONPATH=<nixl152>`），`--kv-transfer-config {kv_connector: NixlConnector, kv_role: kv_producer\|kv_consumer, kv_connector_extra_config: {backends: [UCX]}}` |
+| 模型 | `Qwen3-4B-Instruct-2507`，`--served-model-name qwen3`，`--dtype bfloat16` |
+| 端口分配 | `PORT_SEARCH_START = 50000 + (jobid % 30) * 400`，取 8 个端口步长 20；Router = 末端口+110，Prometheus = 末端口+111 |
+
+### Router 完整命令行（四组实验除策略与拓扑外完全相同）
+
+```bash
+$BIN --host 127.0.0.1 --port $ROUTER_PORT \
+  --prometheus-host 127.0.0.1 --prometheus-port $((ROUTER_PORT+1)) \
+  --vllm-pd-disaggregation --kv-connector nixl \
+  --policy <POLICY> --prefill-policy <POLICY> --decode-policy <POLICY> \
+  --worker-startup-check-interval 1 --request-timeout-secs 3600 \
+  --router-temperature 0 --cache-threshold 0.3 \
+  --balance-abs-threshold 2 --balance-rel-threshold 1.5 \
+  --kv-penalty-host 0.8 --kv-penalty-external 0.6 --kv-penalty-disk 0.3 \
+  --prefill http://127.0.0.1:<P1> --prefill http://127.0.0.1:<P2> --prefill http://127.0.0.1:<P3> --prefill http://127.0.0.1:<P4> \
+  --decode http://127.0.0.1:<D1> --decode http://127.0.0.1:<D2> --decode http://127.0.0.1:<D3> --decode http://127.0.0.1:<D4>
+```
+
+`<POLICY>` 取 `round_robin` / `cache_aware` / `kv_aware`；同一臂的三个 policy 参数必须相同（P 与 D 同策略）。
+
+### 引擎完整命令行（Prefill 与 Decode 同一模板，仅 `kv_role` 不同）
+
+```bash
+$VLLM serve $MODEL --served-model-name qwen3 --host 127.0.0.1 --port $WORKER_PORT \
+  --max-model-len 163840 --max-num-seqs 8 \
+  --max-num-batched-tokens 32768 --dtype bfloat16 \
+  --gpu-memory-utilization 0.80 --kv-cache-memory-bytes 27917287424 \
+  --enable-prefix-caching --enable-prompt-tokens-details \
+  --prefix-caching-hash-algo sha256_cbor --block-size 16 \
+  --enable-request-id-headers \
+  --kv-events-config '{"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://*:$((WORKER_PORT+1))", "replay_endpoint": "tcp://127.0.0.1:$((WORKER_PORT+2))", "buffer_steps": 10000}' \
+  --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_producer|kv_consumer", "kv_connector_extra_config": {"backends": ["UCX"]}}'
+```
+
+引擎环境变量：`CUDA_VISIBLE_DEVICES=<gpu>`、`VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0`、`VLLM_SERVER_DEV_MODE=1`、`VLLM_NIXL_SIDE_CHANNEL_HOST=127.0.0.1`、`VLLM_NIXL_SIDE_CHANNEL_PORT=<worker_port+3>`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`TOKENIZERS_PARALLELISM=false`、`OMP_NUM_THREADS=4`。
+
 ## swe-sb1（requests/臂 = 247）
 
 ### 吞吐与复用
