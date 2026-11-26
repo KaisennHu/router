@@ -130,6 +130,17 @@
 | cache_aware | 176.3 | 17,379 | 77.56% | 9,224,504 | 6.62 | 14.56 | 16.62 | 442.91 | 978.18 |
 | kv_aware | 193.8 | 19,100 | 83.98% | 6,585,232 | 4.03 | 14.24 | 14.11 | 376.98 | 809.25 |
 
+### 吞吐 vs TPOT 取舍（反推 decode 并发）
+
+`吞吐 × TPOT` 近似 decode 侧同时运行的流数：round_robin 通常被 Prefill 卡住，
+decode 引擎空转 → batch 小 → TPOT 漂亮但总吞吐低；cache/kv 拆掉 Prefill 瓶颈后
+decode 被填满 → 吞吐上升、TPOT 随之上升。这是取舍，不是调度缺陷。
+
+| 臂 | 吞吐 out tok/s | TPOT mean (ms) | 推断 decode 并发流 | 相对 round_robin 吞吐 | 相对 round_robin TPOT |
+|---|---|---|---|---|---|
+| cache_aware | 176.3 | 14.6 | 2.6 | — | — |
+| kv_aware | 193.8 | 14.2 | 2.8 | — | — |
+
 ### kv_aware 相对基线的平均优化比例
 
 | 指标 | 统计 | vs round_robin | vs cache_aware |
@@ -155,5 +166,3 @@
 | 新算 Prefill | — | — | -28.6% ✅ |
 | 命中率 | — | — | +6.42 pt |
 
-> 说明：这组历史实验只跑了 cache_aware / kv_aware / v0.1.17 三个臂，**没有 round_robin**，所以「vs round_robin」列全为 —；
-> 与 4P4D 同拓扑的 main 二进制结果见仓库早前记录（kv 200.1/199.1 vs cache 194.0/188.1）。

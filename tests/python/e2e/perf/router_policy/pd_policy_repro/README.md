@@ -19,8 +19,27 @@
 
 > 逐臂完整指标（吞吐 / TTFT / TPOT / 请求延迟 / JCT 的 mean·p50·p95·p99，以及相对 round_robin、cache_aware 的优化比例）见 [esults/](results/README.md)。
 >
-> **效果最好的是 #1：TraceLab 6 会话 + 2P2D**，kv 相对 cache 吞吐 +25%~29%、JCT p95 −20%、TTFT p95 −35%。
+> **效果最好的是 #1：TraceLab 6 会话 + 2P2D**，kv 相对 cache 吞吐 +25%~29%、JCT p95 −20%、TTFT p95 −35%，TPOT 持平（29.1 vs 30.3 ms）。
 > 规律：Prefill 引擎越少（2 台）、数据前缀复用越集中，`kv_aware` 相对 `cache_aware` 的优势越大。
+
+### ⚠️ 必须分指标看：`cache_aware`/`kv_aware` 相对 `round_robin` 是**取舍**，不是全面胜利
+
+| 对比 | 吞吐 | TTFT | JCT | TPOT |
+|---|---|---|---|---|
+| cache/kv **vs round_robin** | ↑ 明显 | ↓ 明显 | ↓ | **↑ 劣化（多数 case 中 +15%~+65%）** |
+| **kv vs cache** | ↑ +6.6%~+27% | ↓ | ↓ | **持平或更好** |
+
+原因：`round_robin` 完全不复用前缀，系统卡在 **Prefill**，decode 引擎大部分时间在等请求（反推并发流 ≈ 2），
+所以单 token 延迟（TPOT）很漂亮但总吞吐低；cache/kv 拆掉 Prefill 瓶颈后 decode 被填满（并发流 ≈ 4~5），
+**吞吐上一个台阶，TPOT 随 batch 变大而上升**。这是吞吐/单 token 延迟的经典取舍。
+
+例外与细节：
+- **SWE-bench Pro 上 TPOT 反而更好**（rr 13.7 ms → cache 11.5 / kv 11.6），因为该数据 Prefill 占比小、decode 本就填满；
+- TraceLab 4P4D：rr 16.0 → cache 19.6 / kv 18.3（+14%~+22%）；
+- agentX 2P2D：rr 14.7 → cache 16.1 / kv 16.4（+10%~+12%）。
+
+因此**结论只能按指标陈述**：`kv_aware` 相对 `cache_aware` 在所有 case 的所有指标上不劣化（吞吐更高、TTFT/JCT 更低、TPOT 持平或更好）；
+而两者相对 `round_robin` 都存在 TPOT 劣化，是否可接受取决于 SLO（例如 TPOT ≤ 30 ms 时三者都满足）。
 
 ### 1.1 #1 TraceLab 6 会话 / 2P2D（最强 case）
 

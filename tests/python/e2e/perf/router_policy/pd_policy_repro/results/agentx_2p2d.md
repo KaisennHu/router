@@ -183,6 +183,18 @@
 | cache_aware | 150.8 | 12,578 | 47.97% | 15,547,792 | 21.98 | 16.13 | 34.01 | 772.60 | 1,168.23 |
 | kv_aware | 160.7 | 13,411 | 43.67% | 16,833,040 | 24.57 | 16.37 | 35.72 | 811.11 | 1,122.97 |
 
+### 吞吐 vs TPOT 取舍（反推 decode 并发）
+
+`吞吐 × TPOT` 近似 decode 侧同时运行的流数：round_robin 通常被 Prefill 卡住，
+decode 引擎空转 → batch 小 → TPOT 漂亮但总吞吐低；cache/kv 拆掉 Prefill 瓶颈后
+decode 被填满 → 吞吐上升、TPOT 随之上升。这是取舍，不是调度缺陷。
+
+| 臂 | 吞吐 out tok/s | TPOT mean (ms) | 推断 decode 并发流 | 相对 round_robin 吞吐 | 相对 round_robin TPOT |
+|---|---|---|---|---|---|
+| round_robin | 141.4 | 14.7 | 2.1 | +0.0% ≈ | +0.0% ≈ |
+| cache_aware | 150.8 | 16.1 | 2.4 | +6.7% ✅ | +10.0% ⚠️ |
+| kv_aware | 160.7 | 16.4 | 2.6 | +13.7% ✅ | +11.6% ⚠️ |
+
 ### kv_aware 相对基线的平均优化比例
 
 | 指标 | 统计 | vs round_robin | vs cache_aware |
