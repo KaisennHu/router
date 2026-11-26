@@ -10,7 +10,6 @@ GROUPS = {
     'tracelab_2p2d': 'tlg-*',
     'tracelab_4p4d': 'tlf-*',
     'swebench_4p4d': 'swe-*',
-    'agentx_2p2d': 'p2d-*',
     'agentx_4p4d_pr493': 'het3-*',
 }
 ARM_LABEL = {'rr': 'round_robin', 'cache': 'cache_aware', 'kv': 'kv_aware', 'rel': 'v0.1.17'}

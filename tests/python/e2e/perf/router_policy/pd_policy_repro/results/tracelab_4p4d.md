@@ -264,17 +264,25 @@
 | cache_aware | 261.2 | 29,083 | 91.82% | 4,165,243 | 2.56 | 19.61 | 14.39 | 346.86 | 806.70 |
 | kv_aware | 298.5 | 33,236 | 89.77% | 5,210,240 | 2.16 | 18.33 | 13.03 | 314.11 | 755.29 |
 
-### 吞吐 vs TPOT 取舍（反推 decode 并发）
+### 吞吐 vs TPOT 取舍
 
-`吞吐 × TPOT` 近似 decode 侧同时运行的流数：round_robin 通常被 Prefill 卡住，
-decode 引擎空转 → batch 小 → TPOT 漂亮但总吞吐低；cache/kv 拆掉 Prefill 瓶颈后
-decode 被填满 → 吞吐上升、TPOT 随之上升。这是取舍，不是调度缺陷。
+`N̄` 是 decode 侧**平均同时运行的序列数**，按 token-时间积分严格计算：
 
-| 臂 | 吞吐 out tok/s | TPOT mean (ms) | 推断 decode 并发流 | 相对 round_robin 吞吐 | 相对 round_robin TPOT |
+`N̄ = Σ_i(out_i · TPOT_i) / T`（`out_i` 为该请求输出 token 数，`T` 为该臂墙钟）。
+
+这不是「吞吐 × 平均 TPOT」那种近似乘法，也不需要假设 TPOT 与单请求输出长度无关。
+但它是**由客户端时间反推**的推断量（我们只有每臂前/后两点 Prometheus 快照，取不到引擎侧
+`num_requests_running` 时间序列），不是引擎自报值。
+
+`round_robin` 完全不复用前缀，系统卡在 Prefill，decode 侧 `N̄` 明显偏低；cache/kv 拆掉
+Prefill 瓶颈后 decode 填得更满，`N̄` 上升、TPOT 随之上升，但总吞吐也上去了。
+这是吞吐与单 token 延迟的取舍，不是调度缺陷。
+
+| 臂 | 吞吐 out tok/s | TPOT mean (ms) | N̄ = Σout·TPOT/T | 相对 round_robin 吞吐 | 相对 round_robin TPOT |
 |---|---|---|---|---|---|
-| round_robin | 168.6 | 16.0 | 2.7 | +0.0% ≈ | +0.0% ≈ |
-| cache_aware | 261.2 | 19.6 | 5.1 | +54.9% ✅ | +22.8% ⚠️ |
-| kv_aware | 298.5 | 18.3 | 5.5 | +77.0% ✅ | +14.8% ⚠️ |
+| round_robin | 168.6 | 16.0 | 2.85 | +0.0% ≈ | +0.0% ≈ |
+| cache_aware | 261.2 | 19.6 | 5.17 | +54.9% ✅ | +22.8% ⚠️ |
+| kv_aware | 298.5 | 18.3 | 5.42 | +77.0% ✅ | +14.8% ⚠️ |
 
 ### kv_aware 相对基线的平均优化比例
 

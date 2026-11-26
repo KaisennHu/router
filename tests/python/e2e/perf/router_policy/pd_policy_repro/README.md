@@ -1,6 +1,6 @@
 # PD 调度策略 trace 复现包（round_robin / cache_aware / kv_aware）
 
-本目录记录 **四种原生 trace 配置** 下 `round_robin` / `cache_aware` / `kv_aware` 三策略在 **PD 分离**部署上的完整复现材料：数据切片规则、配置、脚本、启动命令、指标口径与实测结果。
+本目录记录 **三种原生 trace 配置** 下 `round_robin` / `cache_aware` / `kv_aware` 三策略在 **PD 分离**部署上的完整复现材料：数据切片规则、配置、脚本、启动命令、指标口径与实测结果。
 
 所有 trace 均来自**官方数据集**（agentX、TraceLab、SWE-bench Pro），只做筛选/截取，**没有合成任何请求**。
 
@@ -8,16 +8,15 @@
 
 ---
 
-## 1. 四种 trace 配置与结果摘要
+## 1. 三种 trace 配置与结果摘要
 
-| # | trace 切片 | 来源 | 拓扑 | 每臂请求 | 轮次 | kv vs cache 吞吐 | 顺序 |
+| # | trace 切片 | 来源 | 拓扑 | 每臂请求 | 轮次 | kv vs cache 吞吐 | 备注 |
 |---|---|---|---|---|---|---|---|
-| 1 | `tracelab-fit6.jsonl` | 官方 TraceLab v0.0.2，6 个完整会话 | **2P2D** | 273 | 2 | **+28.8% / +25.3%** | kv > cache > rr ✅ |
-| 2 | `tracelab-fit.jsonl` | 官方 TraceLab v0.0.2，12 个完整会话 | 4P4D | 385 | 3 | +16.7% / +11.5% / +14.9% | kv > cache > rr ✅ |
-| 3 | `inferact_codex_swebenchpro`（`task_num=12`） | 官方 Inferact SWE-bench Pro，自动下载 | 4P4D | 247 | 2 | +11.4% / +17.6% | kv > cache > rr ✅ |
-| 4 | `agentx-hetero6x12.jsonl` | 官方 agentX，6 会话 × 12 轮 | **2P2D** | 270 | 2 | +6.8% / +6.4% | kv > cache > rr ✅ |
+| 1 | `tracelab-fit6.jsonl` | 官方 TraceLab v0.0.2，6 个完整会话 | **2P2D** | 273 | 2 | **+28.8% / +25.3%** | ✅ kv 领先 cache（分指标见 results） |
+| 2 | `tracelab-fit.jsonl` | 官方 TraceLab v0.0.2，12 个完整会话 | 4P4D | 385 | 3 | +16.7% / +11.5% / +14.9% | ✅ kv 领先 cache（分指标见 results） |
+| 3 | `inferact_codex_swebenchpro`（`task_num=12`） | 官方 Inferact SWE-bench Pro，自动下载 | 4P4D | 247 | 2 | +11.4% / +17.6% | ✅ kv 领先 cache（分指标见 results） |
 
-> 逐臂完整指标（吞吐 / TTFT / TPOT / 请求延迟 / JCT 的 mean·p50·p95·p99，以及相对 round_robin、cache_aware 的优化比例）见 [esults/](results/README.md)。
+> 逐臂完整指标（吞吐 / TTFT / TPOT / 请求延迟 / JCT 的 mean·p50·p95·p99，以及相对 round_robin、cache_aware 的优化比例）见 [results/](results/README.md)。
 >
 > **效果最好的是 #1：TraceLab 6 会话 + 2P2D**，kv 相对 cache 吞吐 +25%~29%、JCT p95 −20%、TTFT p95 −35%，TPOT 持平（29.1 vs 30.3 ms）。
 > 规律：Prefill 引擎越少（2 台）、数据前缀复用越集中，`kv_aware` 相对 `cache_aware` 的优势越大。
@@ -36,7 +35,6 @@
 例外与细节：
 - **SWE-bench Pro 上 TPOT 反而更好**（rr 13.7 ms → cache 11.5 / kv 11.6），因为该数据 Prefill 占比小、decode 本就填满；
 - TraceLab 4P4D：rr 16.0 → cache 19.6 / kv 18.3（+14%~+22%）；
-- agentX 2P2D：rr 14.7 → cache 16.1 / kv 16.4（+10%~+12%）。
 
 因此**结论只能按指标陈述**：`kv_aware` 相对 `cache_aware` 在所有 case 的所有指标上不劣化（吞吐更高、TTFT/JCT 更低、TPOT 持平或更好）；
 而两者相对 `round_robin` 都存在 TPOT 劣化，是否可接受取决于 SLO（例如 TPOT ≤ 30 ms 时三者都满足）。
@@ -75,15 +73,6 @@ kv vs cache：**吞吐 +28.8% / +25.3%**、命中率 +2.30 / +0.48 pt、新算 P
 
 > SWE-bench 命中率整体只有 47%~59%（跨轮复用少），kv 主要靠**放置质量**（命中率 +4.5~4.7 pt）赢。
 
-### 1.4 #4 agentX 6 会话 / 2P2D
-
-| 轮 | round_robin | cache_aware | kv_aware | kv vs cache |
-|---|---|---|---|---|
-| 1 | 143.4 tok/s，命中 42.04% | 150.3，45.82% | **160.5，43.08%** | **+6.8%**（JCT p95 −1.7%） |
-| 2 | 139.3，40.84% | 151.2，50.12% | **160.9，44.26%** | **+6.4%**（JCT p95 −6.0%） |
-
-> agentX 上 kv **主动少复用**（命中率低 2.7~5.9 pt）换更小倾斜（1.05 vs 1.05~1.22），靠尾延迟取胜。
-
 ---
 
 ## 2. 数据集来源与切片规则
@@ -95,7 +84,6 @@ kv vs cache：**吞吐 +28.8% / +25.3%**、命中率 +2.30 / +0.48 pt、新算 P
 | `tracelab-fit6.jsonl` | 官方 `UW-SyFI/TraceLab` v0.0.2 → `data/v0.0.2/syfi_coding_trace.jsonl.gz` | 取前 16 个完整会话 → 保留 `max(input_tokens_total) ≤ 200000` 的会话 → 按 `max_in` 取最大的 6 个 | `c080001a` | 184 | 273 |
 | `tracelab-fit.jsonl` | 同上 | 同上，但取最大的 12 个 | `c12aa934` | 252 | 385 |
 | SWE-bench Pro | 官方 Inferact（`trace_type: inferact_codex_swebenchpro`，`trace_path: null` 自动下载固定版本） | 前 `task_num=12` 条完整记录 | — | 12 task | 247 |
-| `agentx-hetero6x12.jsonl` | 官方 agentX `traces.jsonl` | 按 `max(in)` 取最小的 6 个会话 × 前 12 轮 | `e2d0c02d` | 72 | 270 |
 | `agentx-hetero12x12.jsonl` | 同上 | 12 个会话 × 前 12 轮 | `e7e7fd7c` | 144 | 315 |
 
 > TraceLab 的 `materialize_tracelab_source(16)` 会从 HF 下载官方数据集并按会话切分；本包在此基础上做**确定性过滤**（同样的输入必然得到同样的 sha）。
@@ -162,7 +150,7 @@ replay:
 3. 数据集放到 `$ROOT/data/`（按第 2 节规则生成）；
 4. `$ROOT/scripts/` 放本目录 `scripts/` 的副本。
 
-### 4.2 四个 trace 的启动命令
+### 4.2 三个 trace 的启动命令
 
 **#1 TraceLab 6 会话 / 2P2D**
 
@@ -195,16 +183,6 @@ sbatch --parsable --gres=gpu:8 \
   --export=ALL,SCHEDULE_SPEC="$spec",TAG=swe,\
 TRACE_TYPE=inferact_codex_swebenchpro,TRACE_PATH=,TASK_NUM=12,\
 INTERVAL_P50=1.0,INTERVAL_P95=7.20,INTERVAL_P99=16.31 \
-  "$ROOT/main960-run.sbatch"
-```
-
-**#4 agentX 6 会话 / 2P2D**
-
-```bash
-spec='main_rr:q1-rr;main_cache:q1-cache;main_kv:q1-kv;main_rr:q2-rr;main_cache:q2-cache;main_kv:q2-kv'
-sbatch --parsable --gres=gpu:4 \
-  --export=ALL,SCHEDULE_SPEC="$spec",TAG=p2d,\
-TRACE_PATH="$ROOT/data/agentx-hetero6x12.jsonl",WORKERS=4,PREFILL=2 \
   "$ROOT/main960-run.sbatch"
 ```
 

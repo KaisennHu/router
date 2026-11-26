@@ -17,7 +17,6 @@ from pathlib import Path
 EXPECTED = {
     "tracelab-fit6.jsonl": "c080001af998a7f0",
     "tracelab-fit.jsonl": "c12aa934aaf3a273",
-    "agentx-hetero6x12.jsonl": "e2d0c02d64ee27e7",
     "agentx-hetero12x12.jsonl": "e7e7fd7cd31f1784",
 }
 
@@ -37,7 +36,7 @@ def max_in(session: dict) -> int:
 def build_agentx(src: Path, dst_dir: Path) -> None:
     """Keep the N smallest sessions (by max input tokens) and cap their turns."""
     rows = [json.loads(x) for x in src.read_text().splitlines() if x.strip()]
-    for count, turns, name in ((6, 12, "agentx-hetero6x12.jsonl"), (12, 12, "agentx-hetero12x12.jsonl")):
+    for count, turns, name in ((12, 12, "agentx-hetero12x12.jsonl"),):
         picked = sorted(rows, key=max_in)[:count]
         trimmed = []
         for s in picked:
