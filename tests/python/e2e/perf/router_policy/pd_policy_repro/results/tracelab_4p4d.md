@@ -7,6 +7,10 @@
 | trace | `tracelab-fit.jsonl`（官方 TraceLab v0.0.2，按 `max_in ≤ 200K` 筛出 12 个完整会话，sha256 `c12aa934…`） |
 | 拓扑 | 4P4D（WORKERS=8，PREFILL=4，每台 Prefill 3 个会话） |
 | 引擎 | `--max-model-len 262144`，`--kv-cache-memory-bytes 42949672960`（40 GiB） |
+| 引擎并发 | `--max-num-seqs 8`、`--gpu-memory-utilization 0.80`、`--block-size 16`、`--enable-prefix-caching`、`--prefix-caching-hash-algo sha256_cbor` |
+| `experiment.task_num` = `experiment.max_concurrency` | **16** |
+| `replay.max_inflight_requests` | **1**（每个会话同一时刻最多 1 个在途请求，故实际并发≈会话数） |
+| `experiment.task_timeout_seconds` / `run_timeout_seconds` | 3600 / 10800 |
 | 每臂请求 | 385 |
 | 轮次 | 3 |
 | Router | main `9605956f`（`--policy` / `--prefill-policy` / `--decode-policy` 三者相同） |

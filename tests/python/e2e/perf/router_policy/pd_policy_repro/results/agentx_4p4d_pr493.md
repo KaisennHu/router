@@ -7,6 +7,10 @@
 | trace | `agentx-hetero12x12.jsonl`（官方 agentX，12 会话 × 12 轮，sha256 `e7e7fd7c…`） |
 | 拓扑 | 4P4D（WORKERS=8，PREFILL=4） |
 | 引擎 | `--max-model-len 163840`，`--kv-cache-memory-bytes 27917287424`（26 GiB） |
+| 引擎并发 | `--max-num-seqs 8`、`--gpu-memory-utilization 0.80`、`--block-size 16`、`--enable-prefix-caching`、`--prefix-caching-hash-algo sha256_cbor` |
+| `experiment.task_num` = `experiment.max_concurrency` | **12** |
+| `replay.max_inflight_requests` | **1**（每个会话同一时刻最多 1 个在途请求，故实际并发≈会话数） |
+| `experiment.task_timeout_seconds` / `run_timeout_seconds` | 3600 / 10800 |
 | 每臂请求 | 315 |
 | 轮次 | 2 |
 | Router | main `9605956f`（`--policy` / `--prefill-policy` / `--decode-policy` 三者相同） |

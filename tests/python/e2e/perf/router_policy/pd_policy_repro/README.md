@@ -8,6 +8,9 @@
 
 ---
 
+> **导航**：[§3.4 并发与 task_num 参数矩阵](#34-并发与-task_num完整参数矩阵之前缺失的部分) ·
+> [§8 验收/门禁用例建议](#8-作为性能验收--门禁用例的建议) · [§9 A2 环境备忘](#9-a2vllm-ascend--mooncake环境备忘)
+
 ## 1. 三种 trace 配置与结果摘要
 
 | # | trace 切片 | 来源 | 拓扑 | 每臂请求 | 轮次 | kv vs cache 吞吐 | 备注 |
@@ -140,8 +143,35 @@ replay:
 
 ---
 
-## 4. 复现步骤
+### 3.4 并发与 task_num（完整参数矩阵，之前缺失的部分）
 
+每个 case 的**并发**由 `experiment.max_concurrency` 决定，本包固定为 `max_concurrency = task_num = TASK_NUM`；
+而每会话的在途请求由 `replay.max_inflight_requests = 1` 限制，所以**实际并发 ≈ min(task_num, 可用会话数)**。
+
+| case | `trace_type` | 切片规模 | `task_num` = `max_concurrency` | `max_inflight_requests` | 每臂请求 | 拓扑 | `--max-model-len` | `--kv-cache-memory-bytes` | `--max-num-seqs` |
+|---|---|---|---|---|---|---|---|---|---|
+| #1 TraceLab 6 会话 | `tracelab` | 6 个完整会话 / 184 条目 | **8** | 1 | 273 | 2P2D（4 引擎） | 262144 | 42,949,672,960（40 GiB） | 8 |
+| #2 TraceLab 12 会话 | `tracelab` | 12 个完整会话 / 252 条目 | **16** | 1 | 385 | 4P4D（8 引擎） | 262144 | 42,949,672,960（40 GiB） | 8 |
+| #3 SWE-bench Pro | `inferact_codex_swebenchpro` | 12 个 task | **12** | 1 | 247 | 4P4D（8 引擎） | 163840 | 27,917,287,424（26 GiB） | 8 |
+| 历史对照 agentX 12×12 | `agentX` | 12 会话 × 12 轮 / 144 条目 | **12** | 1 | 315 | 4P4D（8 引擎） | 163840 | 27,917,287,424（26 GiB） | 8 |
+
+几个容易踩的点：
+
+1. **`TASK_NUM` 可以大于会话数**（例如 TraceLab 只有 6 个会话却传 8）：agentinfer 的 `task_num` 是"最多采样多少个完整会话"，
+   超出部分会被实际可用会话数截断，因此并发实际是 6 而不是 8。写文档时必须同时给出这两个数，否则复现出的并发会不一致。
+2. **每臂请求数 ≠ 会话数**：回放会把每个会话的轮次展开成多次 HTTP 请求（TraceLab 6 会话 → 184 条目 → 273 请求；
+   agentX 12×12 → 144 条目 → 315 请求），所以"并发 6~12"对应的每臂请求是 250~400 量级。
+3. **引擎侧并发**另有 `--max-num-seqs 8`（Prefill 与 Decode 各自 8），与上面的会话并发不是一回事；
+   本包所有实验都用 8，只有 A2（单卡 64 GB、TraceLab 长上下文）需要降到 2 以避免 OOM。
+4. **超时**：`task_timeout_seconds=3600`、`run_timeout_seconds=10800`、`replay.request_timeout_seconds=3600`。
+   若单臂跑不完，`task_timeout` 会先把会话切断（A2 出现过：三臂分别只完成 195/223/214 个请求、wall 都被截到 ~3600 s）。
+   做对比实验时务必确认每臂请求数一致，否则吞吐以外的指标不可比。
+
+校验方式：每个臂目录下的 `runs/<tag>/config.yaml` 记录了 `experiment` / `replay` 的完整取值，`manifest.json` 记录了
+Router 命令行、二进制 sha256、trace sha256 与实际 worker 布局，可直接与本表逐项对照。
+
+
+## 4. 复现步骤
 ### 4.1 前置
 
 1. Router 二进制放到 `$ROOT/bin/`：
@@ -182,6 +212,7 @@ spec='main_rr:sb1-rr;main_cache:sb1-cache;main_kv:sb1-kv;main_rr:sb2-rr;main_cac
 sbatch --parsable --gres=gpu:8 \
   --export=ALL,SCHEDULE_SPEC="$spec",TAG=swe,\
 TRACE_TYPE=inferact_codex_swebenchpro,TRACE_PATH=,TASK_NUM=12,\
+MAX_MODEL_LEN=163840,KV_BYTES=27917287424,WORKERS=8,PREFILL=4,\
 INTERVAL_P50=1.0,INTERVAL_P95=7.20,INTERVAL_P99=16.31 \
   "$ROOT/main960-run.sbatch"
 ```
@@ -239,7 +270,92 @@ python "$ROOT/scripts/full_dump.py"
 
 ---
 
-## 8. 文件清单
+## 8. 作为性能验收 / 门禁用例的建议
+
+两个候选用例，定位不同：
+
+### 8.1 门禁用例 A：`agentx_pd_hetero`（已发布，PD 放量前的基础门禁）
+
+路径：[`../agentx_pd_hetero/README.md`](../agentx_pd_hetero/README.md)，配合 [`../agentx_pd_hetero/gate.py`](../agentx_pd_hetero/gate.py)。
+
+- 负载：官方 agentX 12 会话 × 12 轮（315 请求/臂），4P4D；
+- 作用：确认 PD 分离链路本身没退化（缓存命中、Prefill 新算量、JCT 不劣化），
+  属于"改动后先跑一遍别把 PD 弄坏"级别；
+- 建议门限：`kv_aware` 相对 `round_robin` 吞吐 ≥ +60%，命中率 ≥ +30 pt，JCT p95 ≤ −30%。
+
+参考实测（本包同 trace、main `9605956f`、4P4D、315 请求/臂）：
+
+| 指标 | round_robin | cache_aware | kv_aware | kv vs rr |
+|---|---|---|---|---|
+| 吞吐 (out tok/s) | 113.2 | 194.0 | 200.1 | +76.7% |
+| JCT p95 (s) | 1418.7 | 914.0 | 786.1 | −44.6% |
+
+### 8.2 性能验收用例 B：TraceLab 6 会话 + 2P2D（策略优劣的主判据）
+
+- 负载：`tracelab-fit6.jsonl`（273 请求/臂），2P2D；
+- 作用：区分 `cache_aware` 与 `kv_aware` 的优劣——这是本包里**信噪比最高**的配置，
+  kv 相对 cache 吞吐 +25%~29%、TTFT p95 −36%、JCT p95 −22%，且两轮一致；
+- 建议门限（相对 `cache_aware`）：吞吐 ≥ +15%、JCT p95 ≤ −15%、TPOT 不劣于 +10%；
+- 注意：该用例下 `cache_aware` 与 `kv_aware` 的 TPOT 都明显高于 `round_robin`（约 +50%~+60%），
+  所以**不要**用 "TPOT 优于 round_robin" 作为门限，否则会把正确实现判失败。
+
+### 8.3 性能验收用例 C：SWE-bench Pro 4P4D（跨数据集回归）
+
+- 负载：`inferact_codex_swebenchpro`，`task_num=12`（247 请求/臂），4P4D；
+- 作用：与 TraceLab 互补——该数据跨轮复用少（命中率仅 47%~59%），kv 的优势来自**放置质量**而非省 Prefill；
+  同时它是唯一一个 TPOT 也变好的用例（rr 13.7 ms → cache 11.5 / kv 11.6）；
+- 建议门限：`kv_aware` 相对 `cache_aware` 吞吐 ≥ +8%、JCT p95 ≤ −5%、TPOT 不劣于 +5%。
+
+### 8.4 门限写法上的注意事项
+
+1. **必须分指标**：`cache_aware`/`kv_aware` 相对 `round_robin` 是"吞吐↑、TTFT↓、JCT↓、**TPOT↑**"的取舍，
+   单看吞吐会得出"全面胜利"的错误结论（见 §1 的"必须分指标看"）；
+2. **TPOT 门限要按用例设定**：TraceLab/agentX 上 TPOT 会变差，SWE-bench 上会变好；
+3. **每臂请求数必须一致**：若被 `task_timeout_seconds` 截断（A2 上出现过 195/223/214），除吞吐外的指标不可比；
+4. **至少 2 轮**：同一二进制、同一 job 内两轮 cache_aware 命中率就差过 4.6 pt，单轮不足以定性。
+
+## 9. A2（vllm-ascend + Mooncake）环境备忘
+
+与 H20（x86 + NIXL）不同，A2 是 Ascend NPU，PD 传输走 vllm-ascend 的 Mooncake 连接器。下面这套组合是实测**能跑通 2P2D** 的配置，供后续复现。
+
+### 10.1 能跑通的组合
+
+| 项 | 值 | 备注 |
+|---|---|---|
+| 镜像 | `quay.io/atlas-ci/vllm-ascend:v0.32.0` | **必须版本配套**：vllm 0.32.0 + vllm-ascend 0.32（上游 vllm-ascend 只发到 0.32，不要用 0.34 的 vllm 配它） |
+| 引擎连接器 | `MooncakeConnectorV1` + `kv_connector_extra_config.mooncake_protocol=ascend` | V2 是拉模式，要求 `num_external_tokens == 0`，与上游 router 的 PD 契约冲突 |
+| TE 端口 | 顶层 `kv_port` 每引擎独立（如 21000/21001） | 只在 `extra_config` 里给时，两台 Prefill 会抢同一端口，TE 线程崩（`corrupted size vs. prev_size`） |
+| **Router 连接器** | **`--kv-connector nixl`（透传）** | 用 `mooncake` 时 router 发的是新 schema（`remote_bootstrap_addr`），vllm-ascend 要旧 schema（`remote_block_ids`）→ `KeyError` / `AssertionError`；nixl 分支会把 Prefill 响应里的 `kv_transfer_params` 原样转给 Decode |
+| KV 容量 | `--kv-cache-memory-bytes 42949672960`（40 GiB） | `max_model_len=262144` 要求至少能放下 **一条** 满长序列（≈39 GiB），给 32 GiB 会在启动时报 `To serve at least one request...`；给 48 GiB 会 NPU OOM |
+| 引擎并发 | `--max-num-seqs 2` | 单卡 64 GB，长上下文时 8 会 OOM |
+| Bootstrap shim | 每台 Prefill 起一个 `GET /query` 服务，返回其真实 `engine_id` | main router 在 `--kv-connector mooncake` 时会查询它；走 nixl 透传时仍建议保留 |
+
+跑通后 Decode 收到的参数形如：
+
+```json
+{"do_remote_prefill": true, "do_remote_decode": false,
+ "remote_block_ids": [[1, 2, 3, ...]], "remote_engine_id": "...",
+ "remote_host": "...", "remote_port": ...}
+```
+
+### 10.2 用同一份 TraceLab 切片跑出的初步数据（**不可作为结论**）
+
+`tracelab-fit6.jsonl`（sha `c080001af8…`，与 H20 完全相同），2P2D，三臂各一轮：
+
+| 臂 | 完成请求 | wall (s) | 吞吐 out tok/s | TTFT mean (s) | TPOT mean (ms) | 请求延迟 mean (s) | JCT mean (s) | JCT p95 (s) |
+|---|---|---|---|---|---|---|---|---|
+| round_robin | 195 | 3598 | 31.1 | 108.3 | 111.4 | 173.7 | 2823.6 | 3588.6 |
+| cache_aware | 223 | 3575 | 33.9 | 88.4 | 113.0 | 150.5 | 2797.9 | 3563.9 |
+| kv_aware | 214 | 3559 | 33.5 | 91.5 | 113.5 | 155.6 | 2775.4 | 3545.1 |
+
+**为什么不可作为结论**：三臂都被 `experiment.task_timeout_seconds=3600` 截断（wall 都停在 ~3600 s），
+但完成的请求数不同（195 / 223 / 214），即三臂做的**工作量不等**，除吞吐以外的指标不可比；
+而且只跑了 1 轮。
+
+下一步要得到可用的 A2 数据，需要把 `task_timeout_seconds` 提到 ≥ 21600（6 小时）并至少跑 2 轮，
+保证每臂 273 个请求全部完成后再比较。
+
+## 10. 文件清单
 
 | 文件 | 作用 |
 |---|---|
@@ -250,3 +366,4 @@ python "$ROOT/scripts/full_dump.py"
 | `scripts/summarize.py` | 单臂汇总 |
 | `scripts/full_dump.py` | 跨臂/跨轮汇总，生成本文表格 |
 | `data/prepare_traces.py` | 从官方数据集生成第 2 节的切片并校验 sha256 |
+
