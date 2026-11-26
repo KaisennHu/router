@@ -17,6 +17,8 @@
 | 3 | `inferact_codex_swebenchpro`（`task_num=12`） | 官方 Inferact SWE-bench Pro，自动下载 | 4P4D | 247 | 2 | +11.4% / +17.6% | kv > cache > rr ✅ |
 | 4 | `agentx-hetero6x12.jsonl` | 官方 agentX，6 会话 × 12 轮 | **2P2D** | 270 | 2 | +6.8% / +6.4% | kv > cache > rr ✅ |
 
+> 逐臂完整指标（吞吐 / TTFT / TPOT / 请求延迟 / JCT 的 mean·p50·p95·p99，以及相对 round_robin、cache_aware 的优化比例）见 [esults/](results/README.md)。
+>
 > **效果最好的是 #1：TraceLab 6 会话 + 2P2D**，kv 相对 cache 吞吐 +25%~29%、JCT p95 −20%、TTFT p95 −35%。
 > 规律：Prefill 引擎越少（2 台）、数据前缀复用越集中，`kv_aware` 相对 `cache_aware` 的优势越大。
 
