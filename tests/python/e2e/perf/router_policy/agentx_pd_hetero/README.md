@@ -24,6 +24,12 @@
 
 门禁只钉两条：**命中率差 ≥ +4.0 pt**、**吞吐 ≥ 0.98×**。其余指标只打印不判定，因为它们的裕度小于轮间噪声。
 
+> **指标边界（2026-11 补测）**：本表用的是 PR493 `6db7970` 的数据，其 cache_aware 命中率 77.9%/77.2% 在 main `9605956f` 上**复现不出来**
+> （同 trace 复测为 86.6%/86.9%），因此不要把这里的幅度当作 main 的预期值，详见第六节。
+> 另外**不要把 TPOT 纳入门限**：在同类 trace 的补偿实验里，cache_aware/kv_aware 的 TPOT 比 round_robin 高 15%~60%
+> （round_robin 因为不复用前缀、Prefill 成瓶颈，decode 侧平均只挂着约 2 条序列，TPOT 自然好看），
+> 用"TPOT 更低"做门禁会把正确实现判失败。
+
 ## 二、用例构造
 
 数据来源是官方 agentX replay 数据集 `agentx-data/traces.jsonl`（393 个会话，`hash_id_scope: local`，`block_size: 64`）。每个会话原样保留自己的 `requests`，只截取轮数，不做任何合成。
@@ -89,14 +95,23 @@ python series3.py
 
 | 参数 | 值 |
 | --- | --- |
+| **被测二进制** | PR493 `6db7970`（cache_aware / kv_aware 两臂）、v0.1.17（对照臂）；main `9605956f` 的复测见第六节 |
+| `--vllm-pd-disaggregation` / `--kv-connector` | 开启 / `nixl` |
+| `--policy` / `--prefill-policy` / `--decode-policy` | **三者始终相同**（P 与 D 同一策略） |
 | `--max-model-len` | 163840（回放重建 prompt，比 trace 的 `in` 多约 32K） |
 | `--kv-cache-memory-bytes` | 27,917,287,424（26 GiB / 台） |
+| `--max-num-seqs` / `--gpu-memory-utilization` | 8 / 0.80（Prefill 与 Decode 引擎各自） |
 | `--router-temperature` | 0 |
 | `--cache-threshold` | 0.3 |
 | `--balance-abs-threshold` / `--balance-rel-threshold` | 2 / 1.5 |
 | `--kv-penalty-host` / `external` / `disk` | 0.8 / 0.6 / 0.3 |
+| 回放 `experiment.task_num` | **12**（最多采样 12 个完整会话） |
+| 回放 `experiment.max_concurrency` | **12**（= `task_num`，即并发会话数上限） |
+| 回放 `experiment.task_timeout_seconds` / `run_timeout_seconds` | 3600 / 10800 |
 | 回放 `trace_same_agent_gap_scale` | 0.002 |
-| 回放 `max_inflight_requests` | 1 |
+| 回放 `max_inflight_requests` | 1（每会话同一时刻最多 1 个在途请求，故实际并发≈会话数） |
+| 回放 `request_timeout_seconds` | 3600 |
+
 
 ### 5. 产物
 
@@ -169,4 +184,11 @@ python gate.py --profile both --baseline 'runs/*-rel'   --candidate 'runs/*-kv'
 2. **端到端收益的上限不在 trace，在 `kv_aware` 自己的放置质量。** 本 case 里它的台间倾斜是 1.23–1.37，第一轮甚至比 `cache_aware`（1.14）更倾斜；wall 由最忙那台决定，所以省下来的 Prefill 工作量有一大半被它自己的不均衡吃掉。把倾斜压到 ≤1.1 才会把 5%–15% 放大到几十个百分点。
 3. **v0.1.17 的绝对数字不能当算法基准。** 它在 vLLM 0.33 上会整批丢弃 KV 事件（`kv_index/decode.rs` 里 `events.len() > 4096` 直接返回错误，硬编码无开关），实测两轮分别丢 46 批与 22 批；它自己的命中率两轮从 76.69% 摆到 77.55%、新算 Prefill 从 3.87M 摆到 2.65M。所以对它只能写"不退化"（吞吐 ≥0.95×、JCT p95 ≤1.05×），不能写收益，并且必须把这句备注随数字一起给出。
 4. **还差 3 个实验轮次才能设成阻塞门禁**（即总共 5 轮，目前 2 轮）。准入门槛是：连续 5 个实验轮次、门禁指标 5/5 同号，然后把阈值钉在最差的那一轮。在此之前按 nightly 趋势 + 失败告警运行。
-5. **这个用例暂时不是 pytest cell。** 目录里的 `stack_launcher.py` 只支持 colocated（4 worker，没有 `--prefill/--decode` 拆分），所以本 case 用同目录的 PD 运行器驱动；`gate.py` 消费的产物（`replay/requests.jsonl` 加 Prometheus 快照）与 pytest cell 完全一致，给 `stack_launcher` 补上 PD 支持即可变成 cell，门禁不用改。
+5. **复现性核对（2026-11 补测，必读）。** 本文件的数据是 PR493 `6db7970` 的两次实验轮次。补测发现：
+
+   - **同一二进制、同一 job 内两轮 `cache_aware` 的命中率就差 4.6 pt**（86.11% vs 81.51%），而本文件记录的 77.92%/77.20% 在 main `9605956f` 上复测为 86.61%/86.85% —— 即这里的"cache 命中率偏低"属于那次运行的偶发状态，不是版本特性（`cache_aware.rs` 在 `6db7970` 与 `9605956f` 之间 **0 行差异**）；
+   - 因此**跨版本比较时必须同时标注被测二进制 commit**，否则会把测量噪声误读成算法差异；
+   - main 上的等价复测（agentX 4P4D、同一 trace、315 请求/臂）见 `../pd_policy_repro/results/agentx_4p4d_pr493.md` 的对照说明；
+   - 该目录的 `gate.py` 目前按本文件的 2 轮数据钉阈值，建议在累计到 5 轮后再定版，或改为以 main 的复测数据为基线。
+
+6. **这个用例暂时不是 pytest cell。** 目录里的 `stack_launcher.py` 只支持 colocated（4 worker，没有 `--prefill/--decode` 拆分），所以本 case 用同目录的 PD 运行器驱动；`gate.py` 消费的产物（`replay/requests.jsonl` 加 Prometheus 快照）与 pytest cell 完全一致，给 `stack_launcher` 补上 PD 支持即可变成 cell，门禁不用改。
